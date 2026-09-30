@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **OpenCode Go provider:** use an OpenCode Go subscription for scoring, tailoring, letters, autofill and email. OpenCode Go is an HTTP endpoint (`https://opencode.ai/zen/go/v1`) with an API key — no CLI, no binary, no extra image weight. Paste the Go key under Settings › AI and pick **OpenCode Go**; the model picker searches the live `/models` catalog. Go asks clients to identify themselves (the provider sends a `JobNavigator/…` user agent) and to send a stable `x-opencode-session` id per conversation, which it does. The starter list holds only the models Go serves on `/chat/completions`; GPT and Grok (Responses API) and MiniMax/Qwen (Anthropic API) are omitted, and picking one is refused with that reason. Cost counts as $0 (subscription).
+
 ### Fixed
 - **Model Catalog for Claude Code without an API key**: choosing Claude Code (Subscription) in Settings › Model Catalog no longer fails with "No Anthropic API key configured". With no Anthropic key the catalog lists the built-in Claude models; with a key it still loads Anthropic's live list.
 - **LinkedIn Personal login no longer treats a live session as logged out:** the session check asks Voyager `/me` first; when `/me` refuses a session that is in fact live, a signed-in surface (`/feed`, `/mynetwork`, `/jobs`) reached with the `li_at` auth cookie counts as logged in. A `/login` that redirects to the feed is taken as already signed in, and a login form that never renders because the page went to the feed is treated as a login rather than a timeout.
