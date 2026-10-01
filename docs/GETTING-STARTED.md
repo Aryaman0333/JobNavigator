@@ -82,6 +82,7 @@ Turn the company on and press its run button once. The result shows on the row (
 
 - **Keyword (JobSpy)**: LinkedIn, Indeed, ZipRecruiter and Google in one go. Search term, location, hours old, results wanted, remote, job type. Results are not deduplicated across boards as tightly as the ATS scrapers, so start with a modest results count.
 - **Levels.fyi**, **Jobright.ai**, **freehire.me**: paste a URL from the site with your filters applied.
+- **TrulyRemoteWork.com**: reads the board's full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so it needs no term or URL — narrow it with the title and company filters.
 - **LinkedIn Personal**: your own LinkedIn session through Playwright. Read the notice in Settings › Integrations › LinkedIn first.
 
 Each search has its own auto-scoring depth, title include/exclude, company include/exclude, minimum score, and a run interval. "Skip active companies" leaves out companies you already scrape directly. Run it once by hand; afterwards the scheduler runs it on its interval.

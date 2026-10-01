@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **TrulyRemoteWork.com source:** a new search mode reads the board's machine-readable corpus (`llms-full.txt`) of worldwide-remote roles and follows each new listing to its Markdown twin for the full description and the employer's apply link. Every role is remote with no location restriction, so the search needs no term or URL — the title and company filters narrow it. Jobs are deduped by URL and carry the board's salary as numbers when it is an explicit USD annual figure; any other amount is kept as text. The board invites ingestion (`llms.txt`, `.md` twins, RSS/JSON feeds) and asks only that responses be cached and not used for training.
+
 ### Fixed
 - **Model Catalog for Claude Code without an API key**: choosing Claude Code (Subscription) in Settings › Model Catalog no longer fails with "No Anthropic API key configured". With no Anthropic key the catalog lists the built-in Claude models; with a key it still loads Anthropic's live list.
 - **LinkedIn Personal login no longer treats a live session as logged out:** the session check asks Voyager `/me` first; when `/me` refuses a session that is in fact live, a signed-in surface (`/feed`, `/mynetwork`, `/jobs`) reached with the `li_at` auth cookie counts as logged in. A `/login` that redirects to the feed is taken as already signed in, and a login form that never renders because the page went to the feed is treated as a login rather than a timeout.
