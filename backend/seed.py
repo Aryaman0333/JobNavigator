@@ -1374,20 +1374,23 @@ def migrate_dedup_tracking_params(db):
 
 
 def run_seeds():
+    # System code: migrations and seeds see every account (MT-2); new rows go to the owner.
+    from backend.accounts.context import unscoped
     db = SessionLocal()
     try:
-        run_migrations(db)
-        seed_settings(db)
-        migrate_dedup_tracking_params(db)
-        migrate_autofill_dicts(db)
-        seed_companies(db)
-        seed_h1b_slugs(db)
-        seed_searches(db)
-        seed_mock_resume(db)
-        seed_persona(db)
-        cleanup_removed_settings(db)
-        migrate_llm_settings(db)
-        migrate_cv_terminology(db)
-        migrate_h1b_to_visa_cache(db)
+        with unscoped():
+            run_migrations(db)
+            seed_settings(db)
+            migrate_dedup_tracking_params(db)
+            migrate_autofill_dicts(db)
+            seed_companies(db)
+            seed_h1b_slugs(db)
+            seed_searches(db)
+            seed_mock_resume(db)
+            seed_persona(db)
+            cleanup_removed_settings(db)
+            migrate_llm_settings(db)
+            migrate_cv_terminology(db)
+            migrate_h1b_to_visa_cache(db)
     finally:
         db.close()

@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 # Force SQLite for tests before any imports that touch the engine
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+# MT-2: a query on an account-owned model without an account context raises in tests
+# instead of falling back to the owner. MT_STRICT=0 turns that off for a local run.
+os.environ.setdefault("MT_STRICT", "1")
 
 
 def pytest_configure(config):
@@ -14,6 +17,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "live: hits the running stack over HTTP (read-only); auto-skips when unreachable",
+    )
+    config.addinivalue_line(
+        "markers",
+        "mt_no_owner: test_db creates no owner account and runs the test unscoped (MT-1 migration tests)",
     )
 
 
@@ -31,6 +38,16 @@ def _clean_auth_throttle():
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse=True)
+def _mt_unscoped_by_default():
+    """Tests that build their own throwaway engine (no accounts table, no owner) run
+    unscoped, as before MT-2. The shared `test_db` fixture switches back to scoped and
+    runs the test as its owner account."""
+    from backend.accounts.context import unscoped
+    with unscoped():
+        yield
 
 
 # ── Anthropic mock fixtures ───────────────────────────────────────────────
@@ -72,8 +89,12 @@ def mock_anthropic_client(mock_anthropic_response, monkeypatch):
 # ── DB + TestClient fixtures ─────────────────────────────────────────────
 
 @pytest.fixture
-def test_db():
-    """In-memory SQLite DB with all tables; rebinds the shared SessionLocal so already-imported modules hit the test DB."""
+def test_db(request):
+    """In-memory SQLite DB with all tables; rebinds the shared SessionLocal so already-imported modules hit the test DB.
+
+    MT-2: the DB gets an owner account and the test runs in its account context, as every
+    request and background run does in production. `@pytest.mark.mt_no_owner` skips both
+    and runs the test inside `unscoped()` instead."""
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
     import backend.models.db as db_mod
@@ -128,10 +149,22 @@ def test_db():
     db_mod.engine = test_engine
     db_mod.SessionLocal.configure(bind=test_engine)
 
+    from backend.accounts import context as mt
     session = db_mod.SessionLocal()
+    if request.node.get_closest_marker("mt_no_owner"):
+        account_ctx = mt.unscoped()
+    else:
+        owner = db_mod.Account(name="Owner", role="owner", color=db_mod.ACCOUNT_COLORS[0])
+        session.add(owner)
+        session.commit()
+        mt.remember_owner(test_engine, owner.id)
+        account_ctx = mt.use_account(owner.id)
+    scoped_token = mt._unscoped.set(False)  # undo _mt_unscoped_by_default
     try:
-        yield session
+        with account_ctx:
+            yield session
     finally:
+        mt._unscoped.reset(scoped_token)
         session.close()
         db_mod.SessionLocal.configure(bind=original_bind)
         db_mod.engine = original_engine

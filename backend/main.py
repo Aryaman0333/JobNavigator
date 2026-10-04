@@ -51,8 +51,10 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    # Clean up stale job runs from previous process
-    cleanup_stale_runs()
+    # Clean up stale job runs from previous process (every account's: system code)
+    from backend.accounts.context import unscoped
+    with unscoped():
+        cleanup_stale_runs()
 
     # Start scheduler
     from backend.scheduler import scheduler, configure_scheduler
@@ -136,12 +138,20 @@ def _pool_busy_response() -> JSONResponse:
 
 # ── API Key auth middleware ──────────────────────────────────────────────────
 import hmac as _hmac_mw
+from backend.accounts.context import owner_context
 
 # Paths that NEVER require auth (exact or prefix match)
 _PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/telegram/webhook", "/api/auth/set-session", "/api/auth/verify", "/api/auth/logout")
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
+    # MT-2: every request acts for one account. Until MT-10 reads it from the session
+    # cookie that is always the owner (cached after the first lookup).
+    with owner_context():
+        return await _api_key_auth(request, call_next)
+
+
+async def _api_key_auth(request: Request, call_next):
     path = request.url.path
 
     # Let CORS preflight requests pass through so CORSMiddleware can respond

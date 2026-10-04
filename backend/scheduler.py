@@ -5,6 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
+from backend.accounts.context import as_owner
 from backend.models.db import SessionLocal, Setting
 
 logger = logging.getLogger("jobnavigator.scheduler")
@@ -60,7 +61,7 @@ def configure_scheduler():
             parts = cron_expr.split()
             if len(parts) == 5:
                 scheduler.add_job(
-                    func,
+                    as_owner(func),
                     CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
                     id=job_id,
                     replace_existing=True,
@@ -75,7 +76,7 @@ def configure_scheduler():
     # Interval-based jobs (0 = disabled)
     if scrape_interval > 0:
         scheduler.add_job(
-            run_all_scrapes,
+            as_owner(run_all_scrapes),
             IntervalTrigger(minutes=scrape_interval),
             id="scrape_all",
             replace_existing=True,
@@ -83,7 +84,7 @@ def configure_scheduler():
 
     if email_interval > 0:
         scheduler.add_job(
-            run_email_check,
+            as_owner(run_email_check),
             IntervalTrigger(minutes=email_interval),
             id="email_check",
             replace_existing=True,

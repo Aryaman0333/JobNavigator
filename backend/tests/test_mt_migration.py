@@ -13,6 +13,9 @@ from backend.models.db import (
 )
 from backend.tests.r4_support import make_job
 
+# These tests start from a database without an owner (MT-2's test_db creates one).
+pytestmark = pytest.mark.mt_no_owner
+
 
 def _seed_one_of_each(db):
     """One account-less row in every table the migration covers."""

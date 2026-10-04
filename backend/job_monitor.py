@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from backend.accounts.context import owner_context
 from backend.models.db import SessionLocal, JobRun, Setting
 
 logger = logging.getLogger("jobnavigator.monitor")
@@ -328,6 +329,14 @@ async def tracked_run(
     company_id: Optional[str] = None,
 ):
     """Async context manager: tracks a job run in-memory + DB. Raises JobAlreadyRunningError on duplicate."""
+    # MT-2: a scheduled run has no request context; it acts for the owner until MT-7.
+    with owner_context():
+        async with _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id) as rj:
+            yield rj
+
+
+@asynccontextmanager
+async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id):
     key = _make_key(job_type, scope_key)
 
     existing = _running.get(key)
@@ -386,11 +395,18 @@ def launch_background(
         raise JobAlreadyRunningError(job_type, elapsed)
 
     run_id = uuid.uuid4()
-    _insert_job_run(run_id, job_type, trigger, meta, target_job_id=target_job_id)
+    # MT-2: the task copies the caller's context (the request's account); a caller with
+    # none (startup, tests) runs as the owner.
+    with owner_context():
+        _insert_job_run(run_id, job_type, trigger, meta, target_job_id=target_job_id)
 
     started_at = datetime.now(timezone.utc)
 
     async def _wrapper():
+        with owner_context():
+            await _run()
+
+    async def _run():
         try:
             _run_failure.set(None)
             # The gate is taken here, before the worker runs, so a queued task

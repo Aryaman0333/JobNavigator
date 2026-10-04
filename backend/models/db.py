@@ -8,7 +8,7 @@ from sqlalchemy import (
     ForeignKey, JSON, Index, UniqueConstraint, create_engine, text
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import backref, column_property, declarative_base, deferred, relationship, sessionmaker
+from sqlalchemy.orm import backref, column_property, declarative_base, declared_attr, deferred, relationship, sessionmaker
 
 from backend.config import DATABASE_URL
 from backend.countries import DEFAULT_COUNTRY
@@ -49,8 +49,8 @@ def utcnow():
 
 
 # ── Accounts (multi-tenancy) ─────────────────────────────────────────────────
-# One row per person sharing the install. MT-1 only introduces the table and the
-# nullable owner column on every owned table; nothing reads account_id yet.
+# One row per person sharing the install. Every owned table carries a nullable
+# account_id (MT-1); backend.accounts.scoping filters and stamps it (MT-2).
 ACCOUNT_COLORS = ["#2f6fed", "#d9534f", "#2e9e6b", "#e0912b", "#8a5cd6"]
 
 
@@ -64,6 +64,16 @@ class Account(Base):
     pin_hash = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     last_active_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AccountScoped:
+    """Marker mixin for every account-owned model: backend.accounts.scoping filters their
+    queries by the current account and stamps new rows with it (MT-2). The declared
+    attribute lets with_loader_criteria's lambda be analysed against the mixin itself."""
+
+    @declared_attr
+    def account_id(cls):
+        return _account_fk()
 
 
 def _account_fk():
@@ -83,7 +93,7 @@ class Setting(Base):
 
 
 # ── Searches ─────────────────────────────────────────────────────────────────
-class Search(Base):
+class Search(AccountScoped, Base):
     __tablename__ = "searches"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -128,7 +138,7 @@ class Search(Base):
 
 
 # ── Companies ────────────────────────────────────────────────────────────────
-class Company(Base):
+class Company(AccountScoped, Base):
     __tablename__ = "companies"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -176,7 +186,7 @@ class VisaCache(Base):
 
 
 # ── Jobs ─────────────────────────────────────────────────────────────────────
-class Job(Base):
+class Job(AccountScoped, Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -327,7 +337,7 @@ del _col
 
 
 # ── Applications ─────────────────────────────────────────────────────────────
-class Application(Base):
+class Application(AccountScoped, Base):
     __tablename__ = "applications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -351,7 +361,7 @@ class Application(Base):
                               cascade="all, delete-orphan", order_by="Interview.created_at")
 
 
-class Interview(Base):
+class Interview(AccountScoped, Base):
     """One interview round on an application: what it is, when, where/how, and a free-text prep note."""
     __tablename__ = "interviews"
 
@@ -402,7 +412,7 @@ def revert_transition(app, back_to: str) -> bool:
 
 
 # ── Scrape Log ───────────────────────────────────────────────────────────────
-class ScrapeLog(Base):
+class ScrapeLog(AccountScoped, Base):
     __tablename__ = "scrape_log"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -424,7 +434,7 @@ class ScrapeLog(Base):
 
 
 # ── Job Runs (execution tracking) ───────────────────────────────────────────
-class JobRun(Base):
+class JobRun(AccountScoped, Base):
     __tablename__ = "job_runs"
     __table_args__ = (
         Index("ix_job_runs_job_type", "job_type"),
@@ -448,7 +458,7 @@ class JobRun(Base):
 
 
 # ── LLM Call Log (observability for prompt caching / cost tracking) ─────────
-class LlmCallLog(Base):
+class LlmCallLog(AccountScoped, Base):
     __tablename__ = "llm_call_log"
     __table_args__ = (
         Index("ix_llm_call_log_created_at", "created_at"),
@@ -474,7 +484,7 @@ class LlmCallLog(Base):
 
 
 # ── Activity Log ────────────────────────────────────────────────────────────
-class ActivityLog(Base):
+class ActivityLog(AccountScoped, Base):
     __tablename__ = "activity_log_v2"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -498,7 +508,7 @@ def first_template(kind: str) -> str:
         names = []
     return names[0] if names else "traditional"
 
-class Resume(Base):
+class Resume(AccountScoped, Base):
     __tablename__ = "resumes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -520,7 +530,7 @@ class Resume(Base):
 # ── Cover Letter ──────────────────────────────────────────────────────────────
 # Job-specific (no is_base). Mirrors Resume's storage so the PDF render + tracer-
 # rewrite helpers are reused as-is; json_data holds header/recipient/date/greeting/body_paragraphs/closing/signature.
-class CoverLetter(Base):
+class CoverLetter(AccountScoped, Base):
     __tablename__ = "cover_letters"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -556,7 +566,7 @@ class CoverLetter(Base):
 # One row per account. Until MT-5 scopes it, the code still treats id=1 as the only
 # row (the owner's); do not assume that in new code. contact/preferences feed tailoring + cover letter + autofill;
 # work_auth/demographics/compensation/qa_bank feed autofill; resume_content feeds tailoring.
-class Persona(Base):
+class Persona(AccountScoped, Base):
     __tablename__ = "personas"
 
     id = Column(Integer, primary_key=True)  # 1 for the owner's row today
@@ -573,7 +583,7 @@ class Persona(Base):
 
 
 # ── Tracer Links ───────────────────────────────────────────────────────────
-class TracerLink(Base):
+class TracerLink(AccountScoped, Base):
     __tablename__ = "tracer_links"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -694,3 +704,9 @@ def create_tables():
             "ALTER TABLE searches ADD COLUMN IF NOT EXISTS exclude_active_companies BOOLEAN DEFAULT FALSE"
         ))
         conn.commit()
+
+
+# ── Account scoping listeners (MT-2) ─────────────────────────────────────────
+from backend.accounts.scoping import install_scoping  # noqa: E402
+
+install_scoping(AccountScoped)
