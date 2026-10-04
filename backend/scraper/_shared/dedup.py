@@ -88,12 +88,13 @@ def _get_tracking_params() -> set:
     if _tracking_params_cache is not None:
         return _tracking_params_cache
     try:
-        from backend.models.db import SessionLocal, Setting
+        from backend.models.db import SessionLocal
+        from backend.accounts.settings import get_install_setting
         db = SessionLocal()
         try:
-            row = db.query(Setting).filter(Setting.key == "dedup_tracking_params").first()
-            if row and row.value:
-                params = json.loads(row.value)
+            raw = get_install_setting(db, "dedup_tracking_params")
+            if raw:
+                params = json.loads(raw)
                 _tracking_params_cache = {p.lower() for p in params}
                 logger.info(f"Loaded {len(_tracking_params_cache)} dedup tracking params from DB")
                 return _tracking_params_cache

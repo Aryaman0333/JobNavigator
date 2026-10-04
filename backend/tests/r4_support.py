@@ -201,7 +201,8 @@ def make_persona(db):
 
 def set_setting(db, key, value):
     from backend.models.db import Setting
-    row = db.query(Setting).filter(Setting.key == key).first()
+    # The install value (MT-9: members' own rows carry an account_id)
+    row = db.query(Setting).filter(Setting.key == key, Setting.account_id.is_(None)).first()
     if row:
         row.value = value if isinstance(value, str) else json.dumps(value)
     else:

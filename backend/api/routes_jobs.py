@@ -1007,9 +1007,8 @@ async def update_job(job_id: str, updates: dict, background_tasks: BackgroundTas
     # Trigger CV scoring when job is saved (respects on_save_action); launched as a tracked
     # op so it shows in /monitor/in-flight + /monitor/finished, driving the dashboard's scoring toasts.
     if updates.get("saved") is True and not job.cv_scores:
-        from backend.models.db import Setting
-        on_save_row = db.query(Setting).filter(Setting.key == "on_save_action").first()
-        on_save = on_save_row.value if on_save_row and on_save_row.value else "off"
+        from backend.accounts.settings import get_setting
+        on_save = get_setting(db, "on_save_action") or "off"
         if on_save != "off":
             try:
                 from backend.analyzer.cv_scorer import score_single_job
@@ -1048,15 +1047,14 @@ async def update_job(job_id: str, updates: dict, background_tasks: BackgroundTas
             created_application_id = str(app.id)
 
         if job.company and job.company.strip():
-            from backend.models.db import Company, Setting
+            from backend.models.db import Company
+            from backend.accounts.settings import default_resume_ids
             from backend.models.db import find_company_by_name
             existing_co = find_company_by_name(db, job.company.strip())
             if not existing_co:
-                default_resume_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-                default_resume_ids = [default_resume_row.value] if default_resume_row and default_resume_row.value else []
                 new_co = Company(
                     name=job.company.strip(), tier=None, active=False, playwright_enabled=False,
-                    selected_resume_ids=default_resume_ids,
+                    selected_resume_ids=default_resume_ids(db),
                 )
                 db.add(new_co)
                 db.commit()

@@ -424,7 +424,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
     that account's dedup set; each ingest writes its own ScrapeLog row, and the rows of one
     fetch share a `run_id`. One subscriber failing does not stop the others."""
     import uuid
-    from backend.models.db import Setting
+    from backend.accounts.settings import get_setting
     from backend.accounts.background import acting_as
     from backend.scraper.targets import (
         SharedFetch, company_due, company_key, company_target_due, group_targets, load_active,
@@ -436,8 +436,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
     scraped = 0
     failed = 0
     try:
-        global_interval_row = db.query(Setting).filter(Setting.key == "scrape_interval_minutes").first()
-        global_interval = int(global_interval_row.value) if global_interval_row else 60
+        global_interval = int(get_setting(db, "scrape_interval_minutes", "60"))
 
         active = load_active(db, Company, account_ids)
 

@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from backend.accounts.owned import get_owned_or_404, get_persona, owned_id_or_404
-from backend.models.db import get_db, Resume, TracerLink, TracerClickEvent, Setting, Job, Application, SessionLocal, utcnow, Persona
+from backend.models.db import get_db, Resume, TracerLink, TracerClickEvent, Job, Application, SessionLocal, utcnow, Persona
+from backend.accounts.settings import get_setting
 from backend.api._input import str_field
 from backend.analyzer.model_json import UNPARSEABLE_MESSAGE, ModelReplyError, parse_model_json
 from backend.job_monitor import launch_background, JobAlreadyRunningError
@@ -321,17 +322,14 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
     """Replace header contact URLs with tracer redirect URLs, returning a modified copy; owner is exactly one of a resume (resume_id) or a cover letter (cover_letter_id), with job_id resolving the short_id for job_id token styles."""
     import secrets, json as _json
 
-    enabled_row = db.query(Setting).filter(Setting.key == "tracer_links_enabled").first()
-    if not enabled_row or enabled_row.value != "true":
+    if get_setting(db, "tracer_links_enabled") != "true":
         return json_data
 
-    base_url_row = db.query(Setting).filter(Setting.key == "tracer_links_base_url").first()
-    base_url = (base_url_row.value if base_url_row else "").rstrip("/")
+    base_url = get_setting(db, "tracer_links_base_url", "").rstrip("/")
     if not base_url:
         return json_data
 
-    style_row = db.query(Setting).filter(Setting.key == "tracer_links_url_style").first()
-    url_style = style_row.value if style_row else "path"
+    url_style = get_setting(db, "tracer_links_url_style", "path")
 
     from backend.accounts.context import resolve_account
     my_account = resolve_account(db)
@@ -717,8 +715,7 @@ def copy_resume_for_job(body: dict, db: Session = Depends(get_db)):
 
 def _resolve_chain_score_depth(db) -> str | None:
     """Depth of the score chained after a job-linked tailor ('light'/'full'), or None for no chain, read from the `tailor_auto_quick_score` setting (default 'light')."""
-    chain_row = db.query(Setting).filter(Setting.key == "tailor_auto_quick_score").first()
-    raw_chain = (chain_row.value if chain_row else "light").strip().lower()
+    raw_chain = get_setting(db, "tailor_auto_quick_score", "light").strip().lower()
     depth_map = {
         "off": None, "false": None, "no": None, "0": None,
         "true": "light", "light": "light", "yes": "light", "1": "light", "": "light",
@@ -758,8 +755,7 @@ async def tailor_resume(body: dict, db: Session = Depends(get_db)):
             raise HTTPException(400, "Job has no description, URL, or cached page to tailor from")
 
     # Fast-fail: the prompt template must exist
-    prompt_row = db.query(Setting).filter(Setting.key == "cv_tailor_prompt").first()
-    if not prompt_row or not (prompt_row.value or "").strip():
+    if not (get_setting(db, "cv_tailor_prompt") or "").strip():
         raise HTTPException(500, "cv_tailor_prompt setting is empty — configure it in Settings")
 
     target_uuid = _uuid.UUID(job_id) if job_id else None
@@ -896,15 +892,15 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             # rich pool); falls back to the standard cv_tailor_prompt if unconfigured.
             prompt_template = None
             if persona_as_base:
-                p_row = db.query(Setting).filter(Setting.key == "persona_tailor_prompt").first()
-                if p_row and (p_row.value or "").strip():
-                    prompt_template = p_row.value
+                p_value = get_setting(db, "persona_tailor_prompt") or ""
+                if p_value.strip():
+                    prompt_template = p_value
             if not prompt_template:
-                prompt_row = db.query(Setting).filter(Setting.key == "cv_tailor_prompt").first()
-                if not prompt_row or not prompt_row.value:
+                prompt_value = get_setting(db, "cv_tailor_prompt")
+                if not prompt_value:
                     logger.error("Tailor: cv_tailor_prompt setting is empty")
                     raise RuntimeError("Tailor: cv_tailor_prompt setting is empty")
-                prompt_template = prompt_row.value
+                prompt_template = prompt_value
 
             # Same resolver call_cv_tailor_llm dispatches with, so the log row can never
             # name a model that was not called.

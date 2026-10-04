@@ -1,12 +1,14 @@
-"""GET /settings and PATCH /settings endpoints."""
+"""GET /settings and PATCH /settings endpoints, plus the MT-9 section table and policies."""
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from backend.models.db import get_db, Setting
+from backend.models.db import get_db, Account, SectionPolicy
 from backend.scheduler import configure_scheduler
 from backend.analyzer.cv_scorer import reset_scoring_semaphore
 from backend.scraper._shared.dedup import reload_tracking_params
+from backend.accounts import settings as acct_settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,26 +19,42 @@ _REDACT_SUFFIXES = ("_password", "_api_key", "_session_id", "_secret")
 _REDACT_KEYS = {"dashboard_api_key", "gmail_refresh_token"}
 
 
+def _is_secret(key: str) -> bool:
+    return key in _REDACT_KEYS or any(key.endswith(s) for s in _REDACT_SUFFIXES)
+
+
 @router.get("")
-def get_settings(db: Session = Depends(get_db)):
-    """Return all settings as a key-value map. Sensitive values are redacted."""
-    rows = db.query(Setting).all()
+def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key section, source, editable); always on for members"),
+                 db: Session = Depends(get_db)):
+    """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values (the response is unchanged unless `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`."""
+    rows = acct_settings.effective_rows(db)
     result = {}
-    for row in rows:
+    for key, value, _source in rows:
         # Redact secrets — return empty string if not set, "••••••" if set
-        if row.key in _REDACT_KEYS or any(row.key.endswith(s) for s in _REDACT_SUFFIXES):
-            result[row.key] = "" if not row.value else "\u2022" * 6
+        if _is_secret(key):
+            result[key] = "" if not value else "•" * 6
             continue
         try:
-            result[row.key] = json.loads(row.value)
+            result[key] = json.loads(value)
         except (json.JSONDecodeError, TypeError):
-            result[row.key] = row.value
+            result[key] = value
+    if meta or not acct_settings.is_owner_caller(db):
+        info = acct_settings.key_meta(db, [k for k, _v, _s in rows])
+        for key, _value, source in rows:
+            info[key]["source"] = source
+        result["_meta"] = info
     return result
+
+
+@router.get("/sections")
+def get_sections():
+    """The settings sections: id (matches the Settings screen anchors where `ui` lists them), label, scope ('policy' | 'own_always' | 'owner_only'), default mode for 'policy' sections ('inherit' | 'own'), and the keys each holds."""
+    return acct_settings.sections_payload()
 
 
 @router.patch("")
 def update_settings(updates: dict, db: Session = Depends(get_db)):
-    """Update one or more settings; only keys the app reads are writable (unknown -> 400 as a group), and values are validated (integers non-negative, `*_cron` a parseable 5-field expression, enums known) since a bad one could crash configure_scheduler() and prevent the backend from starting."""
+    """Update one or more settings; only keys the app reads are writable (unknown -> 400 as a group), and values are validated (integers non-negative, `*_cron` a parseable 5-field expression, enums known) since a bad one could crash configure_scheduler() and prevent the backend from starting. The owner writes install values; a member writes its own values, and only in sections it owns (else 403, nothing written)."""
     from backend.seed import invalid_setting_values, unknown_setting_keys
 
     unknown = unknown_setting_keys(updates.keys())
@@ -56,19 +74,28 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
             detail="Invalid setting value — " + "; ".join(problems),
         )
 
+    try:
+        target = acct_settings.check_writable(db, checkable.keys())
+    except acct_settings.SettingNotWritable as e:
+        raise HTTPException(
+            status_code=403,
+            detail="These settings are managed by the account owner: " + ", ".join(e.keys),
+        )
+
     warnings: list[str] = []
     updated = []
     for key, value in updates.items():
-        if isinstance(value, str) and value == "\u2022" * 6:
+        if isinstance(value, str) and value == "•" * 6:
             continue
-        setting = db.query(Setting).filter(Setting.key == key).first()
-        if setting:
-            setting.value = json.dumps(value) if isinstance(value, (list, dict, bool)) else str(value)
-            updated.append(key)
-        else:
-            db.add(Setting(key=key, value=json.dumps(value) if isinstance(value, (list, dict, bool)) else str(value)))
-            updated.append(key)
+        stored = json.dumps(value) if isinstance(value, (list, dict, bool)) else str(value)
+        acct_settings.put_setting(db, key, stored, account_id=target)
+        updated.append(key)
     db.commit()
+
+    if target is not None:
+        # A member's own values touch no process-wide state (scheduler timing, semaphores
+        # and dedup params are read from install values, which the member cannot write).
+        return {"updated": updated, "warnings": warnings}
 
     def _reconfigure(name: str, fn) -> None:
         """Run one post-update reconfigure; a failure becomes a warning naming the step.
@@ -102,6 +129,61 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
         _reconfigure("reload_tracking_params", reload_tracking_params)
 
     return {"updated": updated, "warnings": warnings}
+
+
+def _require_owner(db):
+    if not acct_settings.is_owner_caller(db):
+        raise HTTPException(status_code=403, detail="Only the account owner can change section policies")
+
+
+@router.get("/policies")
+def get_policies(db: Session = Depends(get_db)):
+    """Owner only: every member's effective mode per 'policy' section, `{account_id: {section: mode}}`."""
+    _require_owner(db)
+    from backend.accounts.context import unscoped
+    with unscoped():
+        members = db.query(Account.id).filter(Account.role != "owner").all()
+    out = {}
+    for (acc_id,) in members:
+        out[str(acc_id)] = {
+            sid: acct_settings.section_mode(db, acc_id, sid)
+            for sid, sec in acct_settings.SETTING_SECTIONS.items()
+            if sec["scope"] == acct_settings.POLICY
+        }
+    return out
+
+
+@router.patch("/policies")
+def update_policy(body: dict, db: Session = Depends(get_db)):
+    """Owner only: set one member's mode for one 'policy' section. Body `{account_id, section, mode}` with mode 'inherit' | 'own'. A member's own values are kept when a section goes back to inherit (they apply again if it is flipped to own)."""
+    _require_owner(db)
+    body = body or {}
+    section = body.get("section")
+    mode = body.get("mode")
+    sec = acct_settings.SETTING_SECTIONS.get(section) if isinstance(section, str) else None
+    if sec is None:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {section!r}")
+    if sec["scope"] != acct_settings.POLICY:
+        raise HTTPException(status_code=400, detail=f"Section {section!r} is {sec['scope']}; it has no policy")
+    if mode not in acct_settings.POLICY_MODES:
+        raise HTTPException(status_code=400, detail="mode must be 'inherit' or 'own'")
+    try:
+        acc_id = uuid.UUID(str(body.get("account_id")))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="account_id must be an account id")
+    account = db.query(Account).filter(Account.id == acc_id).first()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.role == "owner":
+        raise HTTPException(status_code=400, detail="The owner's values are the install values; policies apply to members")
+    row = (db.query(SectionPolicy)
+           .filter(SectionPolicy.account_id == acc_id, SectionPolicy.section == section).first())
+    if row is None:
+        db.add(SectionPolicy(account_id=acc_id, section=section, mode=mode))
+    else:
+        row.mode = mode
+    db.commit()
+    return {"account_id": str(acc_id), "section": section, "mode": mode}
 
 
 @router.get("/defaults")

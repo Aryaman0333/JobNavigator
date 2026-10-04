@@ -7,7 +7,8 @@ import time
 from backend.analyzer.llm_client import call_llm
 from backend.analyzer.llm_logger import log_llm_call
 from backend.analyzer.model_json import UNPARSEABLE_MESSAGE, parse_model_json
-from backend.models.db import SessionLocal, Job, Setting
+from backend.models.db import SessionLocal, Job
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.cv_scorer")
 
@@ -164,12 +165,13 @@ def _get_resume_texts(db) -> dict:
 def _get_default_resume(db) -> dict:
     """Return {Resume.name: flat_text} for the default Resume (special id 'persona' returns persona text); empty dict if not set or not found."""
     from backend.models.db import Resume
-    row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-    if not row or not row.value:
+    # Résumé query is account-scoped: an id from another account finds nothing.
+    default_id = get_setting(db, "default_resume_id")
+    if not default_id:
         return {}
-    if row.value == _PERSONA_KEY:
+    if default_id == _PERSONA_KEY:
         return _get_persona_text(db)
-    r = db.query(Resume).filter(Resume.id == row.value, Resume.is_base == True).first()
+    r = db.query(Resume).filter(Resume.id == default_id, Resume.is_base == True).first()
     if not r:
         return {}
     text = _flatten_resume(r.json_data or {})
@@ -331,11 +333,9 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
     # Read prompts + model from settings (quick DB read, released immediately)
     settings_db = db or SessionLocal()
     try:
-        rubric_row = settings_db.query(Setting).filter(Setting.key == "scoring_rubric").first()
-        rubric = rubric_row.value if rubric_row and rubric_row.value else ""
+        rubric = get_setting(settings_db, "scoring_rubric") or ""
         schema_key = "scoring_output_full" if depth == "full" else "scoring_output_light"
-        schema_row = settings_db.query(Setting).filter(Setting.key == schema_key).first()
-        output_schema = schema_row.value if schema_row and schema_row.value else ""
+        output_schema = get_setting(settings_db, schema_key) or ""
         # Scoring can override the Primary model (empty = use Primary); the Fallback
         # is applied inside call_llm regardless, which reports the pair that answered.
         from backend.analyzer.llm_client import resolve_llm_config
@@ -344,8 +344,7 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
         model_for_log = _cfg["model"]
         scoring_api_key = _cfg["api_key"]
         scoring_effort = _cfg["effort"]
-        cache_row = settings_db.query(Setting).filter(Setting.key == "prompt_caching_enabled").first()
-        caching_enabled = (cache_row.value if cache_row else "true").strip().lower() == "true"
+        caching_enabled = get_setting(settings_db, "prompt_caching_enabled", "true").strip().lower() == "true"
     finally:
         if not db:
             settings_db.close()
@@ -550,10 +549,8 @@ async def analyze_unscored_jobs(status: str = "saved"):
             auto_score_filter = or_(*conditions)
 
         # Per-run constants -- hoisted out of the per-job loop (were re-queried per job)
-        default_depth_row = db.query(Setting).filter(Setting.key == "scoring_default_depth").first()
-        default_depth = default_depth_row.value if default_depth_row and default_depth_row.value else "light"
-        threshold_row = db.query(Setting).filter(Setting.key == "fit_score_threshold").first()
-        alert_threshold = int(threshold_row.value) if threshold_row else 60
+        default_depth = get_setting(db, "scoring_default_depth") or "light"
+        alert_threshold = int(get_setting(db, "fit_score_threshold", "60"))
     finally:
         db.close()
 

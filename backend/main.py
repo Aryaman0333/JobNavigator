@@ -7,7 +7,8 @@ from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.models.db import create_tables, SessionLocal, Setting, JobRun
+from backend.models.db import create_tables, SessionLocal, JobRun
+from backend.accounts.settings import get_install_setting, install_row
 from backend.seed import run_seeds
 from backend.config import INITIAL_API_KEY, TELEGRAM_BOT_TOKEN
 from backend.job_monitor import launch_background, JobAlreadyRunningError, get_all_running, is_running, _get_running_by_job_type, cleanup_stale_runs, sanitize_run_error
@@ -44,7 +45,7 @@ async def lifespan(app: FastAPI):
     # Set initial API key if dashboard_api_key is empty
     db = SessionLocal()
     try:
-        setting = db.query(Setting).filter(Setting.key == "dashboard_api_key").first()
+        setting = install_row(db, "dashboard_api_key")
         if setting and not setting.value:
             setting.value = INITIAL_API_KEY
             db.commit()
@@ -177,11 +178,10 @@ async def _api_key_auth(request: Request, call_next):
     db = SessionLocal()
     try:
         try:
-            setting = db.query(Setting).filter(Setting.key == "dashboard_api_key").first()
+            expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
         except _PoolTimeout:
             logger.warning("DB pool exhausted while authenticating %s", request.url.path)
             return _pool_busy_response()
-        expected = setting.value if setting else INITIAL_API_KEY
         # First-run: no key configured → allow everything
         if not expected:
             # WARNING-level so operators see this in logs when they shouldn't (e.g.,
@@ -272,8 +272,7 @@ async def verify_api_key(body: dict, request: Request):
         api_key = ""
     db = SessionLocal()
     try:
-        setting = db.query(Setting).filter(Setting.key == "dashboard_api_key").first()
-        expected = setting.value if setting else INITIAL_API_KEY
+        expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
         if not expected:
             return {"ok": True, "first_run": True}
         if not api_key or not _hmac.compare_digest(api_key, expected):
@@ -297,8 +296,7 @@ async def set_session(body: dict, response: _Response, request: Request):
         api_key = ""
     db = SessionLocal()
     try:
-        setting = db.query(Setting).filter(Setting.key == "dashboard_api_key").first()
-        expected = setting.value if setting else INITIAL_API_KEY
+        expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
         if expected and (not api_key or not _hmac.compare_digest(api_key, expected)):
             _auth_record_failure(request)
             raise HTTPException(status_code=401, detail="Invalid API key")
@@ -873,8 +871,7 @@ async def telegram_webhook(update: dict, request: Request):
     import hmac as _hmac
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "telegram_webhook_secret").first()
-        expected = (row.value or "").strip() if row else ""
+        expected = (get_install_setting(db, "telegram_webhook_secret") or "").strip()
     finally:
         db.close()
     if not expected:

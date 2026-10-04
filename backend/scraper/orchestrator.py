@@ -14,7 +14,6 @@ from backend.models.db import (
     Company,
     Job,
     ScrapeLog,
-    Setting,
 )
 
 logger = logging.getLogger("jobnavigator.scraper.orchestrator")
@@ -76,8 +75,8 @@ async def run_company(company: Company, shared_browser=None) -> dict:
 # ── Internal helpers ────────────────────────────────────────────────────────
 
 def _get_setting_value(db, key: str, default: str = "") -> str:
-    row = db.query(Setting).filter(Setting.key == key).first()
-    return row.value if row else default
+    from backend.accounts.settings import get_setting
+    return get_setting(db, key, default)
 
 
 # ── Per-source outcome helpers ───────────────────────────────────────────────

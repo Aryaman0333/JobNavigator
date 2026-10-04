@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from backend.accounts.context import current_account, owner_account_id, owner_context
-from backend.models.db import SessionLocal, JobRun, Setting
+from backend.models.db import SessionLocal, JobRun
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.monitor")
 
@@ -98,8 +99,8 @@ def _resolve_limit(name: str) -> int:
     try:
         db = SessionLocal()
         try:
-            row = db.query(Setting).filter(Setting.key == setting_key).first()
-            return max(1, int(row.value)) if row and row.value else fallback
+            raw = get_setting(db, setting_key)
+            return max(1, int(raw)) if raw else fallback
         finally:
             db.close()
     except Exception:

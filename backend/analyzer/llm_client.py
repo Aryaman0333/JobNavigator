@@ -3,7 +3,8 @@ import asyncio
 import logging
 import os
 import re
-from backend.models.db import SessionLocal, Setting
+from backend.models.db import SessionLocal
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.llm")
 
@@ -29,8 +30,7 @@ _CAPPED_PROVIDERS = ("claude_api", "openai", "openrouter")
 
 
 def _get_setting(db, key, default=""):
-    row = db.query(Setting).filter(Setting.key == key).first()
-    return row.value if row and row.value else default
+    return get_setting(db, key) or default
 
 
 def resolve_llm_config(feature: str = "", db=None) -> dict:

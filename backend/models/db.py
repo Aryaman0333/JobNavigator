@@ -85,11 +85,36 @@ def _account_fk():
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 class Setting(Base):
+    """A setting value. account_id NULL = the install value (what the owner edits); a row
+    with an account_id is that member's own value (MT-9). Not AccountScoped on purpose:
+    reads must reach the install row, so they all go through
+    backend.accounts.settings.get_setting, which picks the row explicitly."""
     __tablename__ = "settings"
+    __table_args__ = (
+        # One install row per key, one row per (account, key). Partial indexes because a
+        # plain UNIQUE(key, account_id) lets any number of NULL-account rows through.
+        Index("uq_settings_install_key", "key", unique=True,
+              postgresql_where=text("account_id IS NULL"), sqlite_where=text("account_id IS NULL")),
+        Index("uq_settings_account_key", "account_id", "key", unique=True,
+              postgresql_where=text("account_id IS NOT NULL"), sqlite_where=text("account_id IS NOT NULL")),
+    )
 
-    key = Column(String, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String, nullable=False)
     value = Column(Text, nullable=False)
     description = Column(String, nullable=True)
+    account_id = _account_fk()
+
+
+class SectionPolicy(Base):
+    """Per member, whether a 'policy' settings section inherits the install value or keeps
+    the member's own (MT-9). No row = the section's default (SETTING_SECTIONS)."""
+    __tablename__ = "section_policies"
+
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"),
+                        primary_key=True)
+    section = Column(String, primary_key=True)
+    mode = Column(String, nullable=False)  # inherit | own
 
 
 # ── Searches ─────────────────────────────────────────────────────────────────
@@ -665,10 +690,11 @@ def get_company_all_names(db) -> dict:
 def get_global_title_exclude(db) -> list:
     """Load global title exclude keywords from settings."""
     import json as _json
-    row = db.query(Setting).filter(Setting.key == "title_exclude_global").first()
-    if row and row.value:
+    from backend.accounts.settings import get_setting
+    raw = get_setting(db, "title_exclude_global")
+    if raw:
         try:
-            return _json.loads(row.value)
+            return _json.loads(raw)
         except _json.JSONDecodeError:
             pass
     return []

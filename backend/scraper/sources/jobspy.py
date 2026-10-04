@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.countries import DEFAULT_COUNTRY, compose_location
-from backend.models.db import SessionLocal, Search, Job, Setting, get_existing_external_ids
+from backend.models.db import SessionLocal, Search, Job, get_existing_external_ids
+from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 
 logger = logging.getLogger("jobnavigator.scraper.sources.jobspy")
@@ -228,8 +229,7 @@ def _count_returned(breakdown: dict, jobs_df) -> dict:
 
 def get_setting_value(db: Session, key: str, default: str = "") -> str:
     """Read a single Setting row's value by key, returning ``default`` if not set."""
-    row = db.query(Setting).filter(Setting.key == key).first()
-    return row.value if row else default
+    return get_setting(db, key, default)
 
 
 def apply_title_filters(jobs_df, include_keywords: list, exclude_keywords: list):

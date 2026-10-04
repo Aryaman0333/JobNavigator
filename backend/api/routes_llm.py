@@ -5,7 +5,8 @@ import time
 import logging
 import httpx
 from fastapi import APIRouter, HTTPException
-from backend.models.db import SessionLocal, Setting
+from backend.models.db import SessionLocal
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.llm")
 router = APIRouter(prefix="/llm", tags=["settings"])
@@ -26,8 +27,7 @@ _ENV_KEY = {"openai": "OPENAI_API_KEY", "claude_api": "ANTHROPIC_API_KEY"}
 
 
 def _get(db, key: str) -> str:
-    row = db.query(Setting).filter(Setting.key == key).first()
-    return (row.value or "") if row else ""
+    return get_setting(db, key) or ""
 
 
 def _resolve_key(db, provider: str) -> str:

@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from backend.countries import (DEFAULT_COUNTRY, compose_location, normalize_country,
                                split_country_suffix, supported_countries)
-from backend.models.db import get_db, Search, Setting, ScrapeLog, Job, is_acknowledged
+from backend.models.db import get_db, Search, ScrapeLog, Job, is_acknowledged
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.routes_searches")
 
@@ -304,8 +305,7 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
     if not sources:
         raise HTTPException(status_code=400, detail="No JobSpy sources configured")
 
-    proxy_row = db.query(Setting).filter(Setting.key == "proxy_url").first()
-    proxy_url = proxy_row.value if proxy_row and proxy_row.value else None
+    proxy_url = get_setting(db, "proxy_url") or None
 
     kwargs = {
         "site_name": sources,
@@ -435,11 +435,11 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
                 global_hits[idx] = matched_global
                 mask[idx] = False
 
-    body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+    body_raw = get_setting(db, "body_exclusion_phrases")
     body_phrases = []
-    if body_row and body_row.value:
+    if body_raw:
         try:
-            body_phrases = json.loads(body_row.value)
+            body_phrases = json.loads(body_raw)
         except json.JSONDecodeError:
             pass
     # Record which phrase hit (and which rows couldn't be checked at all) so each row can report it inline.
@@ -657,18 +657,17 @@ async def _test_levelsfyi_search(search, db):
     exclude_kw = search.title_exclude_keywords or []
     company_filter = search.company_filter or []
 
-    from backend.models.db import Setting
     import json
     from backend.scraper._shared.filters import build_search_exclude_sets
     global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
     search_exclude = list(search_exclude_set)
     all_exclude = list(global_exclude_set | search_exclude_set)
 
-    body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+    body_raw = get_setting(db, "body_exclusion_phrases")
     body_phrases = []
-    if body_row and body_row.value:
+    if body_raw:
         try:
-            body_phrases = json.loads(body_row.value)
+            body_phrases = json.loads(body_raw)
         except json.JSONDecodeError:
             pass
 

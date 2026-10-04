@@ -13,9 +13,12 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("POST", "/api/auth/logout"): "clears the install session cookie",
     ("GET", "/health"): "liveness probe, no user data",
 
-    # Install settings (account-scoped values and section policies are MT-9)
-    ("GET", "/api/settings"): "install settings table until MT-9 adds account values",
-    ("PATCH", "/api/settings"): "install settings table until MT-9; also reconfigures the scheduler",
+    # Settings (MT-9): A is the owner, whose view IS the install values; members' own rows
+    # are not AccountScoped (Setting is read explicitly), so the harness seeds none.
+    # test_mt_settings.py covers member reads/writes and that the owner never sees a
+    # member's own values. /settings/sections and /settings/policies go through the harness.
+    ("GET", "/api/settings"): "owner = install values; member/own-row isolation in test_mt_settings.py",
+    ("PATCH", "/api/settings"): "owner writes install values + reconfigures the scheduler; member writes in test_mt_settings.py",
     ("GET", "/api/settings/defaults"): "static seed defaults",
 
     # Static catalogs

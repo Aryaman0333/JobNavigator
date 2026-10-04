@@ -8,7 +8,8 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from backend.models.db import SessionLocal, Company, Job, Setting, VisaCache
+from backend.models.db import SessionLocal, Company, Job, VisaCache
+from backend.accounts.settings import get_setting
 
 logger = logging.getLogger("jobnavigator.h1b")
 
@@ -401,10 +402,10 @@ def determine_h1b_verdict(lca_count: int, jd_flag: bool) -> str:
 
 def load_exclusion_phrases(db) -> list:
     """Read + parse the body_exclusion_phrases setting once; batch callers should call this before their job loop and pass the result into check_job_h1b to avoid re-parsing it per job."""
-    exclusion_setting = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
-    if exclusion_setting:
+    exclusion_value = get_setting(db, "body_exclusion_phrases")
+    if exclusion_value is not None:
         try:
-            return json.loads(exclusion_setting.value)
+            return json.loads(exclusion_value)
         except json.JSONDecodeError:
             pass
     return []

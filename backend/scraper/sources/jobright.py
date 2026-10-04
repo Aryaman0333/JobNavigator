@@ -10,7 +10,8 @@ import httpx
 
 from sqlalchemy.exc import IntegrityError
 
-from backend.models.db import SessionLocal, Job, Search, Setting, get_existing_external_ids
+from backend.models.db import SessionLocal, Job, Search, get_existing_external_ids
+from backend.accounts.settings import get_setting, set_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 
 logger = logging.getLogger("jobnavigator.jobright")
@@ -32,16 +33,11 @@ RETRY_BACKOFF = [15, 45, 90]  # seconds to wait on each retry
 
 
 def _get_setting(db, key, default=""):
-    row = db.query(Setting).filter(Setting.key == key).first()
-    return row.value if row else default
+    return get_setting(db, key, default)
 
 
 def _save_setting(db, key, value):
-    row = db.query(Setting).filter(Setting.key == key).first()
-    if row:
-        row.value = value
-    else:
-        db.add(Setting(key=key, value=value))
+    set_setting(db, key, value)
     db.commit()
 
 
@@ -610,11 +606,11 @@ async def preview(search, db) -> dict:
         all_exclude = list(global_exclude_set | search_exclude_set)
 
         # Body exclusion phrases (H-1B + language)
-        body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+        body_raw = get_setting(db, "body_exclusion_phrases")
         body_phrases = []
-        if body_row and body_row.value:
+        if body_raw:
             try:
-                body_phrases = json.loads(body_row.value)
+                body_phrases = json.loads(body_raw)
             except json.JSONDecodeError:
                 pass
 

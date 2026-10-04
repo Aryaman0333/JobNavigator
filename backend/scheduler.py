@@ -19,7 +19,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from backend.accounts.background import for_each_account, gmail_account_ids
 from backend.accounts.context import as_owner
-from backend.models.db import SessionLocal, Setting
+from backend.models.db import SessionLocal
+from backend.accounts.settings import get_setting as _get_setting
 
 logger = logging.getLogger("jobnavigator.scheduler")
 
@@ -27,11 +28,8 @@ scheduler = AsyncIOScheduler()
 
 
 def get_setting(db, key, default=None):
-    """Read a setting value from DB."""
-    row = db.query(Setting).filter(Setting.key == key).first()
-    if row:
-        return row.value
-    return default
+    """Read a setting value from DB (as the current account sees it)."""
+    return _get_setting(db, key, default)
 
 
 def _int_setting(db, key: str) -> int:
@@ -305,8 +303,7 @@ async def _auto_reject_for_account():
         async with tracked_run("auto_reject", "scheduler") as run:
             db = SessionLocal()
             try:
-                setting = db.query(Setting).filter(Setting.key == "auto_reject_after_days").first()
-                days = int(setting.value) if setting and setting.value else 0
+                days = int(get_setting(db, "auto_reject_after_days") or 0)
                 if days <= 0:
                     return
 
@@ -344,8 +341,7 @@ async def _job_cleanup_for_account():
         async with tracked_run("job_cleanup", "scheduler") as run:
             db = SessionLocal()
             try:
-                setting = db.query(Setting).filter(Setting.key == "job_archive_after_days").first()
-                days = int(setting.value) if setting and setting.value else 0
+                days = int(get_setting(db, "job_archive_after_days") or 0)
                 if days <= 0:
                     return
 

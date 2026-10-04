@@ -25,12 +25,12 @@ def _creds():
     """(email, password, missing-message, use_mock) for the account the refresh signs in with.
     `linkedin_use_mock_account` picks the mock account or the personal one; unset, it
     follows whether a mock email exists."""
-    from backend.models.db import SessionLocal, Setting
+    from backend.models.db import SessionLocal
+    from backend.accounts.settings import get_setting
     db = SessionLocal()
     try:
         def g(k):
-            r = db.query(Setting).filter(Setting.key == k).first()
-            return (r.value if r else "") or ""
+            return get_setting(db, k) or ""
         switch = g("linkedin_use_mock_account").strip().lower()
         if (switch or ("true" if g("linkedin_mock_email").strip() else "false")) == "true":
             return (g("linkedin_mock_email").strip(), g("linkedin_mock_password").strip(),

@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.exc import IntegrityError
 
-from backend.models.db import SessionLocal, Job, Search, Setting, get_existing_external_ids
+from backend.models.db import SessionLocal, Job, Search, get_existing_external_ids
+from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 
 logger = logging.getLogger("jobnavigator.linkedin")
@@ -712,10 +713,8 @@ async def run(search: Search) -> dict:
     try:
         db_settings = SessionLocal()
         try:
-            email_row = db_settings.query(Setting).filter(Setting.key == "linkedin_email").first()
-            pass_row = db_settings.query(Setting).filter(Setting.key == "linkedin_password").first()
-            email = email_row.value if email_row else ""
-            password = pass_row.value if pass_row else ""
+            email = get_setting(db_settings, "linkedin_email", "")
+            password = get_setting(db_settings, "linkedin_password", "")
         finally:
             db_settings.close()
 
@@ -923,10 +922,8 @@ async def preview(search, db) -> dict:
 
     # --- Phase 1: Browser setup + login ---
     try:
-        email_row = db.query(Setting).filter(Setting.key == "linkedin_email").first()
-        pass_row = db.query(Setting).filter(Setting.key == "linkedin_password").first()
-        email = email_row.value if email_row else ""
-        password = pass_row.value if pass_row else ""
+        email = get_setting(db, "linkedin_email", "")
+        password = get_setting(db, "linkedin_password", "")
 
         collections_to_scrape = search.sources or ["recommended", "top-applicant"]
         collections_to_scrape = [c for c in collections_to_scrape if c in ALL_COLLECTIONS]
@@ -977,18 +974,18 @@ async def preview(search, db) -> dict:
         include_kw = search.title_include_keywords or []
         exclude_kw = list(set((search.title_exclude_keywords or []) + _global_title_excl))
 
-        global_exclude_row = db.query(Setting).filter(Setting.key == "company_exclude_global").first()
-        global_exclude = json.loads(global_exclude_row.value) if global_exclude_row and global_exclude_row.value else []
+        global_exclude_raw = get_setting(db, "company_exclude_global")
+        global_exclude = json.loads(global_exclude_raw) if global_exclude_raw else []
         global_exclude_set = {e.lower() for e in global_exclude}
         search_exclude = [e.lower() for e in (search.company_exclude or [])]
         search_exclude_set = set(search_exclude)
         all_exclude = list(global_exclude_set | search_exclude_set)
 
-        body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+        body_raw = get_setting(db, "body_exclusion_phrases")
         body_phrases = []
-        if body_row and body_row.value:
+        if body_raw:
             try:
-                body_phrases = json.loads(body_row.value)
+                body_phrases = json.loads(body_raw)
             except json.JSONDecodeError:
                 pass
 

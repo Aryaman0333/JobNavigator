@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from backend.models.db import get_db, Company, Job, Application, Setting, ScrapeLog, is_acknowledged
+from backend.models.db import get_db, Company, Job, Application, ScrapeLog, is_acknowledged
+from backend.accounts.settings import default_resume_ids as _default_resume_ids
 
 logger = logging.getLogger("jobnavigator.companies")
 
@@ -294,8 +295,7 @@ def delete_company(company_id: str, db: Session = Depends(get_db)):
 @router.post("/auto-create-from-jobs")
 def auto_create_from_jobs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Scan all Job.company distinct values and create inactive Company records for unmatched names."""
-    default_resume_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-    default_resume_ids = [default_resume_row.value] if default_resume_row and default_resume_row.value else []
+    default_resume_ids = _default_resume_ids(db)
 
     from backend.models.db import get_company_all_names
     existing = set(get_company_all_names(db).keys())

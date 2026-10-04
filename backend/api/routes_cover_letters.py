@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from backend.accounts.owned import get_owned_or_404, get_persona, owned_id_or_404
-from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
+from backend.models.db import get_db, CoverLetter, Resume, Job, Persona, TracerLink, TracerClickEvent, SessionLocal
+from backend.accounts.settings import get_setting
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
 from backend.api.routes_resumes import _get_browser, _rewrite_urls_with_tracers, _resolve_tailoring_jd  # shared with resumes
@@ -347,8 +348,7 @@ async def generate_cover_letter(body: dict, db: Session = Depends(get_db)):
     if not ((job.description or "").strip() or (job.url or "").strip() or (job.cached_page_text or "").strip()):
         raise HTTPException(400, "Job has no description, URL, or cached page to write from")
 
-    prompt_row = db.query(Setting).filter(Setting.key == "cover_letter_prompt").first()
-    if not prompt_row or not (prompt_row.value or "").strip():
+    if not (get_setting(db, "cover_letter_prompt") or "").strip():
         raise HTTPException(500, "cover_letter_prompt setting is empty — configure it in Settings")
 
     # Regenerating scopes to the letter, so rewriting one draft never blocks
@@ -433,7 +433,7 @@ async def _generate_inner(resume_id, job_id, voice, length, template, page_forma
             base_page_format = resume.page_format
             stored_resume_id = resume_id
 
-        prompt_template = db.query(Setting).filter(Setting.key == "cover_letter_prompt").first().value
+        prompt_template = get_setting(db, "cover_letter_prompt")
         voice_id, voice_instruction = resolve_voice_instruction(db, voice)
         preferences = (persona.preferences if persona else {}) or {}
 

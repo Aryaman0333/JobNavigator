@@ -12,9 +12,10 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 
 from backend.models.db import (
-    SessionLocal, Job, Search, Setting, get_existing_external_ids,
+    SessionLocal, Job, Search, get_existing_external_ids,
     get_global_title_exclude, find_company_by_name,
 )
+from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
@@ -260,11 +261,11 @@ async def preview(search: Search, db) -> dict:
         all_exclude = list(global_exclude_set | search_exclude_set)
 
         import json
-        body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+        body_raw = get_setting(db, "body_exclusion_phrases")
         body_phrases = []
-        if body_row and body_row.value:
+        if body_raw:
             try:
-                body_phrases = json.loads(body_row.value)
+                body_phrases = json.loads(body_raw)
             except json.JSONDecodeError:
                 pass
 

@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 import httpx
 
 from backend.config import GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
-from backend.models.db import SessionLocal, Setting, Application
+from backend.models.db import SessionLocal, Application
+from backend.accounts.settings import get_setting, set_setting
 from backend.email_monitor.response_parser import classify_email
 
 logger = logging.getLogger("jobnavigator.gmail")
@@ -52,10 +53,10 @@ def _extract_email_domain(from_header: str) -> str:
 
 def _load_processed_ids(db) -> set:
     """Load previously processed Gmail message IDs from settings."""
-    row = db.query(Setting).filter(Setting.key == "gmail_processed_ids").first()
-    if row and row.value:
+    raw = get_setting(db, "gmail_processed_ids")
+    if raw:
         try:
-            return set(json.loads(row.value))
+            return set(json.loads(raw))
         except (json.JSONDecodeError, TypeError):
             pass
     return set()
@@ -64,12 +65,8 @@ def _load_processed_ids(db) -> set:
 def _save_processed_ids(db, processed_ids: set):
     """Save processed Gmail message IDs to settings (keep last 500)."""
     id_list = list(processed_ids)[-500:]
-    row = db.query(Setting).filter(Setting.key == "gmail_processed_ids").first()
-    if row:
-        row.value = json.dumps(id_list)
-    else:
-        db.add(Setting(key="gmail_processed_ids", value=json.dumps(id_list),
-                        description="Processed Gmail message IDs for dedup (auto-managed)"))
+    set_setting(db, "gmail_processed_ids", json.dumps(id_list),
+                description="Processed Gmail message IDs for dedup (auto-managed)")
     db.commit()
 
 
@@ -77,11 +74,11 @@ def _build_gmail_query(db) -> str:
     """Build Gmail search query from settings — sender patterns + subject keywords + exclusions."""
     import json as _json
 
-    senders_row = db.query(Setting).filter(Setting.key == "email_gmail_query_senders").first()
+    senders_raw = get_setting(db, "email_gmail_query_senders")
     sender_patterns = []
-    if senders_row and senders_row.value:
+    if senders_raw:
         try:
-            sender_patterns = _json.loads(senders_row.value)
+            sender_patterns = _json.loads(senders_raw)
         except _json.JSONDecodeError:
             pass
     sender_parts = []
@@ -91,20 +88,20 @@ def _build_gmail_query(db) -> str:
         else:
             sender_parts.append(f'from:"{s}"')
 
-    subjects_row = db.query(Setting).filter(Setting.key == "email_gmail_query_subjects").first()
+    subjects_raw = get_setting(db, "email_gmail_query_subjects")
     subject_terms = []
-    if subjects_row and subjects_row.value:
+    if subjects_raw:
         try:
-            subject_terms = _json.loads(subjects_row.value)
+            subject_terms = _json.loads(subjects_raw)
         except _json.JSONDecodeError:
             pass
     subject_parts = [f'subject:"{s}"' for s in subject_terms]
 
-    exclusions_row = db.query(Setting).filter(Setting.key == "email_gmail_query_exclusions").first()
+    exclusions_raw = get_setting(db, "email_gmail_query_exclusions")
     exclusion_terms = []
-    if exclusions_row and exclusions_row.value:
+    if exclusions_raw:
         try:
-            exclusion_terms = _json.loads(exclusions_row.value)
+            exclusion_terms = _json.loads(exclusions_raw)
         except _json.JSONDecodeError:
             pass
     exclusion_parts = [f'-subject:"{e}"' for e in exclusion_terms]
@@ -279,8 +276,7 @@ async def check_emails():
                 await asyncio.sleep(2)  # Rate limit between LLM calls
 
                 if llm_result:
-                    threshold_row = db.query(Setting).filter(Setting.key == "email_llm_confidence_threshold").first()
-                    threshold = int(threshold_row.value) if threshold_row and threshold_row.value else 70
+                    threshold = int(get_setting(db, "email_llm_confidence_threshold") or 70)
 
                     if llm_result["confidence"] >= threshold and llm_result["status"] != "no_change":
                         match_idx = llm_result.get("match_index")

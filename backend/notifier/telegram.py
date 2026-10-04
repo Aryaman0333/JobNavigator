@@ -6,7 +6,8 @@ from datetime import datetime, timezone, timedelta
 import httpx
 
 from backend.config import TELEGRAM_BOT_TOKEN
-from backend.models.db import SessionLocal, Setting, Job, Application
+from backend.models.db import SessionLocal, Job, Application
+from backend.accounts.settings import get_install_setting, get_setting, put_setting
 
 logger = logging.getLogger("jobnavigator.telegram")
 
@@ -26,8 +27,7 @@ def _get_chat_id() -> str:
     """Read chat_id from settings table."""
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "telegram_chat_id").first()
-        return row.value if row and row.value else ""
+        return get_setting(db, "telegram_chat_id") or ""
     finally:
         db.close()
 
@@ -36,8 +36,8 @@ def _is_enabled() -> bool:
     """Check if Telegram is enabled in settings."""
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "telegram_enabled").first()
-        return row.value.lower() == "true" if row else True
+        value = get_setting(db, "telegram_enabled")
+        return value.lower() == "true" if value is not None else True
     finally:
         db.close()
 
@@ -72,8 +72,7 @@ def _get_webhook_secret() -> str:
     """Read the webhook secret from settings. Returns empty string if missing."""
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "telegram_webhook_secret").first()
-        return (row.value or "").strip() if row else ""
+        return (get_install_setting(db, "telegram_webhook_secret") or "").strip()
     finally:
         db.close()
 
@@ -107,16 +106,9 @@ def rotate_webhook_secret() -> str:
     new_value = _secrets.token_urlsafe(32)
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "telegram_webhook_secret").first()
-        if row is None:
-            row = Setting(
-                key="telegram_webhook_secret",
-                value=new_value,
-                description="Auto-generated secret token validated on every /api/telegram/webhook call.",
-            )
-            db.add(row)
-        else:
-            row.value = new_value
+        # The bot's secret is an install value (owner-only section), whoever rotates it.
+        put_setting(db, "telegram_webhook_secret", new_value, account_id=None,
+                    description="Auto-generated secret token validated on every /api/telegram/webhook call.")
         db.commit()
     finally:
         db.close()
@@ -259,8 +251,7 @@ async def send_digest():
         ).count()
 
         # Strong matches (score >= threshold)
-        threshold_row = db.query(Setting).filter(Setting.key == "fit_score_threshold").first()
-        threshold = int(threshold_row.value) if threshold_row else 60
+        threshold = int(get_setting(db, "fit_score_threshold", "60"))
 
         from sqlalchemy import text as sa_text
         strong = db.query(Job).filter(

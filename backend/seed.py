@@ -3,6 +3,7 @@ import logging
 import json
 import secrets
 from backend.models.db import SessionLocal, Setting, Company, Search, Resume
+from backend.accounts.settings import install_row
 from sqlalchemy import text
 from backend.analyzer.llm_client import REASONING_EFFORTS
 
@@ -514,7 +515,7 @@ SEED_COMPANIES = [
 
 def seed_settings(db):
     """Insert default settings if they don't exist."""
-    existing = {s.key for s in db.query(Setting).all()}
+    existing = {s.key for s in db.query(Setting).filter(Setting.account_id.is_(None)).all()}
     for key, (value, desc) in DEFAULT_SETTINGS.items():
         if key not in existing:
             db.add(Setting(key=key, value=value, description=desc))
@@ -522,13 +523,14 @@ def seed_settings(db):
     # One-shot: a DB that already holds a mock account keeps signing in with it;
     # every other DB starts on the personal account.
     if "linkedin_use_mock_account" not in existing:
-        mock = db.query(Setting).filter(Setting.key == "linkedin_mock_email").first()
+        mock = install_row(db, "linkedin_mock_email")
         if mock is not None and (mock.value or "").strip():
-            db.query(Setting).filter(Setting.key == "linkedin_use_mock_account").update({"value": "true"})
+            db.query(Setting).filter(Setting.key == "linkedin_use_mock_account",
+                                     Setting.account_id.is_(None)).update({"value": "true"})
             db.commit()
     # One-shot: seeded empty above so the row is visible in /api/settings; the
     # real cryptographically random value is generated here on first run.
-    row = db.query(Setting).filter(Setting.key == "telegram_webhook_secret").first()
+    row = install_row(db, "telegram_webhook_secret")
     if row is not None and not (row.value or "").strip():
         row.value = secrets.token_urlsafe(32)
         db.commit()
@@ -766,6 +768,7 @@ END $$;""",
     # The account_id columns go first: every ORM query below selects them, so on an
     # existing database they must exist before any model is loaded.
     run_migration_statements(db, _account_column_statements())
+    _migrate_settings_scoping(db)
     failed = run_migration_statements(db, migrations)
 
     # The backfill reads searches.country. Without the column the SELECT raises
@@ -837,6 +840,39 @@ def _account_column_statements() -> list:
     stmts.append("ALTER TABLE scrape_log ADD COLUMN IF NOT EXISTS run_id UUID")
     stmts.append("CREATE INDEX IF NOT EXISTS ix_scrape_log_run_id ON scrape_log(run_id)")
     return stmts
+
+
+# MT-9: settings rows gain account_id (NULL = install value, every existing row) and a
+# surrogate id primary key; uniqueness moves from PRIMARY KEY(key) to one install row per
+# key + one row per (account, key). The unique indexes are built before the old key
+# primary key is dropped, so key uniqueness never lapses. Idempotent; a fresh
+# create_all() already has this shape (index names match the Setting model).
+SETTINGS_SCOPING_STATEMENTS = [
+    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES accounts(id) ON DELETE CASCADE",
+    "CREATE INDEX IF NOT EXISTS ix_settings_account_id ON settings(account_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_install_key ON settings (key) WHERE account_id IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_account_key ON settings (account_id, key) WHERE account_id IS NOT NULL",
+    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS id SERIAL",
+    """DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'settings'::regclass AND c.contype = 'p' AND a.attname = 'key'
+  ) THEN
+    ALTER TABLE settings DROP CONSTRAINT settings_pkey;
+    ALTER TABLE settings ADD CONSTRAINT settings_pkey PRIMARY KEY (id);
+  END IF;
+END $$""",
+]
+
+
+def _migrate_settings_scoping(db):
+    """Postgres only (SQLite test databases are built from the models). Runs before any
+    ORM read of settings, which selects the new columns."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    run_migration_statements(db, SETTINGS_SCOPING_STATEMENTS)
 
 
 def _owner_display_name(db) -> str:
@@ -1044,8 +1080,8 @@ def cleanup_removed_settings(db):
         "autofill_structured_trigger",
     ]
     for key in removed_keys:
-        row = db.query(Setting).filter(Setting.key == key).first()
-        if row:
+        # the install row and every account's own row
+        for row in db.query(Setting).filter(Setting.key == key).all():
             db.delete(row)
     db.commit()
 
@@ -1054,7 +1090,7 @@ def migrate_cv_terminology(db):
     """Rename 'CV'/'CVs' -> 'Resume'/'Resumes' in editable prompt-text settings; word-boundary matching leaves template tokens like CV_NAMES_HERE intact."""
     import re
     for key in ("scoring_rubric",):
-        row = db.query(Setting).filter(Setting.key == key).first()
+        row = install_row(db, key)
         if not row or not row.value:
             continue
         new = re.sub(r"\bCVs\b", "Resumes", row.value)
@@ -1068,8 +1104,8 @@ def migrate_llm_settings(db):
     """Refresh llm_models_list to current defaults, re-point openai_compat settings to openai, and rename the dated haiku model alias."""
     # Additive seed: default models are offered ONCE (tracked in llm_seeded_models);
     # after that the user's list is authoritative, but genuinely-new defaults still propagate.
-    row = db.query(Setting).filter(Setting.key == "llm_models_list").first()
-    seen_row = db.query(Setting).filter(Setting.key == "llm_seeded_models").first()
+    row = install_row(db, "llm_models_list")
+    seen_row = install_row(db, "llm_seeded_models")
     if seen_row is None:
         seen_row = Setting(key="llm_seeded_models", value="[]",
                            description="Internal: default model keys already offered, so user deletions persist across restarts")
@@ -1100,7 +1136,7 @@ def migrate_llm_settings(db):
                      "cv_tailor_llm_provider", "cover_letter_llm_provider", "autofill_llm_provider",
                      "scoring_llm_provider"]
     for key in provider_keys:
-        r = db.query(Setting).filter(Setting.key == key).first()
+        r = install_row(db, key)
         if r and r.value == "openai_compat":
             r.value = "openai"
 
@@ -1108,7 +1144,7 @@ def migrate_llm_settings(db):
                   "cv_tailor_llm_model", "cover_letter_llm_model", "autofill_llm_model",
                   "scoring_llm_model"]
     for key in model_keys:
-        r = db.query(Setting).filter(Setting.key == key).first()
+        r = install_row(db, key)
         if r and r.value == "claude-haiku-4-5-20251001":
             r.value = "claude-haiku-4-5"
 
@@ -1275,7 +1311,7 @@ def seed_mock_resume(db):
         db.commit()
         db.refresh(resume)
 
-    default_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
+    default_row = install_row(db, "default_resume_id")
     if default_row:
         default_row.value = str(resume.id)
     db.commit()
@@ -1370,7 +1406,7 @@ def migrate_h1b_to_visa_cache(db):
 def migrate_autofill_dicts(db):
     """Merge newly-added canonical keys into autofill_field_patterns/autofill_option_synonyms without clobbering the user's edits (only missing top-level keys are added)."""
     for setting_key in ("autofill_field_patterns", "autofill_option_synonyms"):
-        row = db.query(Setting).filter(Setting.key == setting_key).first()
+        row = install_row(db, setting_key)
         if not row:
             continue
         default_json = DEFAULT_SETTINGS.get(setting_key, ("{}", ""))[0]
@@ -1391,7 +1427,7 @@ def migrate_autofill_dicts(db):
 
 def migrate_dedup_tracking_params(db):
     """Take "jk" out of an already-stored `dedup_tracking_params`, since settings are seeded once and DEFAULT_SETTINGS alone won't fix an existing install."""
-    row = db.query(Setting).filter(Setting.key == "dedup_tracking_params").first()
+    row = install_row(db, "dedup_tracking_params")
     if not row or not row.value:
         return
     try:
