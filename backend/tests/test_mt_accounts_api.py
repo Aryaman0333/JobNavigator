@@ -330,6 +330,35 @@ def test_copy_qa_only_and_companies_without_resumes(client, test_db, owner, owne
     assert co.selected_resume_ids == ["persona"]                      # no résumé was copied
 
 
+def test_copied_companies_and_searches_are_due_at_once(client, test_db, owner, owner_pin):
+    """MT-12 decision on the MT-11 leftover: a copy's last-run time is cleared, so the
+    new account's first scheduled pass scrapes it (and the shared fetch feeds every
+    subscriber), instead of waiting for the source's next due run. The source keeps its own."""
+    from datetime import datetime, timedelta, timezone
+    from backend.scraper.targets import company_due, search_due
+    _owner_world(test_db, owner.id)
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with use_account(owner.id):
+        co = test_db.query(Company).filter(Company.name == "Acme").one()
+        co.last_scraped_at, co.scrape_interval_minutes = recent, 720
+        s = test_db.query(Search).filter(Search.name == "PM search").one()
+        s.last_run_at, s.run_interval_minutes = recent, 720
+        test_db.commit()
+    now = datetime.now(timezone.utc)
+    assert company_due(co, now, 60)[0] is False and search_due(s, now)[0] is False   # source: not due
+
+    new_id, _ = _create(client, "Fresh", owner.id, ["companies", "searches"])
+    (nco,) = _rows(test_db, Company, new_id)
+    nse = next(x for x in _rows(test_db, Search, new_id) if x.name == "PM search")
+    assert nco.last_scraped_at is None and nse.last_run_at is None
+    assert nco.scrape_interval_minutes == 720 and nse.run_interval_minutes == 720   # settings kept
+    assert company_due(nco, now, 60)[0] is True and search_due(nse, now)[0] is True
+    test_db.expire_all()
+    with unscoped():
+        assert test_db.query(Company).filter(Company.id == co.id).one().last_scraped_at is not None
+        assert test_db.query(Search).filter(Search.id == s.id).one().last_run_at is not None
+
+
 def test_copy_settings_from_a_member_takes_its_policies_and_own_rows(client, test_db, owner, owner_pin):
     src = _member(test_db, name="Source")
     test_db.add_all([SectionPolicy(account_id=src.id, section="models", mode="own"),

@@ -189,8 +189,11 @@ def copy_from(db, source_id, new_id, items: Iterable[str], owner_id) -> dict:
                         selected.append("persona")
                     elif str(rid) in resume_map:
                         selected.append(resume_map[str(rid)])
+                # last_scraped_at cleared (MT-12 decision): the copy is due at once, so the
+                # next scheduled pass scrapes it, and a due target's one shared fetch
+                # (MT-8) feeds every subscriber — the source company included.
                 db.add(_clone(c, Company, new_id, skip=("warning_acknowledged_at",),
-                              selected_resume_ids=selected))
+                              selected_resume_ids=selected, last_scraped_at=None))
                 n += 1
             done["companies"] = n
 
@@ -199,7 +202,8 @@ def copy_from(db, source_id, new_id, items: Iterable[str], owner_id) -> dict:
             for s in (db.query(Search).filter(Search.account_id == source_id,
                                               Search.search_mode.notin_(EXTENSION_SEARCH_MODES))
                       .order_by(Search.created_at).all()):
-                db.add(_clone(s, Search, new_id, skip=("created_at", "warning_acknowledged_at")))
+                db.add(_clone(s, Search, new_id, skip=("created_at", "warning_acknowledged_at"),
+                              last_run_at=None))   # due at once, like the companies above
                 n += 1
             done["searches"] = n
 

@@ -13,6 +13,7 @@ import ClassicPersona from './classic/Persona'
 import WhatsNewBanner from './classic/WhatsNewBanner'
 import HealthBanner from './classic/HealthBanner'
 import LoginModal from './LoginModal'
+import AccountPicker from './AccountPicker'
 import WelcomeModal from './WelcomeModal'
 import NewUiModal from './NewUiModal'
 import Shell from './Shell'
@@ -220,6 +221,22 @@ function App() {
     return () => window.removeEventListener('jn:unauthorized', handler)
   }, [])
 
+  // The account picker (MT-12). `required`: the API answered 401 account_required
+  // (several accounts, none chosen in this browser) — it cannot be dismissed.
+  // Otherwise the rail's switcher opened it on one account's PIN pad.
+  const [picker, setPicker] = useState(null)   // null | { required: true } | { account }
+  useEffect(() => {
+    const onRequired = () => setPicker((p) => (p?.required ? p : { required: true }))
+    const onPick = (e) => setPicker((p) => (p?.required ? p : { account: e.detail?.account || null }))
+    window.addEventListener('jn:account-required', onRequired)
+    window.addEventListener('jn:account-pick', onPick)
+    return () => {
+      window.removeEventListener('jn:account-required', onRequired)
+      window.removeEventListener('jn:account-pick', onPick)
+    }
+  }, [])
+  const showPicker = !!picker && !showLogin
+
   const handleLoginSuccess = () => {
     setShowLogin(false)
     window.location.reload()
@@ -274,7 +291,11 @@ function App() {
       </Routes>
 
       {showLogin && <LoginModal onSuccess={handleLoginSuccess} />}
-      {showWelcome && !showLogin && (
+      {showPicker && (
+        <AccountPicker required={!!picker.required} account={picker.account || null}
+          onClose={picker.required ? undefined : () => setPicker(null)} />
+      )}
+      {showWelcome && !showLogin && !showPicker && (
         <WelcomeModal onClose={() => {
           try { sessionStorage.removeItem('jn:welcome') } catch {}
           // durable, so the tour does not come back on the next visit
@@ -282,7 +303,7 @@ function App() {
           setShowWelcome(false)
         }} />
       )}
-      {showNewUi && !showWelcome && !showLogin && (
+      {showNewUi && !showWelcome && !showLogin && !showPicker && (
         <NewUiGate onClose={() => {
           try { localStorage.setItem(NEWUI_KEY, NEWUI_VERSION) } catch {}
           setShowNewUi(false)

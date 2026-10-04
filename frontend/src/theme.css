@@ -133,6 +133,7 @@
   --radius-mark:3px; --radius-inline:4px; --radius-mini:5px;
   --radius-field:6px; --radius-round:99px; --radius-row:7px; --radius-cell:8px; --radius-card:9px;
   --radius-menu:10px; --radius-modal:12px; --radius-control:99px;
+  --radius-avatar:var(--radius-round);
   /* buttons */
   --btn-primary-bg:var(--accent); --btn-primary-ink:var(--accent-ink);
   --btn-primary-disabled-bg:var(--line); --btn-primary-disabled-ink:var(--muted);
@@ -303,6 +304,10 @@
   --glyph-neutral-bg:var(--surface-2); --glyph-neutral-ink:var(--text-2);
   --glyph-accent-bg:var(--accent); --glyph-accent-ink:var(--accent-ink);
   --glyph-bad-bg:var(--bad); --glyph-bad-ink:var(--accent-ink);
+  /* Avatar (MT-12): the fill is the account's own colour (data, inline); the
+     initials are white on it in every theme and appearance. --avatar-bg is the
+     fallback ground for an account with no colour. */
+  --avatar-ink:#ffffff; --avatar-bg:var(--muted);
   --notice-warn-bg:var(--warn-soft); --notice-warn-border:var(--warn); --notice-warn-mark:var(--warn);
   --notice-bad-bg:var(--bad-soft); --notice-bad-border:var(--bad); --notice-bad-mark:var(--bad);
   --notice-quiet-bg:var(--recessed); --notice-quiet-border:var(--line); --notice-quiet-mark:var(--muted);
@@ -523,6 +528,7 @@
   --radius-mark:3px; --radius-inline:4px; --radius-mini:5px;
   --radius-field:6px; --radius-round:99px; --radius-row:7px; --radius-cell:8px; --radius-card:9px;
   --radius-menu:10px; --radius-modal:12px; --radius-control:99px;
+  --radius-avatar:var(--radius-round);
   /* buttons */
   --btn-primary-bg:var(--accent); --btn-primary-ink:var(--accent-ink);
   --btn-primary-disabled-bg:var(--line); --btn-primary-disabled-ink:var(--muted);
@@ -693,6 +699,10 @@
   --glyph-neutral-bg:var(--surface-2); --glyph-neutral-ink:var(--text-2);
   --glyph-accent-bg:var(--accent); --glyph-accent-ink:var(--accent-ink);
   --glyph-bad-bg:var(--bad); --glyph-bad-ink:var(--accent-ink);
+  /* Avatar (MT-12): the fill is the account's own colour (data, inline); the
+     initials are white on it in every theme and appearance. --avatar-bg is the
+     fallback ground for an account with no colour. */
+  --avatar-ink:#ffffff; --avatar-bg:var(--muted);
   --notice-warn-bg:var(--warn-soft); --notice-warn-border:var(--warn); --notice-warn-mark:var(--warn);
   --notice-bad-bg:var(--bad-soft); --notice-bad-border:var(--bad); --notice-bad-mark:var(--bad);
   --notice-quiet-bg:var(--recessed); --notice-quiet-border:var(--line); --notice-quiet-mark:var(--muted);
@@ -1505,6 +1515,7 @@
   --font-ascii:'Lucida Console','Courier New',Consolas,monospace;
   --titlebar-face:'Pixelated MS Sans Serif','Microsoft Sans Serif',Tahoma,sans-serif;
   --radius-mark:0; --radius-inline:0; --radius-mini:0; --radius-field:0; --radius-row:0; --radius-cell:0; --radius-card:0; --radius-menu:0; --radius-modal:0; --radius-control:0; --radius-rail-item:0;
+  --radius-avatar:0;   /* MT-12: 98 had no round marks; an account is a square swatch */
   --bw-hair:1px; --bw-control:1px; --bw-panel:1px;
   --shadow-modal:none; --shadow-menu:none; --shadow-pop:none; --shadow-toast:none; --shadow-drawer:none;   /* 98 had no drop shadows at all */
   --btn-shadow:none; --pill-shadow:none; --field-shadow:none; --card-shadow:none; --seg-on-shadow:none;
@@ -1734,6 +1745,7 @@
   --font-ascii:'Lucida Console','Courier New',Consolas,monospace;
   --titlebar-face:'Pixelated MS Sans Serif','Microsoft Sans Serif',Tahoma,sans-serif;
   --radius-mark:0; --radius-inline:0; --radius-mini:0; --radius-field:0; --radius-row:0; --radius-cell:0; --radius-card:0; --radius-menu:0; --radius-modal:0; --radius-control:0; --radius-rail-item:0;
+  --radius-avatar:0;   /* MT-12: 98 had no round marks; an account is a square swatch */
   --bw-hair:1px; --bw-control:1px; --bw-panel:1px;
   --shadow-modal:none; --shadow-menu:none; --shadow-pop:none; --shadow-toast:none; --shadow-drawer:none;
   --btn-shadow:none; --pill-shadow:none; --field-shadow:none; --card-shadow:none; --seg-on-shadow:none;
@@ -1995,6 +2007,21 @@
    for it is. `.v2-spin` above is untouched. */
 @keyframes v2-march { from { transform:translateX(-100%); } to { transform:translateX(var(--march-run,140px)); } }
 .v2-march { animation:v2-march var(--march-dur,1.4s) linear infinite; }
+/* MT-12 · PinPad's wrong-PIN shake: the cell row nudges sideways and settles.
+   Theme-independent like the two loaders above; reduced motion drops it. */
+@keyframes v2-shake { 0%,100% { transform:translateX(0); } 20% { transform:translateX(-6px); } 40% { transform:translateX(5px); } 60% { transform:translateX(-4px); } 80% { transform:translateX(2px); } }
+.v2-shake { animation:v2-shake .34s ease-in-out; }
+@media (prefers-reduced-motion: reduce) { .v2-shake { animation:none; } }
+/* MT-12 · Avatar on win98: the five default account colours become the 16-colour
+   palette's navy / maroon / teal / olive / purple squares (the square is
+   --radius-avatar:0 in the win98 blocks). `data-swatch` is the default colour's
+   index (ui.jsx ACCOUNT_SWATCHES); a custom colour has none and keeps its own
+   fill. !important because the account colour is an inline style. */
+.jn-v2[data-theme="win98"] .v2-avatar[data-swatch="0"] { background:#000080 !important; }
+.jn-v2[data-theme="win98"] .v2-avatar[data-swatch="1"] { background:#800000 !important; }
+.jn-v2[data-theme="win98"] .v2-avatar[data-swatch="2"] { background:#008080 !important; }
+.jn-v2[data-theme="win98"] .v2-avatar[data-swatch="3"] { background:#808000 !important; }
+.jn-v2[data-theme="win98"] .v2-avatar[data-swatch="4"] { background:#800080 !important; }
 /* beat the classic UI's global `.dark input::placeholder` (Tailwind gray-500) that bleeds in at equal specificity */
 /* A Menu is a column flex box, so a child's height is only a flex-basis: once
    the list exceeds maxHeight the browser shrinks children instead of scrolling. */

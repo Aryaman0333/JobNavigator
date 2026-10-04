@@ -4,8 +4,14 @@ import {
   Newspaper, Search, Building2, Send, FileUser, Mail,
   Fingerprint, ChartLine, Settings as SettingsIcon,
 } from 'lucide-react'
-import api from './api'
+import api, { authFailure } from './api'
 import { useTheme, themeAttrs, appearanceTitle, MODE_ICON } from './theme'
+import { Avatar, CheckGlyph, Helper, Menu, MenuHead, MenuItem, kb } from './ui'
+import { useToasts, ToastStack } from './Toast'
+import {
+  useAccounts, switchAccount, finishSwitch, openPicker, takeSwitchedNote,
+  switchShortcutIndex, roleLabel, SWITCH_MOD, MAX_SHORTCUTS,
+} from './accounts'
 import './theme.css'
 
 // App shell: dark grouped rail, 206 <-> 50px.
@@ -58,6 +64,126 @@ const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
 const sameCounts = (a, b) => COUNT_KEYS.every((k) => a[k] === b[k])
 const sameWarn = (a, b) => (a.companies || 0) === (b.companies || 0) && (a.searches || 0) === (b.searches || 0)
 const sameHealth = (a, b) => (!a && !b) || !!(a && b && a.status === b.status && a.started_at === b.started_at && a.finished_at === b.finished_at)
+
+// ── account switcher (MT-12) ────────────────────────────────────────────────
+// Rail footer row: avatar + name + role + ▴, opening a menu of the install's
+// accounts (✓ on this browser's, ⌘⇧1–5 hints), "Add account…" (owner) and
+// "Manage accounts". Collapsed rail: the avatar alone, same menu. ⌘⇧1–5 /
+// Ctrl+Shift+1–5 switch from anywhere. Renders NOTHING with one account — a
+// single-user install keeps the rail it always had, pixel for pixel.
+//
+// A switch to an account without a PIN happens here; one with a PIN opens the
+// picker overlay (App.jsx) on its PIN pad. Either way the switch ends in a reload
+// (accounts.js `finishSwitch`), and the "Switched to …" toast is raised by this
+// component on the next load. The menu and the toast stack are children of the
+// row (position: fixed), so the rail's footer rows stay adjacent siblings — the
+// win98 status band is built from `.v2-railfoot + .v2-railfoot`.
+const MENU_W = 264
+function AccountSwitcher({ open }) {
+  const navigate = useNavigate()
+  const { me, accounts, multi } = useAccounts()
+  const [menu, setMenu] = useState(null)        // { left, bottom } while open
+  const [busy, setBusy] = useState(false)
+  const trig = useRef(null)
+  const { toasts, push, dismiss } = useToasts()
+
+  useEffect(() => {
+    if (!multi) return
+    const note = takeSwitchedNote()
+    if (note) push({ kind: 'success', msg: `Switched to ${note.name}` })
+  }, [multi, push])
+
+  const switchTo = useCallback(async (a) => {
+    setMenu(null)
+    if (!a || !me || a.id === me.id || busy) return
+    if (a.has_pin) { openPicker(a); return }
+    setBusy(true)
+    try {
+      const acc = await switchAccount(a.id)
+      finishSwitch(acc || a)
+    } catch (err) {
+      const f = authFailure(err)
+      if (f && ['pin_required', 'wrong_pin', 'pin_cooldown'].includes(f.kind)) openPicker(a)
+      else if (!f) push({ kind: 'error', msg: `Could not switch to ${a.name}` })
+      setBusy(false)
+    }
+  }, [me, busy, push])
+
+  useEffect(() => {
+    if (!multi) return undefined
+    const onKey = (e) => {
+      const i = switchShortcutIndex(e)
+      if (i < 0 || i >= accounts.length) return
+      e.preventDefault()
+      switchTo(accounts[i])
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [multi, accounts, switchTo])
+
+  useEffect(() => {
+    if (!menu) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') setMenu(null) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [menu])
+
+  if (!multi) return null
+  const toggle = () => setMenu((m) => {
+    if (m) return null
+    const r = trig.current?.getBoundingClientRect()
+    if (!r) return null
+    // open rail: above the row, flush with its left edge; collapsed: beside the avatar
+    return open
+      ? { left: Math.round(r.left), bottom: Math.round(window.innerHeight - r.top + 6) }
+      : { left: Math.round(r.right + 8), bottom: Math.round(window.innerHeight - r.bottom) }
+  })
+  const go = (path) => { setMenu(null); navigate(path) }
+  const owner = me.role === 'owner'
+  return (
+    <div className="v2-railfoot v2-railacct" style={{ flex: '0 0 auto', padding: open ? '6px 8px' : '6px 0', borderTop: '1px solid var(--rail-line)', transition: 'padding .32s ease' }}>
+      <div ref={trig} onClick={toggle} {...kb(toggle)} aria-haspopup="menu" aria-expanded={menu ? 'true' : 'false'}
+        aria-label={`${me.name}, ${roleLabel(me)} — switch account`} title={open ? 'Switch account' : `${me.name} · ${roleLabel(me)}`}
+        data-account-switcher="" className="v2-navdark"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: open ? 'flex-start' : 'center', gap: 9, height: 36, padding: open ? '0 8px' : 0, cursor: 'pointer', whiteSpace: 'nowrap', color: 'var(--rail-dim)', opacity: busy ? 0.6 : 1 }}>
+        <Avatar name={me.name} color={me.color} size={22} />
+        {open && (
+          <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: 12.5, lineHeight: '16px', fontWeight: 500, color: 'var(--rail-ink)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{me.name}</span>
+            <span style={{ fontSize: 10.5, lineHeight: '14px', color: 'var(--rail-dim)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{roleLabel(me)}</span>
+          </span>
+        )}
+        {open && <span aria-hidden="true" style={{ flex: '0 0 auto', fontSize: 9, color: 'var(--rail-dim)' }}>{menu ? '▾' : '▴'}</span>}
+      </div>
+      {menu && (
+        <Menu ariaLabel="Accounts" onDismiss={() => setMenu(null)}
+          style={{ position: 'fixed', left: menu.left, bottom: menu.bottom, width: MENU_W, zIndex: 60, whiteSpace: 'normal' }}>
+          <MenuHead>Switch account</MenuHead>
+          {accounts.map((a, i) => {
+            const cur = a.id === me.id
+            return (
+              <MenuItem key={a.id} selected={cur} onClick={() => switchTo(a)}
+                hint={i < MAX_SHORTCUTS ? `${SWITCH_MOD}${i + 1}` : undefined} hintMono
+                ariaLabel={`${a.name}, ${roleLabel(a)}${cur ? ', current' : ''}`}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                  <Avatar name={a.name} color={a.color} size={20} />
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                    <Helper size="xs">{roleLabel(a)}{a.has_pin ? ' · PIN' : ''}</Helper>
+                  </span>
+                  {cur && <CheckGlyph size={11} title="Current account" />}
+                </span>
+              </MenuItem>
+            )
+          })}
+          {owner && <MenuItem icon="+" divider onClick={() => go('/settings#accounts')}>Add account…</MenuItem>}
+          <MenuItem icon="⚙" divider={!owner} hint="Settings" onClick={() => go('/settings#accounts')}>Manage accounts</MenuItem>
+        </Menu>
+      )}
+      {toasts.length > 0 && <ToastStack toasts={toasts} onClose={dismiss} />}
+    </div>
+  )
+}
 
 export default function Shell() {
   const loc = useLocation()
@@ -256,6 +382,8 @@ export default function Shell() {
             </div>
           ))}
         </nav>
+
+        <AccountSwitcher open={open} />
 
         {/* pipeline pulse — the dot yields its slot to the theme toggle when collapsed */}
         {/* tooltip promises Run history, the last card on the page — deep-link to it */}
