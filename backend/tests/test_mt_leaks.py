@@ -1,7 +1,6 @@
 """MT-3 · Leak harness: every API route, called as account A against account B's data.
 
-Accounts: A is the owner (the request context the middleware sets until MT-10 reads the
-account cookie, so no test-only hook is needed), B is a member. Both get one row of every
+Accounts: an owner and a member (see the directions below for which is A). Both get one row of every
 account-owned model (plus a JobLocation and a TracerClickEvent, and B gets a running
 monitor entry and a search test result in memory). Every text field of B's rows carries
 MARKER, so a leak shows up in list endpoints too.
@@ -22,9 +21,10 @@ each (method, route):
     recorded, never run; network, LLM, browser and JobSpy are stubbed);
   * a 5xx answer fails the case as inconclusive: an erroring route proves nothing.
 
-Requests run as A because the middleware sets the owner context (MT-2) and A is the owner;
-MT-10 will switch accounts through the session cookie and this harness should then call
-as the member as well.
+Since MT-10 every case runs in both directions through the real auth paths: the owner
+calls with the `X-Account` header (API path) against the member's rows, and the member
+calls with the signed `jn_account` cookie issued by POST /api/auth/switch (browser path)
+against the owner's rows. In each direction "A" is the caller and "B" the victim.
 
 Routes that leak today are listed in KNOWN_LEAKS and run as xfail(strict=True) with the
 batch that fixes them (MT-4 / MT-5 / MT-6): fixing a route turns its case into an XPASS,
@@ -518,9 +518,36 @@ def accounts(test_db):
     return a.id, b.id
 
 
+DIRECTIONS = ("owner-via-header", "member-via-cookie")
+
+
+def _act_as(client, direction, caller_id):
+    """Make `client` act as the caller through a real MT-10 auth path."""
+    if direction == "owner-via-header":
+        client.cookies.clear()
+        client.headers["X-Account"] = str(caller_id)
+    else:
+        client.headers.pop("X-Account", None)
+        r = client.post("/api/auth/switch", json={"account_id": str(caller_id)})
+        assert r.status_code == 200, r.text
+        assert client.cookies.get("jn_account")
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200 and me.json()["account"]["id"] == str(caller_id), me.text
+
+
+@pytest.mark.parametrize("direction", DIRECTIONS)
 @pytest.mark.parametrize("method,path", _route_cases())
-def test_route_does_not_leak_b(method, path, client, test_db, accounts, launches):
-    a_id, b_id = accounts
+def test_route_does_not_leak_b(method, path, direction, client, test_db, accounts, launches):
+    """Caller A, victim B (B's rows carry MARKER). owner-via-header: A = owner with the
+    X-Account header, B = member. member-via-cookie: A = member with the jn_account
+    cookie from POST /api/auth/switch, B = owner."""
+    owner_id, member_id = accounts
+    a_id, b_id = (owner_id, member_id) if direction == DIRECTIONS[0] else (member_id, owner_id)
+    from backend.models.db import Account
+    for acc_id, name in ((a_id, "Caller account"), (b_id, f"Victim {MARKER}")):
+        test_db.query(Account).filter(Account.id == acc_id).update({"name": name})
+    test_db.commit()
+    _act_as(client, direction, a_id)
     route = next(r for m, p, r in _api_routes() if (m, p) == (method, path))
     a_ids, b = _ids(), _ids()
     _seed(test_db, a_id, a_ids, A_TEXT, A_TOKEN, persona_id=1)

@@ -17,6 +17,8 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 _REDACT_SUFFIXES = ("_password", "_api_key", "_session_id", "_secret")
 _REDACT_KEYS = {"dashboard_api_key", "gmail_refresh_token"}
+# Server-side only, never listed (not even redacted) and not writable (not a known key).
+_HIDDEN_KEYS = {"account_cookie_secret"}
 
 
 def _is_secret(key: str) -> bool:
@@ -27,7 +29,7 @@ def _is_secret(key: str) -> bool:
 def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key section, source, editable); always on for members"),
                  db: Session = Depends(get_db)):
     """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values (the response is unchanged unless `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`."""
-    rows = acct_settings.effective_rows(db)
+    rows = [r for r in acct_settings.effective_rows(db) if r[0] not in _HIDDEN_KEYS]
     result = {}
     for key, value, _source in rows:
         # Redact secrets — return empty string if not set, "••••••" if set

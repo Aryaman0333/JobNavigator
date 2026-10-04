@@ -5,9 +5,10 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from backend.accounts.auth import require_owner
 from backend.job_monitor import launch_background, JobAlreadyRunningError
 from backend.scraper.sources.linkedin_extension import _SESSION_PATH
 
@@ -56,9 +57,9 @@ def session_status():
     }
 
 
-@router.post("/session/refresh", status_code=202)
+@router.post("/session/refresh", status_code=202, dependencies=[Depends(require_owner)])
 async def session_refresh():
-    """Start the interactive login. Poll /session until phase leaves 'running'."""
+    """Start the interactive login. Poll /session until phase leaves 'running'. Install-level until MT-16: 403 for a member."""
     from backend import refresh_linkedin_session as rls
 
     if rls.STATE.get("phase") in ("running", "awaiting_pin"):
@@ -71,9 +72,9 @@ async def session_refresh():
     return {"run_id": run_id, "status": "running"}
 
 
-@router.post("/session/pin")
+@router.post("/session/pin", dependencies=[Depends(require_owner)])
 def session_pin(body: PinIn):
-    """Hand the emailed PIN to the waiting login (it polls PIN_FILE)."""
+    """Hand the emailed PIN to the waiting login (it polls PIN_FILE). Install-level until MT-16: 403 for a member."""
     digits = "".join(c for c in (body.pin or "") if c.isdigit())
     if not digits:
         return {"ok": False, "detail": "Enter the digits from LinkedIn's email."}

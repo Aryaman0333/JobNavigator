@@ -75,6 +75,12 @@ def client(test_db, monkeypatch):
     try:
         with TestClient(app, raise_server_exceptions=False) as c:
             c.headers.update({"X-API-Key": API_KEY})
+            # MT-10: a test that adds a second account would otherwise get 401
+            # account_required; act as the owner through the API path (X-Account).
+            from backend.models.db import Account
+            owner = test_db.query(Account.id).filter(Account.role == "owner").first()
+            if owner is not None:
+                c.headers.update({"X-Account": str(owner[0])})
             yield c
     finally:
         app.dependency_overrides.pop(get_db, None)

@@ -8,9 +8,14 @@ Do not park a route here because it leaks: mark it in KNOWN_LEAKS in test_mt_lea
 
 ALLOWLIST: dict[tuple[str, str], str] = {
     # Install password and liveness
-    ("POST", "/api/auth/verify"): "install password check; the account cookie arrives in MT-10",
-    ("POST", "/api/auth/set-session"): "install password session cookie (MT-10 adds the account cookie)",
-    ("POST", "/api/auth/logout"): "clears the install session cookie",
+    ("POST", "/api/auth/verify"): "install password check (no account involved)",
+    ("POST", "/api/auth/set-session"): "install password session cookie (no account involved)",
+    ("POST", "/api/auth/logout"): "clears this browser's session + account cookies",
+    # MT-10 account selection: covered by test_mt_auth.py
+    ("GET", "/api/auth/accounts"): "the picker lists every account (id, name, colour, role, has_pin) by design",
+    ("POST", "/api/auth/switch"): "switches this browser's own cookie; PIN rules in test_mt_auth.py",
+    ("GET", "/api/auth/me"): "the caller's own account; test_mt_auth.py",
+    ("POST", "/api/auth/verify-owner-pin"): "re-signs the caller's own cookie; test_mt_auth.py",
     ("GET", "/health"): "liveness probe, no user data",
 
     # Settings (MT-9): A is the owner, whose view IS the install values; members' own rows

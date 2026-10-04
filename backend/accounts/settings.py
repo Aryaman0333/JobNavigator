@@ -89,7 +89,8 @@ _SECTIONS = [
     ("advanced", "Advanced", OWNER_ONLY, INHERIT, ["advanced"], ["proxy_url", "dashboard_api_key"]),
     # Not on the Settings screen.
     ("gmail", "Gmail", OWN_ALWAYS, OWN, [], ["gmail_processed_ids", "gmail_refresh_token"]),
-    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models"]),
+    # account_cookie_secret: HMAC key of the jn_account cookie (MT-10); never served.
+    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "account_cookie_secret"]),
 ]
 
 SETTING_SECTIONS = {

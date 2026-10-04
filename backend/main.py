@@ -1,9 +1,9 @@
 """FastAPI entry point for JobNavigator."""
 import logging
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import FastAPI, Query, Request, HTTPException
+from fastapi import Depends, FastAPI, Query, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -138,18 +138,33 @@ def _pool_busy_response() -> JSONResponse:
 
 
 # ── API Key auth middleware ──────────────────────────────────────────────────
+# MT-10: install password (X-API-Key header or jn_session cookie), then the account
+# (X-Account header with the header key, else the signed jn_account cookie, else the
+# owner when the install has one account, else 401 account_required). The rules and the
+# cookie format are documented in backend/accounts/auth.py.
 import hmac as _hmac_mw
-from backend.accounts.context import owner_context
+from backend.accounts.context import owner_context, use_account, is_unscoped
+from backend.accounts import auth as acct_auth
 
 # Paths that NEVER require auth (exact or prefix match)
 _PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/telegram/webhook", "/api/auth/set-session", "/api/auth/verify", "/api/auth/logout")
+# Need the install password but no account (the picker reads and calls these).
+_ACCOUNT_OPTIONAL = ("/api/auth/accounts", "/api/auth/switch")
+
+
+def _account_required_response(detail: str) -> JSONResponse:
+    headers = {acct_auth.AUTH_HEADER: "account"} if detail == acct_auth.ACCOUNT_REQUIRED else None
+    return JSONResponse(status_code=401, content={"detail": detail}, headers=headers)
+
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    # MT-2: every request acts for one account. Until MT-10 reads it from the session
-    # cookie that is always the owner (cached after the first lookup).
+    return await _api_key_auth(request, call_next)
+
+
+async def _as_owner(request: Request, call_next):
     with owner_context():
-        return await _api_key_auth(request, call_next)
+        return await call_next(request)
 
 
 async def _api_key_auth(request: Request, call_next):
@@ -157,20 +172,21 @@ async def _api_key_auth(request: Request, call_next):
 
     # Let CORS preflight requests pass through so CORSMiddleware can respond
     if request.method == "OPTIONS":
-        return await call_next(request)
+        return await _as_owner(request, call_next)
 
-    # Public endpoints
+    # Public endpoints (they resolve their own rows: tracer tokens are looked up unscoped)
     if any(path == p or path.startswith(p + "/") or path == p.rstrip("/") for p in _PUBLIC_PREFIXES):
-        return await call_next(request)
+        return await _as_owner(request, call_next)
     # docs subpaths
     if path.startswith("/docs"):
-        return await call_next(request)
+        return await _as_owner(request, call_next)
     # Param-style tracer links (?cv=token on root) are public, same as /cv/{token}.
     if path == "/" and request.query_params.get("cv"):
-        return await call_next(request)
+        return await _as_owner(request, call_next)
 
     # Accept either X-API-Key header (API clients, extension) OR jn_session cookie (browser)
-    api_key = request.headers.get("X-API-Key", "") or request.cookies.get("jn_session", "")
+    header_key = request.headers.get("X-API-Key", "")
+    api_key = header_key or request.cookies.get("jn_session", "")
 
     # A middleware runs outside FastAPI's exception handlers, so a pool timeout
     # here would surface as a bare connection error, not a status code. The
@@ -190,16 +206,41 @@ async def _api_key_auth(request: Request, call_next):
                 "api key BYPASS (first-run mode): path=%s — dashboard_api_key setting is empty",
                 request.url.path,
             )
-            return await call_next(request)
-        # Key configured → require match (timing-safe compare)
-        if not api_key:
-            return JSONResponse(status_code=401, content={"detail": "API key required"})
-        if not _hmac_mw.compare_digest(api_key, expected):
-            return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+            header_key_ok = True
+        else:
+            # Key configured → require match (timing-safe compare)
+            if not api_key:
+                return JSONResponse(status_code=401, content={"detail": "API key required"})
+            if not _hmac_mw.compare_digest(api_key, expected):
+                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+            header_key_ok = bool(header_key) and _hmac_mw.compare_digest(header_key, expected)
+
+        # Tests that drive the app on their own throwaway engine run unscoped (system
+        # context); production requests never arrive unscoped.
+        if is_unscoped():
+            res = None
+        else:
+            try:
+                res = acct_auth.resolve_request(
+                    db, request.headers.get("X-Account", ""), header_key_ok,
+                    request.cookies.get(acct_auth.COOKIE_NAME, ""))
+            except _PoolTimeout:
+                logger.warning("DB pool exhausted while resolving the account for %s", path)
+                return _pool_busy_response()
     finally:
         db.close()
 
-    return await call_next(request)
+    optional = path in _ACCOUNT_OPTIONAL
+    if res is not None and res.error and not (optional and res.error == acct_auth.ACCOUNT_REQUIRED):
+        return _account_required_response(res.error)
+    if res is None or res.account is None:
+        request.state.account_id = None
+        request.state.owner_unlocked_until = 0
+        return await _as_owner(request, call_next)
+    request.state.account_id = res.account["id"]
+    request.state.owner_unlocked_until = res.unlocked_until
+    with use_account(res.account["id"]):
+        return await call_next(request)
 
 
 # ── Auth endpoints (cookie session) ──────────────────────────────────────────
@@ -318,8 +359,104 @@ async def set_session(body: dict, response: _Response, request: Request):
 
 @app.post("/api/auth/logout", tags=["auth"], summary="Clear session cookie")
 async def logout(response: _Response):
+    """Clear the install session cookie and this browser's account cookie."""
     response.delete_cookie(key="jn_session", samesite="strict", httponly=True)
+    acct_auth.clear_account_cookie(response)
     return {"ok": True}
+
+
+# ── Accounts: picker, switch, owner unlock (MT-10) ───────────────────────────
+from datetime import datetime as _dt_auth, timezone as _tz_auth
+
+
+def _switch_denied(e: "acct_auth.SwitchDenied") -> JSONResponse:
+    content = {"detail": e.detail}
+    if e.tries_left is not None:
+        content["tries_left"] = e.tries_left
+    headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
+    return JSONResponse(status_code=e.status, content=content, headers=headers)
+
+
+def _epoch_iso(ts) -> Optional[str]:
+    return _dt_auth.fromtimestamp(ts, _tz_auth.utc).isoformat() if ts else None
+
+
+@app.get("/api/auth/accounts", tags=["auth"], summary="Accounts for the picker")
+def auth_accounts():
+    """Every account as {id, name, color, role, has_pin}, owner first; nothing else. Needs the install password but no account."""
+    db = SessionLocal()
+    try:
+        return [acct_auth.public_account(a) for a in acct_auth.load_accounts(db)]
+    finally:
+        db.close()
+
+
+@app.post("/api/auth/switch", tags=["auth"], summary="Switch this browser to an account")
+def auth_switch(body: dict, response: _Response):
+    """Body {account_id, pin?}. Sets the signed httpOnly `jn_account` cookie for this browser only. The owner's PIN is required once it has one; a member's PIN is optional, and the owner's PIN also opens a PIN'd member. Errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown` (+ Retry-After) after 5 wrong tries for that account (30 s)."""
+    body = body or {}
+    pin = body.get("pin")
+    if pin is not None and not isinstance(pin, str):
+        pin = str(pin)
+    db = SessionLocal()
+    try:
+        accounts = acct_auth.load_accounts(db)
+        target = acct_auth._find(accounts, body.get("account_id"))
+        if target is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+        try:
+            how = acct_auth.check_switch(accounts, target, pin)
+        except acct_auth.SwitchDenied as e:
+            logger.info("account switch denied: account=%s reason=%s", target["id"], e.detail)
+            return _switch_denied(e)
+        from backend.models.db import Account
+        row = db.query(Account).filter(Account.id == target["id"]).first()
+        if row is not None:
+            row.last_active_at = _dt_auth.now(_tz_auth.utc)
+            db.commit()
+        acct_auth.set_account_cookie(response, db, target)
+        return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
+    finally:
+        db.close()
+
+
+@app.get("/api/auth/me", tags=["auth"], summary="The account this browser acts as")
+def auth_me(request: Request):
+    """{account: {id, name, color, role, has_pin}, accounts_count, owner_unlocked_until (ISO or null)}. 401 `account_required` when the install has several accounts and this browser picked none."""
+    from backend.accounts.context import current_account
+    db = SessionLocal()
+    try:
+        accounts = acct_auth.load_accounts(db)
+        acc = acct_auth._find(accounts, current_account.get()) or acct_auth._owner_of(accounts)
+        if acc is None:
+            raise HTTPException(status_code=404, detail="No account")
+        until = getattr(request.state, "owner_unlocked_until", 0) or 0
+        return {"account": acct_auth.public_account(acc), "accounts_count": len(accounts),
+                "owner_unlocked_until": _epoch_iso(until) if until > acct_auth._now() else None}
+    finally:
+        db.close()
+
+
+@app.post("/api/auth/verify-owner-pin", tags=["auth"], summary="Unlock owner-only settings for 15 minutes")
+def auth_verify_owner_pin(body: dict, request: Request, response: _Response):
+    """Body {pin}. On the owner's PIN (or when the owner has none yet) re-issues this browser's `jn_account` cookie for the current account with `u` = now + 15 min, exposed to routes as `request.state.owner_unlocked_until`. Returns {ok, unlocked_until}. Same 401/429 contract and owner cooldown as /api/auth/switch."""
+    from backend.accounts.context import current_account
+    pin = (body or {}).get("pin")
+    if pin is not None and not isinstance(pin, str):
+        pin = str(pin)
+    db = SessionLocal()
+    try:
+        accounts = acct_auth.load_accounts(db)
+        try:
+            acct_auth.check_owner_pin(accounts, pin)
+        except acct_auth.SwitchDenied as e:
+            return _switch_denied(e)
+        acc = acct_auth._find(accounts, current_account.get()) or acct_auth._owner_of(accounts)
+        until = int(acct_auth._now() + acct_auth.OWNER_UNLOCK_SECONDS)
+        acct_auth.set_account_cookie(response, db, acc, unlocked_until=until)
+        return {"ok": True, "unlocked_until": _epoch_iso(until)}
+    finally:
+        db.close()
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -532,9 +669,10 @@ async def trigger_email_check():
         )
 
 
-@app.post("/api/h1b/refresh", tags=["triggers"], summary="Refresh H-1B data", status_code=202)
+@app.post("/api/h1b/refresh", tags=["triggers"], summary="Refresh H-1B data", status_code=202,
+          dependencies=[Depends(acct_auth.require_owner)])
 async def trigger_h1b_refresh():
-    """Scrape MyVisaJobs.com for all active companies. Returns immediately with a run_id."""
+    """Scrape MyVisaJobs.com for all active companies. Returns immediately with a run_id. Install-level: 403 for a member."""
     async def _do():
         from datetime import datetime as _dt, timezone as _tz
         from backend.models.db import VisaCache
@@ -741,9 +879,10 @@ async def trigger_backfill_descriptions():
         )
 
 
-@app.post("/api/db/backup", tags=["triggers"], summary="Run database backup", status_code=202)
+@app.post("/api/db/backup", tags=["triggers"], summary="Run database backup", status_code=202,
+          dependencies=[Depends(acct_auth.require_owner)])
 async def trigger_db_backup():
-    """Run a database backup immediately. Returns immediately with a run_id."""
+    """Run a database backup immediately. Returns immediately with a run_id. Install-level: 403 for a member."""
     async def _do():
         import subprocess, glob, os
         from datetime import datetime
