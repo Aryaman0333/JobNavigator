@@ -5,6 +5,7 @@ import logging
 import re as _re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from backend.accounts.owned import get_persona
 from backend.models.db import SessionLocal, Setting, Persona
 from backend.analyzer.llm_client import call_autofill_llm, call_autofill_llm_stream
 from backend.analyzer.model_json import first_json_object
@@ -267,7 +268,7 @@ def autofill_config():
     """Serve everything the extension needs to fill structured fields: the projected fixed answers, matching dictionaries, and the schema."""
     db = SessionLocal()
     try:
-        p = db.query(Persona).filter(Persona.id == 1).first()
+        p = get_persona(db, create=False)
         persona = {
             "contact": (p.contact if p else None) or {},
             "work_auth": (p.work_auth if p else None) or {},
@@ -306,7 +307,7 @@ def _build_autofill_prompt(body: dict, *, want_provider: bool = False) -> dict:
     provider = model = None
     db = SessionLocal()
     try:
-        persona = db.query(Persona).filter(Persona.id == 1).first()
+        persona = get_persona(db, create=False)
         len_row = db.query(Setting).filter(Setting.key == "autofill_default_length").first()
         default_len = int(len_row.value) if len_row and (len_row.value or "").isdigit() else 120
         tmpl_row = db.query(Setting).filter(Setting.key == "autofill_prompt").first()

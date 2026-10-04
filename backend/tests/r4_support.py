@@ -194,15 +194,9 @@ def make_resume(db, name="Base", is_base=True, **kw):
 
 
 def make_persona(db):
-    from backend.models.db import Persona
-    p = db.query(Persona).filter(Persona.id == 1).first()
-    if not p:
-        p = Persona(id=1, contact={}, work_auth={}, demographics={},
-                    compensation={}, preferences={}, resume_content={}, qa_bank=[])
-        db.add(p)
-        db.commit()
-        db.refresh(p)
-    return p
+    """The current account's Persona (created empty when missing)."""
+    from backend.accounts.owned import get_persona
+    return get_persona(db)
 
 
 def set_setting(db, key, value):

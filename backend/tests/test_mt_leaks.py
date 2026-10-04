@@ -64,9 +64,6 @@ def _cl_token(token):
 # ── Routes that leak today (worklist for MT-4..6; MT-PLAN.md "Unscoped call sites") ──
 # Value: "<batch>: why". Fixing a route makes its case XPASS (strict) -> delete the entry.
 KNOWN_LEAKS: dict[tuple[str, str], str] = {
-    # MT-5 · résumés, letters, persona, applications, interviews
-    ("POST", "/api/resumes"): "MT-5: body job_id / parent_id not checked against the account (A row -> B job)",
-    ("POST", "/api/cover-letters"): "MT-5: body job_id / resume_id not checked against the account",
     # MT-6 · stats, monitor, logs, tracer, autofill, LLM log, the rest
     ("GET", "/api/monitor/active"): "MT-6: in-memory _running has no account; shows B's runs",
     ("GET", "/api/monitor/in-flight"): "MT-6: in-memory _running has no account; shows B's target jobs",

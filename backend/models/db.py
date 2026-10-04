@@ -567,13 +567,14 @@ class CoverLetter(AccountScoped, Base):
 
 
 # ── Persona ──────────────────────────────────────────────────────────────────
-# One row per account. Until MT-5 scopes it, the code still treats id=1 as the only
-# row (the owner's); do not assume that in new code. contact/preferences feed tailoring + cover letter + autofill;
+# One row per account (MT-5), read through backend.accounts.owned.get_persona(), which
+# creates it on first access; never look a Persona up by id. contact/preferences feed tailoring + cover letter + autofill;
 # work_auth/demographics/compensation/qa_bank feed autofill; resume_content feeds tailoring.
 class Persona(AccountScoped, Base):
     __tablename__ = "personas"
+    __table_args__ = (UniqueConstraint("account_id", name="uq_personas_account"),)
 
-    id = Column(Integer, primary_key=True)  # 1 for the owner's row today
+    id = Column(Integer, primary_key=True)  # the owner's row is id 1 on installs older than MT-5
     account_id = _account_fk()
     contact = Column(JSON, default=dict)
     work_auth = Column(JSON, default=dict)

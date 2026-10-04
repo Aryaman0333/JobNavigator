@@ -138,9 +138,9 @@ _PERSONA_DISPLAY = "Persona"
 
 
 def _get_persona_text(db) -> dict:
-    """Return {'Persona': flattened_text} when the singleton persona has non-empty resume_content, else {} — only resume_content is used for scoring."""
-    from backend.models.db import Persona
-    p = db.query(Persona).filter(Persona.id == 1).first()
+    """Return {'Persona': flattened_text} when the current account's persona has non-empty resume_content, else {} — only resume_content is used for scoring."""
+    from backend.accounts.owned import get_persona
+    p = get_persona(db, create=False)
     if not p:
         return {}
     text = _flatten_resume(p.resume_content or {})

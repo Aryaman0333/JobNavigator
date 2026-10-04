@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.accounts.owned import get_owned_or_404, get_persona, owned_id_or_404
 from backend.models.db import get_db, Resume, TracerLink, TracerClickEvent, Setting, Job, Application, SessionLocal, utcnow, Persona
 from backend.api._input import str_field
 from backend.analyzer.model_json import UNPARSEABLE_MESSAGE, ModelReplyError, parse_model_json
@@ -332,8 +333,15 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
     style_row = db.query(Setting).filter(Setting.key == "tracer_links_url_style").first()
     url_style = style_row.value if style_row else "path"
 
+    from backend.accounts.context import resolve_account
+    my_account = resolve_account(db)
+
+    def _any_account_links():
+        # Token holder lookups only: the token namespace is install-wide.
+        return db.query(TracerLink).execution_options(jn_unscoped=True)
+
     owner_is_cl = cover_letter_id is not None
-    owner_filter = (TracerLink.cover_letter_id == cover_letter_id) if owner_is_cl \
+    owner_filter =(TracerLink.cover_letter_id == cover_letter_id) if owner_is_cl \
         else (TracerLink.resume_id == resume_id)
 
     def _new_link(token, dest_url, label):
@@ -398,8 +406,11 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
 
         # The deterministic token is a preference, never a guarantee: only a
         # job-derived {short_id}{stub} is unique by construction, so the job-less 0{stub} fallback may only be taken when nothing else holds it.
+        # Tokens are unique across the whole install (the public /cv/{token} redirect
+        # resolves any account's link), so every holder lookup sees all accounts (MT-5);
+        # a token another account holds is never repointed, only avoided.
         def _taken_by_other(tok):
-            q = db.query(TracerLink).filter(TracerLink.token == tok)
+            q = _any_account_links().filter(TracerLink.token == tok)
             if existing is not None:
                 q = q.filter(TracerLink.id != existing.id)
             return q.first()
@@ -415,7 +426,7 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
             token = existing.token
         else:
             holder = _taken_by_other(token) if token else None
-            if holder is not None and not job_short_id:
+            if holder is not None and (not job_short_id or holder.account_id != my_account):
                 # 0{stub} already belongs to a different job-less owner — taking
                 # it would break their links, so fall back to a random token.
                 token = None
@@ -433,16 +444,18 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
                         db.commit()
                     except IntegrityError:
                         db.rollback()
-                        winner = db.query(TracerLink).filter(TracerLink.token == token).first()
-                        if winner:
+                        winner = _any_account_links().filter(TracerLink.token == token).first()
+                        if winner is not None and winner.account_id == my_account:
                             _repoint(winner, dest_url, label)
                             db.commit()
+                        elif winner is not None:
+                            token = None   # another account's token: take a random one below
             if not token:
                 # secrets, not random: the fallback token is the only entropy a
                 # link without a job short_id has (R4-T5-07). 8 bytes ≈ 11 chars.
                 for _ in range(100):
                     token = secrets.token_urlsafe(8)
-                    if db.query(TracerLink).filter(TracerLink.token == token).first():
+                    if _any_account_links().filter(TracerLink.token == token).first():
                         continue
                     try:
                         db.add(_new_link(token, dest_url, label))
@@ -658,11 +671,12 @@ def create_resume(body: dict, db: Session = Depends(get_db)):
     if "template" in body:
         validate_template_name(body["template"], TEMPLATES_DIR)
 
+    # Body ids must be the account's own rows (MT-5): 404 for anything else.
     resume = Resume(
         name=name,
         is_base=body.get("is_base", True),
-        parent_id=body.get("parent_id"),
-        job_id=body.get("job_id"),
+        parent_id=owned_id_or_404(db, Resume, body.get("parent_id"), "Parent resume not found"),
+        job_id=owned_id_or_404(db, Job, body.get("job_id")),
         template=body.get("template", _default_template_id()),
         page_format=body.get("page_format", "letter"),
         json_data=body.get("json_data", {}),
@@ -682,21 +696,15 @@ def copy_resume_for_job(body: dict, db: Session = Depends(get_db)):
     if not base_resume_id or not job_id:
         raise HTTPException(400, "base_resume_id and job_id are required")
 
-    base = db.query(Resume).filter(Resume.id == base_resume_id).first()
-    if not base:
-        raise HTTPException(404, "Base resume not found")
-
-
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(404, "Job not found")
+    base = get_owned_or_404(db, Resume, base_resume_id, "Base resume not found")
+    job = get_owned_or_404(db, Job, job_id)
 
     job_name = f"{job.company} \u2014 {job.title}" if job.company else job.title or ""
     copy = Resume(
         name=f"{base.name} \u2192 {job_name}",
         is_base=False,
         parent_id=base.id,
-        job_id=job_id,
+        job_id=job.id,
         template=base.template,
         page_format=base.page_format,
         json_data=_json.loads(_json.dumps(base.json_data or {})),
@@ -734,22 +742,18 @@ async def tailor_resume(body: dict, db: Session = Depends(get_db)):
     # Fast-fail: base resume must exist. Reserved id 'persona' resolves to the
     # singleton Persona's resume_content — must be non-empty.
     if base_resume_id == "persona":
-        persona = db.query(Persona).filter(Persona.id == 1).first()
+        persona = get_persona(db, create=False)
         if not persona or not (persona.resume_content or {}):
             raise HTTPException(400, "Persona has no resume_content — fill it in /persona first")
         base_name = "Persona"
     else:
-        base = db.query(Resume).filter(Resume.id == base_resume_id).first()
-        if not base:
-            raise HTTPException(404, "Base resume not found")
+        base = get_owned_or_404(db, Resume, base_resume_id, "Base resume not found")
         base_name = base.name
 
     # Fast-fail: job must exist and have some JD source; the worker resolves the actual
     # text (description → live fetch → cached page) later, so this just confirms something exists without the slow fetch.
     if job_id:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            raise HTTPException(404, "Job not found")
+        job = get_owned_or_404(db, Job, job_id)
         if not ((job.description or "").strip() or (job.url or "").strip() or (job.cached_page_text or "").strip()):
             raise HTTPException(400, "Job has no description, URL, or cached page to tailor from")
 
@@ -856,7 +860,7 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             # Resume row.
             persona_as_base = (base_resume_id == "persona")
             if persona_as_base:
-                persona_row = db.query(Persona).filter(Persona.id == 1).first()
+                persona_row = get_persona(db, create=False)
                 if not persona_row or not (persona_row.resume_content or {}):
                     logger.error("Tailor: persona has no resume_content at execution time")
                     raise RuntimeError("Tailor: persona has no resume_content at execution time")
@@ -1058,6 +1062,12 @@ def update_resume(resume_id: str, body: dict, db: Session = Depends(get_db)):
     # (it is also the value every later render reads — R4-T5-01).
     if "template" in body:
         validate_template_name(body["template"], TEMPLATES_DIR)
+    # Re-linking a résumé: the new parent / job must be the account's own (MT-5).
+    body = dict(body)
+    if "parent_id" in body:
+        body["parent_id"] = owned_id_or_404(db, Resume, body["parent_id"], "Parent resume not found")
+    if "job_id" in body:
+        body["job_id"] = owned_id_or_404(db, Job, body["job_id"])
     for key, value in body.items():
         if key in allowed:
             setattr(resume, key, value)

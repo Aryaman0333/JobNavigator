@@ -11,6 +11,7 @@ from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.accounts.owned import get_owned_or_404, get_persona, owned_id_or_404
 from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
@@ -167,10 +168,11 @@ def create_cover_letter(body: dict, db: Session = Depends(get_db)):
     name = str_field(body, "name", required=True)
     if "template" in body:
         _validate_template(body["template"])
+    # Body ids must be the account's own rows (MT-5): 404 for anything else.
     cl = CoverLetter(
         name=name,
-        job_id=body.get("job_id"),
-        resume_id=body.get("resume_id"),
+        job_id=owned_id_or_404(db, Job, body.get("job_id")),
+        resume_id=owned_id_or_404(db, Resume, body.get("resume_id")),
         template=body.get("template", _default_template_id()),
         page_format=body.get("page_format", "letter"),
         json_data=body.get("json_data", {}),
@@ -198,6 +200,12 @@ def update_cover_letter(cl_id: str, body: dict, db: Session = Depends(get_db)):
                "voice", "length"}
     if "template" in body:
         _validate_template(body["template"])
+    # Re-pairing a letter: the new job / résumé must be the account's own (MT-5).
+    body = dict(body)
+    if "job_id" in body:
+        body["job_id"] = owned_id_or_404(db, Job, body["job_id"])
+    if "resume_id" in body:
+        body["resume_id"] = owned_id_or_404(db, Resume, body["resume_id"])
     for k, v in body.items():
         if k in allowed:
             setattr(cl, k, v)
@@ -319,25 +327,20 @@ async def generate_cover_letter(body: dict, db: Session = Depends(get_db)):
 
     target_id = body.get("cover_letter_id")
     if target_id:
-        if not db.query(CoverLetter).filter(CoverLetter.id == target_id).first():
-            raise HTTPException(404, "Cover letter not found")
+        get_owned_or_404(db, CoverLetter, target_id)
 
     # Reserved id 'persona' bases the letter on the Persona's resume_content
     # (mirrors the tailor flow). Otherwise resume_id must be a real Resume row.
     if resume_id == "persona":
-        persona = db.query(Persona).filter(Persona.id == 1).first()
+        persona = get_persona(db, create=False)
         if not persona or not (persona.resume_content or {}):
             raise HTTPException(400, "Persona has no resume_content — fill it in /persona first")
     else:
-        resume = db.query(Resume).filter(Resume.id == resume_id).first()
-        if not resume:
-            raise HTTPException(404, "Resume not found")
+        resume = get_owned_or_404(db, Resume, resume_id)
         if not (resume.json_data or {}):
             raise HTTPException(400, "Resume has no content")
 
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(404, "Job not found")
+    job = get_owned_or_404(db, Job, job_id)
     # Fast-fail: the job needs some JD source; _generate_inner resolves the actual
     # text (description -> live fetch -> cached page) later, so this skips the slow fetch.
     # A hand-logged job (Log application) arrives with a URL and no description.
@@ -401,7 +404,7 @@ async def _generate_inner(resume_id, job_id, voice, length, template, page_forma
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
-        persona = db.query(Persona).filter(Persona.id == 1).first()
+        persona = get_persona(db, create=False)
         if not job:
             raise RuntimeError("job missing at execution time")
 

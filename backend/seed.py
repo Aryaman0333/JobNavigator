@@ -800,6 +800,12 @@ UNIQUE_PER_ACCOUNT_STATEMENTS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_account_external_id ON jobs (account_id, external_id)",
     "ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_external_id_key",
     "DROP INDEX IF EXISTS jobs_external_id_key",
+    # MT-5: one Persona per account. Every row before MT-5 was id 1 inserted with an
+    # explicit id, so the serial sequence never moved; point it past the highest id so
+    # the first member's Persona does not collide with the owner's row.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_personas_account ON personas (account_id)",
+    "SELECT setval(pg_get_serial_sequence('personas', 'id'), "
+    "COALESCE((SELECT MAX(id) FROM personas), 0) + 1, false)",
 ]
 
 
@@ -1278,13 +1284,18 @@ def seed_mock_resume(db):
 
 
 def seed_persona(db):
-    """Ensure the singleton Persona (id=1) exists with empty nodes."""
-    from backend.models.db import Persona
-    existing = db.query(Persona).filter(Persona.id == 1).first()
-    if existing:
+    """Ensure the owner's Persona exists with empty nodes (other accounts get theirs on
+    first access, backend.accounts.owned.get_persona). Explicit account filter: this runs
+    inside unscoped() at startup."""
+    from backend.models.db import Persona, get_owner_id
+    owner_id = get_owner_id(db)
+    q = db.query(Persona)
+    if owner_id is not None:
+        q = q.filter(Persona.account_id == owner_id)
+    if q.first():
         return
     p = Persona(
-        id=1,
+        account_id=owner_id,
         contact={},
         work_auth={},
         demographics={},
@@ -1295,7 +1306,7 @@ def seed_persona(db):
     )
     db.add(p)
     db.commit()
-    logger.info("Persona singleton (id=1) seeded with empty nodes")
+    logger.info("Owner Persona seeded with empty nodes")
 
 
 def migrate_h1b_to_visa_cache(db):

@@ -574,6 +574,8 @@ async def trigger_analysis(job_id: str, depth: str = "full", body: dict = None):
         job_row = db.query(_Job).filter(_Job.id == target_job_uuid).first()
         if not job_row:
             raise HTTPException(status_code=404, detail="Job not found")
+        # cv_ids is a filter, not a reference: _cv_texts_for_ids loads them through the
+        # scoped session, so an id that is unknown or another account's scores nothing.
         # Names the run will write into cv_scores, resolved while the session is open.
         try:
             from backend.analyzer.cv_scorer import resolve_score_resume_names
