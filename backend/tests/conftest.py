@@ -37,6 +37,7 @@ def _clean_auth_throttle():
         auth = sys.modules.get("backend.accounts.auth")
         if auth is not None:
             auth.reset_pin_cooldowns()   # MT-10 per-account PIN cooldowns
+            auth.forget_touches()        # MT-11 last_active_at throttle
 
     _reset()
     yield

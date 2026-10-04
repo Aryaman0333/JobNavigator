@@ -17,6 +17,15 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("GET", "/api/auth/me"): "the caller's own account; test_mt_auth.py",
     ("POST", "/api/auth/verify-owner-pin"): "re-signs the caller's own cookie; test_mt_auth.py",
     ("GET", "/health"): "liveness probe, no user data",
+    # MT-11 account administration: the owner acts on other accounts by design (list with
+    # counts, rename/PIN reset, remove, export), so "A sees/changes B" is the feature, not a
+    # leak. test_mt_accounts_api.py covers the member side (other accounts reduced to
+    # name/colour/role; PATCH/export on another account 403; DELETE owner-only).
+    # POST /api/accounts stays in the harness (member 403; owner without PIN 409).
+    ("GET", "/api/accounts"): "lists every account by design (member: names/colours only); test_mt_accounts_api.py",
+    ("PATCH", "/api/accounts/{account_id}"): "owner renames / resets PINs of other accounts by design; member->other 403 in test_mt_accounts_api.py",
+    ("DELETE", "/api/accounts/{account_id}"): "owner removes a member by design (typed name, backup first); member 403 in test_mt_accounts_api.py",
+    ("GET", "/api/accounts/{account_id}/export"): "owner exports any account by design; member->other 403 in test_mt_accounts_api.py",
 
     # Settings (MT-9): A is the owner, whose view IS the install values; members' own rows
     # are not AccountScoped (Setting is read explicitly), so the harness seeds none.

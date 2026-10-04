@@ -283,6 +283,44 @@ def resolve_request(db, x_account: Optional[str], header_key_ok: bool, cookie: O
     return Resolution(error=ACCOUNT_REQUIRED)
 
 
+# ── last_active_at (MT-11) ───────────────────────────────────────────────────
+
+TOUCH_INTERVAL_SECONDS = 60.0
+_touched: dict = {}   # str(account id) -> monotonic time of the last write
+
+
+def touch_last_active(db, account_id, force: bool = False) -> bool:
+    """Stamp `accounts.last_active_at = now` for an authenticated request, at most once a
+    minute per account and process (in-memory throttle, so the hot path is a dict lookup).
+    `force` (a switch) always writes. Never raises; returns whether it wrote."""
+    if account_id is None:
+        return False
+    key = str(account_id)
+    now = _mono()
+    last = _touched.get(key)
+    if not force and last is not None and now - last < TOUCH_INTERVAL_SECONDS:
+        return False
+    _touched[key] = now
+    try:
+        from datetime import datetime, timezone
+        from sqlalchemy import update
+        from backend.models.db import Account
+        t = Account.__table__
+        db.execute(update(t).where(t.c.id == account_id).values(last_active_at=datetime.now(timezone.utc)))
+        db.commit()
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def forget_touches() -> None:
+    _touched.clear()
+
+
 # ── PIN check for a switch, with per-account cooldown ────────────────────────
 
 _pin_state: dict = {}   # str(account id) -> {"fails": int, "until": monotonic}

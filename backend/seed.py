@@ -1276,12 +1276,41 @@ MOCK_RESUME_JSON = {
     ],
 }
 
+EXTENSION_SEARCH_MODES = ("extension", "linkedin_extension")
+
+
+def ensure_extension_searches(db, account_id) -> int:
+    """Give `account_id` its two built-in extension searches ("Extension", "Extension LI")
+    when it lacks them. Explicit account filter and stamp, so it works scoped, unscoped
+    (startup) and for an account that is not the current one (account creation, MT-11).
+    No commit. Returns how many were added."""
+    have = {m for (m,) in db.query(Search.search_mode)
+            .filter(Search.account_id == account_id,
+                    Search.search_mode.in_(EXTENSION_SEARCH_MODES))
+            .execution_options(jn_unscoped=True).all()}
+    added = 0
+    for s in SEED_SEARCHES:
+        if s["search_mode"] in EXTENSION_SEARCH_MODES and s["search_mode"] not in have:
+            db.add(Search(account_id=account_id, **s))
+            added += 1
+    return added
+
+
 def seed_searches(db):
-    """Seed default searches if none exist (except LinkedIn Extension which is always ensured)."""
-    existing_modes = {s.search_mode for s in db.query(Search).all()}
+    """Seed the owner's default searches if none of a mode exist, and make sure every
+    account has the two built-in extension searches (the save-to-feed and LinkedIn
+    capture flows look them up in the caller's account)."""
+    from backend.models.db import Account, get_owner_id
+    owner_id = get_owner_id(db)
+    q = db.query(Search)
+    if owner_id is not None:
+        q = q.filter(Search.account_id == owner_id)
+    existing_modes = {s.search_mode for s in q.all()}
     for s in SEED_SEARCHES:
         if s["search_mode"] not in existing_modes:
-            db.add(Search(**s))
+            db.add(Search(account_id=owner_id, **s) if owner_id is not None else Search(**s))
+    for (acc_id,) in db.query(Account.id).filter(Account.role != "owner").all():
+        ensure_extension_searches(db, acc_id)
     # Idempotent rename: self-heal any linkedin_extension search still named
     # "LinkedIn Extension" so fresh DB clones end up labeled "Extension LI".
     legacy = db.query(Search).filter(

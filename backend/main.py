@@ -24,6 +24,7 @@ from backend.api.routes_cover_letters import router as cover_letters_router
 from backend.api.routes_linkedin import router as linkedin_router
 from backend.api.routes_autofill import router as autofill_router
 from backend.api.routes_llm import router as llm_router
+from backend.api.routes_accounts import router as accounts_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jobnavigator")
@@ -227,6 +228,9 @@ async def _api_key_auth(request: Request, call_next):
             except _PoolTimeout:
                 logger.warning("DB pool exhausted while resolving the account for %s", path)
                 return _pool_busy_response()
+            if res is not None and res.account is not None:
+                # MT-11: at most one UPDATE per account per minute (in-memory throttle).
+                acct_auth.touch_last_active(db, res.account["id"])
     finally:
         db.close()
 
@@ -409,11 +413,7 @@ def auth_switch(body: dict, response: _Response):
         except acct_auth.SwitchDenied as e:
             logger.info("account switch denied: account=%s reason=%s", target["id"], e.detail)
             return _switch_denied(e)
-        from backend.models.db import Account
-        row = db.query(Account).filter(Account.id == target["id"]).first()
-        if row is not None:
-            row.last_active_at = _dt_auth.now(_tz_auth.utc)
-            db.commit()
+        acct_auth.touch_last_active(db, target["id"], force=True)
         acct_auth.set_account_cookie(response, db, target)
         return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
     finally:
@@ -471,6 +471,7 @@ app.include_router(cover_letters_router, prefix="/api")
 app.include_router(linkedin_router, prefix="/api")
 app.include_router(autofill_router, prefix="/api")
 app.include_router(llm_router, prefix="/api")
+app.include_router(accounts_router, prefix="/api")
 
 
 # A malformed UUID in a path (/api/jobs/abc) makes Postgres raise DataError deep in
@@ -884,38 +885,10 @@ async def trigger_backfill_descriptions():
 async def trigger_db_backup():
     """Run a database backup immediately. Returns immediately with a run_id. Install-level: 403 for a member."""
     async def _do():
-        import subprocess, glob, os
-        from datetime import datetime
-        from backend.config import DATABASE_URL
-        from urllib.parse import urlparse
-
-        backup_dir = "/app/backups"
-        os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = f"{backup_dir}/jobnavigator_{timestamp}.sql"
-
-        parsed = urlparse(DATABASE_URL)
-        env = os.environ.copy()
-        env["PGPASSWORD"] = parsed.password or ""
-
-        result = subprocess.run(
-            ["pg_dump", "-h", parsed.hostname, "-p", str(parsed.port or 5432),
-             "-U", parsed.username, "-d", parsed.path.lstrip("/"),
-             "-f", backup_file],
-            env=env, capture_output=True, text=True, timeout=300
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"pg_dump failed: {result.stderr}")
-
-        # Keep only last 5 backups
-        backups = sorted(glob.glob(f"{backup_dir}/jobnavigator_*.sql"))
-        pruned = 0
-        while len(backups) > 5:
-            os.remove(backups.pop(0))
-            pruned += 1
-
-        size_mb = os.path.getsize(backup_file) / (1024 * 1024)
-        return f"Snapshot {size_mb:.0f} MB -> {os.path.basename(backup_file)}" + (f" - {pruned} old pruned" if pruned else "")
+        from backend.db_backup import run_pg_dump
+        # Keeps only the last 5 rotation backups
+        b = run_pg_dump()
+        return f"Snapshot {b['size_mb']:.0f} MB -> {b['file']}" + (f" - {b['pruned']} old pruned" if b['pruned'] else "")
 
     try:
         run_id = launch_background("db_backup", _do, trigger="manual")

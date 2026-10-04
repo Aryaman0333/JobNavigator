@@ -405,48 +405,20 @@ async def run_db_backup():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("db_backup", "scheduler") as run:
-            import subprocess
-            import glob
-            import os
-            from backend.config import DATABASE_URL
-            from urllib.parse import urlparse
+            from backend.db_backup import run_pg_dump
 
-            backup_dir = "/app/backups"
-            os.makedirs(backup_dir, exist_ok=True)
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = f"{backup_dir}/jobnavigator_{timestamp}.sql"
-
-            parsed = urlparse(DATABASE_URL)
-
-            env = os.environ.copy()
-            env["PGPASSWORD"] = parsed.password or ""
-
-            result = subprocess.run(
-                ["pg_dump", "-h", parsed.hostname, "-p", str(parsed.port or 5432),
-                 "-U", parsed.username, "-d", parsed.path.lstrip("/"),
-                 "-f", backup_file],
-                env=env, capture_output=True, text=True, timeout=300
-            )
-
-            if result.returncode != 0:
-                logger.error(f"pg_dump failed: {result.stderr}")
+            try:
+                b = run_pg_dump()
+            except RuntimeError as e:
+                logger.error(str(e))
                 return
 
-            logger.info(f"Database backup created: {backup_file}")
-
-            backups = sorted(glob.glob(f"{backup_dir}/jobnavigator_*.sql"))
-            pruned = 0
-            while len(backups) > 5:
-                oldest = backups.pop(0)
-                os.remove(oldest)
-                pruned += 1
-                logger.info(f"Removed old backup: {oldest}")
-
-            size_mb = os.path.getsize(backup_file) / (1024 * 1024)
-            run.summary = f"Snapshot {size_mb:.0f} MB -> {os.path.basename(backup_file)}"
-            if pruned:
-                run.summary += f" - {pruned} old pruned"
+            logger.info(f"Database backup created: {b['path']}")
+            if b["pruned"]:
+                logger.info(f"Removed {b['pruned']} old backup(s)")
+            run.summary = f"Snapshot {b['size_mb']:.0f} MB -> {b['file']}"
+            if b["pruned"]:
+                run.summary += f" - {b['pruned']} old pruned"
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
 
