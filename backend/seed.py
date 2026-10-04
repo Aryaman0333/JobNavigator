@@ -832,6 +832,10 @@ def _account_column_statements() -> list:
     for t in ACCOUNT_TABLES:
         stmts.append(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES accounts(id) ON DELETE CASCADE")
         stmts.append(f"CREATE INDEX IF NOT EXISTS ix_{t}_account_id ON {t}(account_id)")
+    # MT-8: rows of one shared fetch (one per subscribing account) share a run_id. Here,
+    # with the account columns, because ORM reads of scrape_log select it.
+    stmts.append("ALTER TABLE scrape_log ADD COLUMN IF NOT EXISTS run_id UUID")
+    stmts.append("CREATE INDEX IF NOT EXISTS ix_scrape_log_run_id ON scrape_log(run_id)")
     return stmts
 
 

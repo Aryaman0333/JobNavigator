@@ -375,8 +375,9 @@ async def _scrape_levelsfyi(url: str, browser=None, debug: bool = False, max_pag
     return jobs
 
 
-async def run(search: Search) -> dict:
-    """Levels.fyi search mode: scrape filtered job listings and save to DB."""
+async def run(search: Search, shared=None) -> dict:
+    """Levels.fyi search mode: scrape filtered job listings and save to DB. `shared`
+    (MT-8 SharedFetch): searches with the same URL + max_pages share one browser scrape."""
     start_time = time.time()
 
     if not search.direct_url or not _is_levelsfyi(search.direct_url):
@@ -384,19 +385,25 @@ async def run(search: Search) -> dict:
 
     pw = None
     browser = None
-    try:
+
+    async def _fetch():
+        nonlocal pw, browser
         pw, browser = await _get_browser()
         search_max_pages = search.max_pages or 50
-        raw_jobs = await _scrape_levelsfyi(search.direct_url, browser=browser, max_pages=search_max_pages)
+        raw = await _scrape_levelsfyi(search.direct_url, browser=browser, max_pages=search_max_pages)
 
         # Retry up to 3 times if 0 results (levels.fyi rate-limiting / slow render)
         retry_delays = [10, 20, 30]
         for attempt, delay in enumerate(retry_delays, 1):
-            if raw_jobs:
+            if raw:
                 break
             logger.info(f"levels.fyi: 0 results, retry {attempt}/3 in {delay}s")
             await asyncio.sleep(delay)
-            raw_jobs = await _scrape_levelsfyi(search.direct_url, browser=browser, max_pages=search_max_pages)
+            raw = await _scrape_levelsfyi(search.direct_url, browser=browser, max_pages=search_max_pages)
+        return raw
+
+    try:
+        raw_jobs = await (_fetch() if shared is None else shared.get(_fetch))
 
         # Apply search-level + global title filters
         from backend.models.db import get_global_title_exclude as _gte

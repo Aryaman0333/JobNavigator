@@ -1,5 +1,9 @@
 """Scraper orchestrator: single entry point (run_all/run_search/run_company) that
-scheduler + API triggers import from; internal sources/ modules are implementation details."""
+scheduler + API triggers import from; internal sources/ modules are implementation details.
+
+Accounts (MT-8): run_all() is the shared-scrape fan-out — identical targets of different
+accounts are fetched once and ingested per account (see backend/scraper/targets.py). A
+manual run of one search (_run_search_by_id) or company feeds only the caller's account."""
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -18,16 +22,20 @@ logger = logging.getLogger("jobnavigator.scraper.orchestrator")
 
 # ── Per-search dispatch ─────────────────────────────────────────────────────
 
-async def run_search(search: Search, proxy_url: Optional[str] = None) -> dict:
-    """Dispatch one search to its source module by search.search_mode; returns the module's result dict, or raises ValueError on an unknown mode."""
+async def run_search(search: Search, proxy_url: Optional[str] = None, shared=None) -> dict:
+    """Dispatch one search to its source module by search.search_mode; returns the module's result dict, or raises ValueError on an unknown mode.
+
+    `shared` (MT-8 `SharedFetch`) is passed only to the shareable modes (keyword,
+    levels_fyi, freehire) and only when set, so a single search calls exactly as before."""
     mode = search.search_mode
+    extra = {"shared": shared} if shared is not None else {}
 
     if mode == "keyword":
         from backend.scraper.sources.jobspy import run
-        return await run(search, proxy_url=proxy_url)
+        return await run(search, proxy_url=proxy_url, **extra)
     if mode == "levels_fyi":
         from backend.scraper.sources.levelsfyi import run
-        return await run(search)
+        return await run(search, **extra)
     if mode == "linkedin_personal":
         from backend.scraper.sources.linkedin_personal import run
         return await run(search)
@@ -36,7 +44,7 @@ async def run_search(search: Search, proxy_url: Optional[str] = None) -> dict:
         return await run(search)
     if mode == "freehire":
         from backend.scraper.sources.freehire import run
-        return await run(search)
+        return await run(search, **extra)
     if mode == "linkedin_extension":
         # No scraper — jobs come via POST /api/jobs/linkedin-import (Chrome extension push)
         return {
@@ -225,101 +233,163 @@ def _search_mode_is_valid(search: Search) -> bool:
 
 # ── Fan-out: all active searches + companies ────────────────────────────────
 
-async def run_all(force: bool = False):
-    """Scheduled fan-out over all active searches + companies: marks existing jobs seen on a first run, skips due/invalid/extension-mode searches, logs + optionally scores each search, then runs the Playwright company sweep."""
+def _record_search_log(db, search: Search, result: dict, run_id=None) -> ScrapeLog:
+    """The ScrapeLog row of one search run, under the current account. A clean run that
+    found nothing is a warning (same rule company scrapes use) so /health/entities can flag
+    a search that quietly stopped returning results."""
+    breakdown = result.get("source_breakdown") or None
+    log = ScrapeLog(
+        search_id=search.id,
+        source=_source_for_search(search),
+        jobs_found=result.get("jobs_found", 0),
+        new_jobs=result.get("new_jobs", 0),
+        error=result.get("error"),
+        # R3-A-03 plus the silent zero: see run_is_warning().
+        is_warning=run_is_warning(result, breakdown),
+        source_breakdown=breakdown,
+        duration_seconds=result.get("duration", 0),
+        run_id=run_id,
+    )
+    db.add(log)
+    db.commit()
+    return log
+
+
+async def run_all(force: bool = False, account_ids=None):
+    """Scheduled fan-out over all active searches + companies: marks existing jobs seen on a first run, skips due/invalid/extension-mode searches, logs + optionally scores each search, then runs the Playwright company sweep.
+
+    MT-8: `account_ids=None` covers every account (the scheduler); the manual run-all passes
+    the caller's account only. Searches are grouped into targets
+    (`backend.scraper.targets.search_key`): a due target is fetched once and each
+    subscribing search ingests it under its own account, writing its own ScrapeLog row
+    (rows of one fetch share a `run_id`). One subscriber failing does not stop the others.
+    The post-search scoring sweep and the first-run "mark seen" are per account."""
+    import uuid
+    from backend.accounts.background import acting_as
+    from backend.accounts.context import current_account
+    from backend.scraper.targets import (
+        SharedFetch, group_targets, is_shareable_search, load_active, search_due,
+        search_fetch_params, search_key, search_target_due,
+    )
     db = SessionLocal()
     try:
-        first_run = db.query(ScrapeLog).count() == 0
+        searches = load_active(db, Search, account_ids)
+        from backend.models.db import Company
+        companies = load_active(db, Company, account_ids)
 
-        searches = db.query(Search).filter(Search.active == True).all()
+        # First run, per account: an account with no ScrapeLog yet gets its existing jobs
+        # marked seen afterwards, so only truly new ones trigger alerts.
+        accounts = []
+        for acc in [current_account.get()] + [r.account_id for r in searches + companies]:
+            if acc not in accounts:
+                accounts.append(acc)
+        if account_ids is not None:
+            accounts = [a for a in accounts if a in account_ids] or accounts[:1]
+        first_run_accounts = []
+        for acc in accounts:
+            with acting_as(acc):
+                if db.query(ScrapeLog).count() == 0:
+                    first_run_accounts.append(acc)
+
         proxy_url = _get_setting_value(db, "proxy_url", "") or None
 
-        logger.info(f"Running {len(searches)} active searches")
-        search_sweep_needed = False
-
+        runnable = []
         for search in searches:
             # Passive-only modes (extension push endpoints) are not scheduler-driven —
             # skip silently to keep logs clean.
             if search.search_mode in ("linkedin_extension", "extension"):
                 continue
-
-            # Per-search interval check (skipped for manual triggers)
-            if not force and search.run_interval_minutes:
-                if search.last_run_at:
-                    elapsed = (datetime.now(timezone.utc) - search.last_run_at).total_seconds() / 60
-                    if elapsed < search.run_interval_minutes:
-                        logger.info(
-                            f"Search '{search.name}' skipped — next run in "
-                            f"{search.run_interval_minutes - elapsed:.0f}m"
-                        )
-                        continue
-
             # Skip invalid configs — logged and skipped rather than raising.
             if not _search_mode_is_valid(search):
                 logger.warning(f"Search '{search.name}' has invalid config, skipping")
                 continue
+            runnable.append(search)
 
-            try:
-                result = await run_search(search, proxy_url=proxy_url)
-            except ValueError as e:
-                # Unknown search_mode — log and skip, don't abort the whole batch
-                logger.warning(f"Search '{search.name}': {e}, skipping")
-                continue
-            except Exception as e:
-                logger.exception(f"Search '{search.name}' failed: {e}")
-                result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
+        def _key(s):
+            return search_key(s) if is_shareable_search(s) else (s.search_mode, "own", str(s.id))
+        targets = group_targets(runnable, _key)
+        logger.info(f"Running {len(runnable)} active searches as {len(targets)} targets")
+        sweep_accounts = []
 
-            # A clean run that found nothing is a warning (same rule company scrapes
-            # use) so /health/entities can flag a search that quietly stopped returning results.
-            breakdown = result.get("source_breakdown") or None
-            failed_sources = source_errors(breakdown)
-            log = ScrapeLog(
-                search_id=search.id,
-                source=_source_for_search(search),
-                jobs_found=result.get("jobs_found", 0),
-                new_jobs=result.get("new_jobs", 0),
-                error=result.get("error"),
-                is_warning=run_is_warning(result, breakdown),
-                source_breakdown=breakdown,
-                duration_seconds=result.get("duration", 0),
-            )
-            db.add(log)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        for target in targets:
+            # Interval check (skipped for manual triggers): due when any subscriber is due.
+            if not force:
+                due, _effective = search_target_due(target, now)
+                if not due:
+                    for search in target.subscribers:
+                        _, elapsed, interval = search_due(search, now)
+                        logger.info(f"Search '{search.name}' skipped — next run in {interval - elapsed:.0f}m")
+                    continue
 
-            if failed_sources:
-                logger.warning(
-                    f"Search '{search.name}': {describe_source_errors(breakdown)}"
-                )
+            run_id = uuid.uuid4()
+            shared = (SharedFetch(target.key, search_fetch_params(target.subscribers))
+                      if target.shared else None)
+            for search in target.subscribers:
+                with acting_as(search.account_id):
+                    try:
+                        try:
+                            kwargs = {"shared": shared} if shared is not None else {}
+                            result = await run_search(search, proxy_url=proxy_url, **kwargs)
+                        except ValueError as e:
+                            # Unknown search_mode — log and skip, don't abort the whole batch
+                            logger.warning(f"Search '{search.name}': {e}, skipping")
+                            continue
+                        except Exception as e:
+                            logger.exception(f"Search '{search.name}' failed: {e}")
+                            result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
 
-            logger.info(
-                f"Search '{search.name}': found={result.get('jobs_found', 0)}, "
-                f"new={result.get('new_jobs', 0)}, duration={result.get('duration', 0):.1f}s"
-            )
+                        _record_search_log(db, search, result, run_id=run_id)
+                        breakdown = result.get("source_breakdown") or None
+                        if source_errors(breakdown):
+                            logger.warning(
+                                f"Search '{search.name}': {describe_source_errors(breakdown)}"
+                            )
 
-            # Auto CV-score: mark for one pool sweep after all searches (the
-            # sweep is a common pool — per-search invocations re-walked it N times).
-            if search.auto_scoring_depth in ("light", "full") and result.get("new_jobs", 0) > 0:
-                search_sweep_needed = True
+                        logger.info(
+                            f"Search '{search.name}': found={result.get('jobs_found', 0)}, "
+                            f"new={result.get('new_jobs', 0)}, duration={result.get('duration', 0):.1f}s"
+                            + (f" (shared fetch, {len(target.subscribers)} subscribers)" if shared else "")
+                        )
 
-        if search_sweep_needed:
+                        # Auto CV-score: mark the account for one pool sweep after all searches
+                        # (the sweep is a common pool — per-search invocations re-walked it N times).
+                        if (search.auto_scoring_depth in ("light", "full") and result.get("new_jobs", 0) > 0
+                                and search.account_id not in sweep_accounts):
+                            sweep_accounts.append(search.account_id)
+                    except Exception as e:
+                        # e.g. the ScrapeLog write failed: this subscriber only
+                        logger.exception(f"Search '{search.name}' ingest failed, others continue: {e}")
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+
+        for acc in sweep_accounts:
             # Contained: a scoring failure must not abort the rest of scrape_all
             # (career-page scrapes below would never run).
-            try:
-                from backend.analyzer.cv_scorer import analyze_unscored_jobs
-                await analyze_unscored_jobs(status="new")
-            except Exception as e:
-                logger.exception(f"Post-search scoring sweep failed (scrape continues): {e}")
+            with acting_as(acc):
+                try:
+                    from backend.analyzer.cv_scorer import analyze_unscored_jobs
+                    await analyze_unscored_jobs(status="new")
+                except Exception as e:
+                    logger.exception(f"Post-search scoring sweep failed (scrape continues): {e}")
 
-        from backend.scraper.sources.company_pages import scrape_career_pages
-        company_summary = await scrape_career_pages(force=force) or {}
+        from backend.scraper.sources import company_pages
+        if account_ids is None:
+            company_summary = await company_pages.scrape_career_pages(force=force) or {}
+        else:
+            company_summary = await company_pages.scrape_career_pages(
+                force=force, account_ids=account_ids) or {}
 
         # First-run: mark all jobs as seen so only truly new ones trigger alerts
-        if first_run:
-            unseen = db.query(Job).filter(Job.seen == False).all()
-            for j in unseen:
-                j.seen = True
-            db.commit()
-            logger.info(f"First run: marked {len(unseen)} existing jobs as seen")
+        for acc in first_run_accounts:
+            with acting_as(acc):
+                unseen = db.query(Job).filter(Job.seen == False).all()
+                for j in unseen:
+                    j.seen = True
+                db.commit()
+                logger.info(f"First run: marked {len(unseen)} existing jobs as seen")
 
         # Handed to the caller so a manual run's summary can say what did not run
         # (companies with no URLs, or — scheduler only — companies not yet due).
@@ -356,19 +426,10 @@ async def _run_search_by_id(search_id: str, auto_score: Optional[bool] = None) -
 
         breakdown = result.get("source_breakdown") or None
         failed_sources = source_errors(breakdown)
-        log = ScrapeLog(
-            search_id=search.id,
-            source=_source_for_search(search),
-            jobs_found=result.get("jobs_found", 0),
-            new_jobs=result.get("new_jobs", 0),
-            error=result.get("error"),
-            # R3-A-03 plus the silent zero: see run_is_warning().
-            is_warning=run_is_warning(result, breakdown),
-            source_breakdown=breakdown,
-            duration_seconds=result.get("duration", 0),
-        )
-        db.add(log)
-        db.commit()
+        # A manual run fetches for, and feeds, only this account (MT-8): no shared fetch,
+        # a run_id of its own.
+        import uuid
+        log = _record_search_log(db, search, result, run_id=uuid.uuid4())
         # Hand the caller the row it should summarise, so the Run-history line
         # and the audit row are read from the same place.
         result["scrape_log_id"] = str(log.id)

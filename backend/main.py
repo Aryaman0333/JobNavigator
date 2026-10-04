@@ -484,7 +484,10 @@ async def trigger_all_scrapes():
         from backend.scheduler import _scrape_summary
         started = _dt.now(_tz.utc)
         from backend.scraper.orchestrator import run_all as run_all_searches
-        outcome = await run_all_searches(force=True) or {}
+        from backend.accounts.context import current_account
+        # A manual run-all covers the caller's searches and companies only (MT-8); the
+        # scheduled one covers every account. None = owner fallback (caller's context).
+        outcome = await run_all_searches(force=True, account_ids=[current_account.get()]) or {}
         from backend.analyzer.cv_scorer import analyze_unscored_jobs
         await analyze_unscored_jobs()
         summary = _scrape_summary(started)
@@ -837,7 +840,9 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
                 result = await scrape_single_career_page(c)
                 # Same audit row the batch path writes, so a manual run also shows
                 # up in /api/scrape-log, is_warning and /health/entities.
-                record_company_scrape_log(c.id, c.name, result or {}, db=db2)
+                # A manual run feeds only this account (MT-8): its own run_id, no fan-out.
+                import uuid as _uuid
+                record_company_scrape_log(c.id, c.name, result or {}, db=db2, run_id=_uuid.uuid4())
                 should_score = auto_score if auto_score is not None else (c.auto_scoring_depth in ("light", "full"))
                 if should_score and result and result.get("new_jobs", 0) > 0:
                     from backend.analyzer.cv_scorer import analyze_unscored_jobs

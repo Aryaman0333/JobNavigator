@@ -86,10 +86,11 @@ def _annual_salary(j: dict) -> tuple:
     return j.get("salary_min"), j.get("salary_max")
 
 
-async def _fetch_all(search: Search) -> list[dict]:
-    """Paginate the freehire search API up to results_wanted (limit/offset)."""
+async def _fetch_all(search: Search, wanted: int | None = None) -> list[dict]:
+    """Paginate the freehire search API up to results_wanted (limit/offset); `wanted`
+    overrides it for a shared fetch (MT-8: the max among subscribers)."""
     base = _base_params(search)
-    wanted = search.results_wanted or 100
+    wanted = wanted or search.results_wanted or 100
     out: list[dict] = []
     offset = 0
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "JobNavigator/1.0 (+freehire source)"}) as client:
@@ -111,9 +112,11 @@ async def _fetch_all(search: Search) -> list[dict]:
     return out[:wanted]
 
 
-async def _collect(search: Search) -> list[dict]:
-    """Fetch + parse + dedup-within-batch (by apply URL, then slug)."""
-    raw_list = await _fetch_all(search)
+async def _collect(search: Search, raw_list: list | None = None) -> list[dict]:
+    """Fetch + parse + dedup-within-batch (by apply URL, then slug); `raw_list` skips the
+    fetch (a shared fetch already trimmed to this search's results_wanted)."""
+    if raw_list is None:
+        raw_list = await _fetch_all(search)
     seen = set()
     unique = []
     for r in raw_list:
@@ -144,11 +147,16 @@ def _title_kept(title: str, include_kw: list, exclude_kw: list) -> tuple[bool, s
     return True, None
 
 
-async def run(search: Search) -> dict:
-    """Full scrape entry point. Fetch → filter → save to DB."""
+async def run(search: Search, shared=None) -> dict:
+    """Full scrape entry point. Fetch → filter → save to DB. `shared` (MT-8 SharedFetch):
+    one API fetch at the largest results_wanted among subscribers, cut to this search's own."""
     start = time.time()
     try:
-        unique = await _collect(search)
+        if shared is None:
+            unique = await _collect(search)
+        else:
+            raw = await shared.get(lambda: _fetch_all(search, shared.params.get("results_wanted")))
+            unique = await _collect(search, raw_list=raw[: (search.results_wanted or 100)])
         logger.info(f"freehire '{search.name}': {len(unique)} jobs fetched")
 
         db = SessionLocal()

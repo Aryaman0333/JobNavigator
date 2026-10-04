@@ -7,7 +7,8 @@ Accounts (MT-7). Each job is one of:
   accounts only = the owner until MT-19), and the saved-job scoring pass of scrape_all.
 - install-level, run once as the owner (`as_owner`): db_backup, h1b_refresh (reads every
   account's companies and jobs), the scrape-health system alert (owner's chat).
-- owner only until MT-8: the scraping part of scrape_all (searches + company pages).
+- shared fan-out (MT-8): the scraping part of scrape_all — one install-level run (owner's
+  JobRun) that fetches each target once and ingests it per subscribing account.
 LinkedIn session refresh is install-level too but has no schedule (manual trigger only).
 """
 import logging
@@ -124,18 +125,33 @@ def configure_scheduler():
 # the run itself just wrote, so a summary can never disagree with the log.
 
 
-def _scrape_summary(since) -> str:
-    from backend.models.db import ScrapeLog, Search, Company
+def _scrape_summary(since, all_accounts: bool = False) -> str:
+    """The Run-history line of a scrape run. `all_accounts=True` (the scheduled scrape_all,
+    one install-level run since MT-8) reads every account's ScrapeLog rows and, when more
+    than one account ran, appends per-account new counts; with one account the line is
+    exactly the single-account one."""
+    from contextlib import nullcontext
+    from backend.accounts.context import unscoped
+    from backend.models.db import Account, ScrapeLog, Search, Company
     db = SessionLocal()
     try:
         from backend.scraper.orchestrator import empty_sources, source_errors
-        rows = db.query(ScrapeLog).filter(ScrapeLog.ran_at >= since).all()
+        with (unscoped() if all_accounts else nullcontext()):
+            rows = db.query(ScrapeLog).filter(ScrapeLog.ran_at >= since).all()
+            # A paused search / inactive company is not a problem to report — it was switched off
+            # deliberately. Its row still counts toward "N sources ran" but not toward attention counts.
+            off_searches = {s.id for s in db.query(Search).filter(Search.active == False).all()}
+            off_companies = {c.id for c in db.query(Company).filter(Company.active == False).all()}
         if not rows:
             return "No sources ran"
-        # A paused search / inactive company is not a problem to report — it was switched off
-        # deliberately. Its row still counts toward "N sources ran" but not toward attention counts.
-        off_searches = {s.id for s in db.query(Search).filter(Search.active == False).all()}
-        off_companies = {c.id for c in db.query(Company).filter(Company.active == False).all()}
+        per_account = {}
+        for r in rows:
+            per_account[r.account_id] = per_account.get(r.account_id, 0) + (r.new_jobs or 0)
+        account_part = ""
+        if all_accounts and len(per_account) > 1:
+            names = {a.id: a.name for a in db.query(Account).all()}
+            account_part = "per account: " + ", ".join(
+                f"{names.get(acc, 'unknown')} +{n}" for acc, n in per_account.items())
 
         def _live(r):
             return not (
@@ -164,6 +180,8 @@ def _scrape_summary(since) -> str:
             parts.append(f"{len(quiet_source)} with a board that returned nothing")
         if warned:
             parts.append(f"{warned} empty")
+        if account_part:
+            parts.append(account_part)
         return " - ".join(parts)
     finally:
         db.close()
@@ -188,9 +206,10 @@ def _activity_summary(since, log_type: str, noun: str, plural: str = None) -> st
 # ── Scheduled jobs ──────────────────────────────────────────────────────────
 @as_owner
 async def run_all_scrapes():
-    """Owner-only scrape (TODO(MT-8): run_all() becomes the shared-scrape fan-out — one
-    fetch per target, ingest per subscribing account — and this run then belongs to the
-    install, not the owner). The saved-job scoring pass already runs per account."""
+    """One install-level run (its JobRun is the owner's): run_all() is the shared-scrape
+    fan-out over every account — one fetch per target, ingest per subscribing account
+    (MT-8) — and the summary carries per-account counts. The saved-job scoring pass runs
+    per account."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("scrape_all", "scheduler") as run:
@@ -202,9 +221,10 @@ async def run_all_scrapes():
             # Also score any saved-but-unscored jobs (from manual saves), for every account
             await for_each_account("saved-job scoring", _score_saved_jobs)
             # Install-level system alert to the owner's chat; reads the owner's ScrapeLog
-            # until MT-8 writes one row per subscribing account.
+            # rows (one row per subscribing account since MT-8). TODO(MT-13): owner-sees-all
+            # view of every account's scrape health.
             await check_scrape_health(since=started)
-            run.summary = _scrape_summary(started)
+            run.summary = _scrape_summary(started, all_accounts=True)
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
 

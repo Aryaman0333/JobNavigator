@@ -435,6 +435,9 @@ class ScrapeLog(AccountScoped, Base):
     source_breakdown = Column(JSON, nullable=True)
     duration_seconds = Column(Float, nullable=True)
     ran_at = Column(DateTime(timezone=True), default=utcnow)
+    # MT-8: one fetch of a shared target writes one row per subscribing account; they all
+    # carry the same run_id. A manual run gets a run_id of its own.
+    run_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
 
 # ── Job Runs (execution tracking) ───────────────────────────────────────────

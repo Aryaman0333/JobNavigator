@@ -260,8 +260,40 @@ def apply_company_filter(jobs_df, company_filter: list):
     return jobs_df[jobs_df["company"].str.lower().isin(cf_set)]
 
 
-def _run_sync(search, proxy_url: str = None) -> dict:
-    """Execute a single JobSpy search and return results dict."""
+def trim_postings(jobs_df, results_wanted: int, hours_old: int,
+                  fetched_results: int, fetched_hours: int):
+    """Cut a shared fetch (MT-8, made at the largest results_wanted / hours_old among the
+    subscribers) down to one account's own values.
+
+    - hours_old: rows whose `date_posted` is older than the account's window are dropped.
+      JobSpy dates are day-granular, so the cut is too (a row posted on the cutoff day is
+      kept); a row without a date is kept, as JobSpy itself would have returned it.
+    - results_wanted: JobSpy's limit is per board, so the first N rows of each board are
+      kept, in the order the boards returned them.
+    Nothing is touched when the account's values equal the fetched ones."""
+    import pandas as pd
+    from datetime import timedelta
+    if jobs_df is None or jobs_df.empty:
+        return jobs_df
+    if hours_old and fetched_hours and hours_old < fetched_hours and "date_posted" in jobs_df.columns:
+        cutoff = pd.Timestamp((datetime.now(timezone.utc) - timedelta(hours=hours_old)).date())
+        posted = pd.to_datetime(jobs_df["date_posted"], errors="coerce")
+        jobs_df = jobs_df[posted.isna() | (posted >= cutoff)]
+    if results_wanted and fetched_results and results_wanted < fetched_results and not jobs_df.empty:
+        if "site" in jobs_df.columns:
+            jobs_df = jobs_df.groupby("site", sort=False, group_keys=False).head(results_wanted)
+        else:
+            jobs_df = jobs_df.head(results_wanted)
+    return jobs_df
+
+
+def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
+    """Execute a single JobSpy search and return results dict.
+
+    `shared` (a `backend.scraper.targets.SharedFetch`, MT-8): searches of several accounts
+    with the same target key share one `scrape_jobs()` call made at the largest
+    results_wanted / hours_old; this search then trims its copy to its own values and runs
+    its own filters, dedup and checks under the current account."""
     start_time = time.time()
     # One entry per configured board so a failure is visible next to boards that worked;
     # seeded here (not after the call) so failure paths can still say what was asked for.
@@ -294,10 +326,26 @@ def _run_sync(search, proxy_url: str = None) -> dict:
         if proxy_url:
             kwargs["proxies"] = [proxy_url]
 
-        logger.info(f"Running JobSpy search: {search.name} — term='{search.search_term}', sources={sources}")
-        with _capture_source_errors(sources) as capture:
-            jobs_df = scrape_jobs(**kwargs)
-        _merge_source_errors(breakdown, _board_errors(capture.errors, jobs_df, sources))
+        if shared is None:
+            logger.info(f"Running JobSpy search: {search.name} — term='{search.search_term}', sources={sources}")
+            with _capture_source_errors(sources) as capture:
+                jobs_df = scrape_jobs(**kwargs)
+            captured = capture.errors
+        else:
+            own_results, own_hours = kwargs["results_wanted"], kwargs["hours_old"]
+            kwargs["results_wanted"] = shared.params.get("results_wanted") or own_results
+            kwargs["hours_old"] = shared.params.get("hours_old") or own_hours
+
+            def _fetch():
+                logger.info(f"Running shared JobSpy search: {search.name} — term='{search.search_term}', "
+                            f"sources={sources}, results={kwargs['results_wanted']}, hours={kwargs['hours_old']}")
+                with _capture_source_errors(sources) as cap:
+                    df = scrape_jobs(**kwargs)
+                return df, dict(cap.errors)
+            jobs_df, captured = shared.get_sync(_fetch)
+            jobs_df = trim_postings(jobs_df, own_results, own_hours,
+                                    kwargs["results_wanted"], kwargs["hours_old"])
+        _merge_source_errors(breakdown, _board_errors(captured, jobs_df, sources))
         # Rows each board returned, counted here — before the title filter, the
         # company allow-list and the company exclude. It is the only truthful
         # answer to "did this board deliver anything at all?": `seen` counts what
@@ -544,6 +592,9 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                 "duration": duration, "source_breakdown": breakdown}
 
 
-async def run(search, proxy_url: str = None) -> dict:
-    """Async entry point — offloads the synchronous JobSpy call to a thread."""
-    return await asyncio.to_thread(_run_sync, search, proxy_url)
+async def run(search, proxy_url: str = None, shared=None) -> dict:
+    """Async entry point — offloads the synchronous JobSpy call to a thread (the account
+    context travels with it: to_thread copies the contextvars)."""
+    if shared is None:
+        return await asyncio.to_thread(_run_sync, search, proxy_url)
+    return await asyncio.to_thread(_run_sync, search, proxy_url, shared)
