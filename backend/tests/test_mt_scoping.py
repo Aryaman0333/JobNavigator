@@ -234,7 +234,7 @@ async def test_launch_background_keeps_the_callers_account(test_db, accounts):
 
     with use_account(b):
         jm.launch_background("mt_bg", work)
-        task = jm._running["mt_bg"].task
+        task = jm._running[jm._make_key("mt_bg", None, b)].task   # a member's key carries its account (MT-6)
     await asyncio.wait_for(task, 5)
     assert seen == [b]
     with use_account(b):

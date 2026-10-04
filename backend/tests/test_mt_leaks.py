@@ -63,12 +63,7 @@ def _cl_token(token):
 
 # ── Routes that leak today (worklist for MT-4..6; MT-PLAN.md "Unscoped call sites") ──
 # Value: "<batch>: why". Fixing a route makes its case XPASS (strict) -> delete the entry.
-KNOWN_LEAKS: dict[tuple[str, str], str] = {
-    # MT-6 · stats, monitor, logs, tracer, autofill, LLM log, the rest
-    ("GET", "/api/monitor/active"): "MT-6: in-memory _running has no account; shows B's runs",
-    ("GET", "/api/monitor/in-flight"): "MT-6: in-memory _running has no account; shows B's target jobs",
-    ("GET", "/api/stats/timeline"): "MT-6: inconclusive, 500 on SQLite (cast to Date); make it run or prove it",
-}
+KNOWN_LEAKS: dict[tuple[str, str], str] = {}
 
 # Path / query / body parameter name -> the B row whose id it receives.
 PARAM_MODELS = {
@@ -251,10 +246,11 @@ def _seed_memory_b(ids, b_account):
     """In-memory state that belongs to B: a running monitor entry and a search test result."""
     import backend.job_monitor as jm
     from backend.api import routes_searches as rs
-    jm._running[f"search_run:{ids['search']}"] = jm.RunningJob(
+    jm._running[jm._make_key("search_run", str(ids["search"]), b_account)] = jm.RunningJob(
         run_id=ids["job_run"], job_type="search_run", trigger="manual",
         started_at=datetime.now(timezone.utc), scope_key=str(ids["search"]),
-        target_job_id=ids["job"], company_id=str(ids["company"]), meta={"search": MARKER})
+        target_job_id=ids["job"], company_id=str(ids["company"]), meta={"search": MARKER},
+        account_id=b_account)
     rs._test_results[str(ids["job_run"])] = {"status": "done", "result": {"jobs": [{"title": MARKER}]},
                                              "account": str(b_account)}
 
@@ -262,7 +258,8 @@ def _seed_memory_b(ids, b_account):
 def _clear_memory_b(ids):
     import backend.job_monitor as jm
     from backend.api import routes_searches as rs
-    jm._running.pop(f"search_run:{ids['search']}", None)
+    for key in [k for k, r in jm._running.items() if r.run_id == ids["job_run"]]:
+        jm._running.pop(key, None)
     rs._test_results.pop(str(ids["job_run"]), None)
 
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.accounts.context import owner_context
+from backend.accounts.context import current_account, owner_account_id, owner_context
 from backend.models.db import SessionLocal, JobRun, Setting
 
 logger = logging.getLogger("jobnavigator.monitor")
@@ -150,16 +150,58 @@ class RunningJob:
     # Same dict stored on the JobRun row: what this run is about (which résumés a
     # scoring run covers, which base a tailor copies from). Read by /monitor/in-flight?detail=1.
     meta: Optional[dict] = None
+    # The account the run acts for (MT-6). None = the owner (entries made before MT-6,
+    # and install-wide system runs).
+    account_id: Optional[uuid.UUID] = None
 
 
-# Keyed by dedup key (e.g. "scrape_all" or "company_scrape:<uuid>")
+# Keyed by dedup key (e.g. "scrape_all" or "company_scrape:<uuid>"); a member's runs
+# carry "@<account id>" so each account dedups its own runs (see _make_key).
 _running: dict[str, RunningJob] = {}
 
+# Runs that act on the whole install: one at a time for everyone, keyed and shown as
+# the owner's. Everything else is per account.
+INSTALL_WIDE_JOB_TYPES = frozenset({"db_backup", "h1b_refresh", "linkedin_session_refresh"})
 
-def _make_key(job_type: str, scope_key: Optional[str] = None) -> str:
-    if scope_key:
-        return f"{job_type}:{scope_key}"
-    return job_type
+
+def _owner_id() -> Optional[uuid.UUID]:
+    try:
+        return owner_account_id()
+    except Exception:
+        return None
+
+
+def _run_account(job_type: Optional[str] = None) -> Optional[uuid.UUID]:
+    """The account a run started now belongs to: the context's, None (= owner) for the
+    owner, for no context, and for install-wide job types."""
+    if job_type in INSTALL_WIDE_JOB_TYPES:
+        return None
+    acc = current_account.get()
+    if acc is None or acc == _owner_id():
+        return None
+    return acc
+
+
+def _viewer_account() -> Optional[uuid.UUID]:
+    """The account whose runs the caller sees, in the same None-means-owner form."""
+    return _run_account()
+
+
+def _make_key(job_type: str, scope_key: Optional[str] = None, account_id: Optional[uuid.UUID] = None) -> str:
+    """Dedup key. The owner keeps the pre-MT-6 keys ("scrape_all", "company_scrape:<id>");
+    a member's key adds "@<account>", so account B can start the same job for itself
+    while A's run is going (409 only within one account)."""
+    key = f"{job_type}:{scope_key}" if scope_key else job_type
+    return f"{key}@{account_id}" if account_id is not None else key
+
+
+def visible_running(all_accounts: bool = False) -> list[RunningJob]:
+    """In-memory runs of the current account. `all_accounts=True` is the hook for the
+    owner's "every account" view (later UI work); nothing passes it yet."""
+    if all_accounts:
+        return list(_running.values())
+    viewer = _viewer_account()
+    return [r for r in list(_running.values()) if r.account_id == viewer]
 
 
 # ── "Finished, but it did not work" ────────────────────────────────────────
@@ -220,10 +262,11 @@ class JobAlreadyRunningError(Exception):
 
 
 def is_running(job_type: str, scope_key: Optional[str] = None) -> Optional[RunningJob]:
-    return _running.get(_make_key(job_type, scope_key))
+    """The current account's run of this job type and scope, if one is going."""
+    return _running.get(_make_key(job_type, scope_key, _run_account(job_type)))
 
 
-def get_all_running() -> list[dict]:
+def get_all_running(all_accounts: bool = False) -> list[dict]:
     now = datetime.now(timezone.utc)
     return [
         {
@@ -236,13 +279,14 @@ def get_all_running() -> list[dict]:
             "target_job_id": str(r.target_job_id) if r.target_job_id else None,
             "company_id": str(r.company_id) if r.company_id else None,
         }
-        for r in _running.values()
+        for r in visible_running(all_accounts)
     ]
 
 
 def _get_running_by_job_type(job_type: str) -> Optional[dict]:
-    """Check if any job with the given job_type is running (ignoring scope_key)."""
-    for key, r in _running.items():
+    """Check if any of the current account's jobs with the given job_type is running (ignoring scope_key)."""
+    runs = list(_running.values()) if job_type in INSTALL_WIDE_JOB_TYPES else visible_running()
+    for r in runs:
         if r.job_type == job_type:
             now = datetime.now(timezone.utc)
             return {
@@ -337,7 +381,8 @@ async def tracked_run(
 
 @asynccontextmanager
 async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id):
-    key = _make_key(job_type, scope_key)
+    account = _run_account(job_type)
+    key = _make_key(job_type, scope_key, account)
 
     existing = _running.get(key)
     if existing:
@@ -356,6 +401,7 @@ async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, compan
         target_job_id=target_job_id,
         company_id=company_id,
         meta=meta,
+        account_id=account,
     )
     _running[key] = running_job
 
@@ -386,8 +432,9 @@ def launch_background(
     target_job_id: Optional[uuid.UUID] = None,
     company_id: Optional[str] = None,
 ) -> str:
-    """Launch a coroutine as a background asyncio.Task with tracking; returns run_id immediately, raising JobAlreadyRunningError if already running."""
-    key = _make_key(job_type, scope_key)
+    """Launch a coroutine as a background asyncio.Task with tracking; returns run_id immediately, raising JobAlreadyRunningError if the current account already runs it."""
+    account = _run_account(job_type)
+    key = _make_key(job_type, scope_key, account)
 
     existing = _running.get(key)
     if existing:
@@ -440,6 +487,7 @@ def launch_background(
         target_job_id=target_job_id,
         company_id=company_id,
         meta=meta,
+        account_id=account,
     )
 
     return str(run_id)

@@ -305,8 +305,42 @@ async def send_test_message():
     return {"message": "Test sent"}
 
 
+_MALFORMED = object()
+
+
+def _callback_account(callback_data: str):
+    """The account that owns the job a button names (MT-6). The webhook is public (no
+    session, only the install's webhook secret), so the job is looked up across accounts
+    and the action then runs as its owner; chat id -> account checks arrive with MT-17."""
+    import uuid as _uuid
+    for prefix in ("save_", "skip_", "applied_"):
+        if callback_data.startswith(prefix):
+            try:
+                job_id = _uuid.UUID(callback_data[len(prefix):])
+            except ValueError:
+                return _MALFORMED
+            db = SessionLocal()
+            try:
+                row = (db.query(Job.account_id).execution_options(jn_unscoped=True)
+                       .filter(Job.id == job_id).first())
+                return row[0] if row else None
+            finally:
+                db.close()
+    return None
+
+
 async def handle_callback(callback_data: str, message_id: int = None):
-    """Handle inline button callbacks from Telegram."""
+    """Handle inline button callbacks from Telegram, acting for the account that owns the job."""
+    from contextlib import nullcontext
+    from backend.accounts.context import use_account
+    account = _callback_account(callback_data or "")
+    if account is _MALFORMED:
+        return "Unknown action"     # a job id that is not a UUID names no job
+    with (use_account(account) if account is not None else nullcontext()):
+        return await _handle_callback(callback_data, message_id)
+
+
+async def _handle_callback(callback_data: str, message_id: int = None):
     db = SessionLocal()
     try:
         if callback_data.startswith("save_"):

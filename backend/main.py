@@ -375,11 +375,17 @@ async def _tracer_click_and_redirect(token: str, request: Request):
     import hashlib
     from backend.models.db import TracerLink, TracerClickEvent
 
+    from backend.accounts.context import use_account
+
     db = SessionLocal()
     try:
-        link = db.query(TracerLink).filter(TracerLink.token == token, TracerLink.is_active == True).first()
+        # Public route, no session: the token is unique install-wide, so resolve it
+        # across every account (MT-6) and record the click under the link's account.
+        link = (db.query(TracerLink).execution_options(jn_unscoped=True)
+                .filter(TracerLink.token == token, TracerLink.is_active == True).first())
         if not link:
             raise HTTPException(404, "Link not found")
+        link_account = link.account_id
 
         ua = (request.headers.get("user-agent") or "").lower()
         device_type = "mobile" if any(m in ua for m in ("mobile", "android", "iphone", "ipad")) else \
@@ -425,17 +431,18 @@ async def _tracer_click_and_redirect(token: str, request: Request):
         destination = link.destination_url
 
         try:
-            event = TracerClickEvent(
-                tracer_link_id=link.id,
-                device_type=device_type,
-                ua_family=ua_family,
-                os_family=os_family,
-                referrer_host=referrer_host,
-                ip_hash=ip_hash,
-                is_likely_bot=is_bot,
-            )
-            db.add(event)
-            db.commit()
+            with use_account(link_account):
+                event = TracerClickEvent(
+                    tracer_link_id=link.id,
+                    device_type=device_type,
+                    ua_family=ua_family,
+                    os_family=os_family,
+                    referrer_host=referrer_host,
+                    ip_hash=ip_hash,
+                    is_likely_bot=is_bot,
+                )
+                db.add(event)
+                db.commit()
         except Exception as e:
             logger.exception("Tracer click log failed for token=%s: %s", token, e)
             # Rollback so the session isn't left in an error state.
@@ -1052,7 +1059,8 @@ def get_scheduler_jobs():
 # ── Monitor endpoints ────────────────────────────────────────────────────────
 @app.get("/api/monitor/active", tags=["monitor"], summary="Currently running jobs")
 def get_active_jobs():
-    """Return all currently running jobs with elapsed time in seconds."""
+    """Return the current account's running jobs with elapsed time in seconds (MT-6;
+    get_all_running(all_accounts=True) is the hook for an owner "every account" view)."""
     return get_all_running()
 
 
@@ -1066,7 +1074,7 @@ def get_in_flight(job_ids: str = None, detail: bool = False):
         wanted = {s.strip() for s in job_ids.split(",") if s.strip()}
 
     result: dict[str, list] = {}
-    for r in mon._running.values():
+    for r in mon.visible_running():   # the current account's runs only (MT-6)
         if r.target_job_id is None:
             continue
         key = str(r.target_job_id)
@@ -1272,14 +1280,17 @@ def get_stats_timeline(days: Annotated[int, Query(le=3650)] = 30):
     `timedelta` and escaped as a bare 500 (R4-T1-08).
     """
     from backend.models.db import Job
-    from sqlalchemy import func, cast, Date
+    from sqlalchemy import func
     from datetime import datetime, timedelta, timezone
 
     db = SessionLocal()
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        # date() instead of CAST(... AS DATE): the same day on Postgres, and SQLite
+        # (tests) answers it too, so the leak harness can judge this route (MT-6).
+        day = func.date(Job.discovered_at)
         rows = db.query(
-            cast(Job.discovered_at, Date).label("date"),
+            day.label("date"),
             func.count().label("total"),
             func.count().filter(Job.status == "new").label("new"),
             func.count().filter(Job.status == "saved").label("saved"),
@@ -1287,9 +1298,7 @@ def get_stats_timeline(days: Annotated[int, Query(le=3650)] = 30):
             func.count().filter(Job.status == "skip").label("skipped"),
             # 'ignored' = auto-filtered (title/body/H-1B), saved only for dedup — never shown in the feed.
             func.count().filter(Job.status == "ignored").label("filtered"),
-        ).filter(Job.discovered_at >= cutoff).group_by(
-            cast(Job.discovered_at, Date)
-        ).order_by(cast(Job.discovered_at, Date)).all()
+        ).filter(Job.discovered_at >= cutoff).group_by(day).order_by(day).all()
         return [{
             "date": str(r.date), "total": r.total,
             "new": r.new, "saved": r.saved, "applied": r.applied,

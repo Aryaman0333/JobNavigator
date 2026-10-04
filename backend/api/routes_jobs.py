@@ -201,7 +201,7 @@ def list_jobs(
     import backend.job_monitor as _mon
     in_flight_map: dict[str, list[str]] = {}
     in_flight_detail_map: dict[str, list[dict]] = {}
-    for r in _mon._running.values():
+    for r in _mon.visible_running():
         if r.target_job_id is None:
             continue
         key = str(r.target_job_id)
@@ -980,7 +980,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
         Resume.job_id == job.id, Resume.is_base == False
     ).order_by(Resume.updated_at.desc()).first()
     import backend.job_monitor as _mon
-    running = [r for r in _mon._running.values() if r.target_job_id == job.id]
+    running = [r for r in _mon.visible_running() if r.target_job_id == job.id]
     return _job_to_dict(
         job,
         tailored_resume_id=tailored[0] if tailored else None,

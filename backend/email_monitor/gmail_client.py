@@ -289,7 +289,10 @@ async def check_emails():
                         if match_idx and 1 <= match_idx <= len(active_apps):
                             app_info = active_apps[match_idx - 1]
                             matched_company = app_info.get("company", "")
-                            matched_app = db.query(Application).get(app_info["id"])
+                            # A filtered query, not Query.get(): an identity-map hit skips
+                            # the account criteria (MT-6).
+                            matched_app = db.query(Application).filter(
+                                Application.id == app_info["id"]).first()
 
                         # Guards against the LLM force-matching an email onto the wrong company's
                         # application (e.g. an Amazon email onto a Kpler application).
