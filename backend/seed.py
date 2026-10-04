@@ -763,6 +763,9 @@ END $$;""",
         _ADD_COUNTRY_COLUMN,
         "ALTER TABLE searches ALTER COLUMN country SET DEFAULT 'usa'",
     ]
+    # The account_id columns go first: every ORM query below selects them, so on an
+    # existing database they must exist before any model is loaded.
+    run_migration_statements(db, _account_column_statements())
     failed = run_migration_statements(db, migrations)
 
     # The backfill reads searches.country. Without the column the SELECT raises
@@ -782,6 +785,62 @@ END $$;""",
             logger.warning("Country migration skipped: %s", str(e).strip()[:300])
 
     _rewrite_retired_status_transitions(db)
+    _migrate_accounts(db)
+
+
+# Multi-tenancy (MT-1): every user-data table carries a nullable account_id. The
+# plan calls the activity table "activity_log"; the real name is activity_log_v2.
+# job_locations follows jobs and tracer_click_events follows tracer_links.
+ACCOUNT_TABLES = [
+    "searches", "companies", "jobs", "applications", "interviews", "resumes",
+    "cover_letters", "personas", "tracer_links", "activity_log_v2", "llm_call_log",
+    "job_runs", "scrape_log",
+]
+
+
+def _account_column_statements() -> list:
+    stmts = []
+    for t in ACCOUNT_TABLES:
+        stmts.append(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES accounts(id) ON DELETE CASCADE")
+        stmts.append(f"CREATE INDEX IF NOT EXISTS ix_{t}_account_id ON {t}(account_id)")
+    return stmts
+
+
+def _owner_display_name(db) -> str:
+    """Persona header name (first + last) when set, else "Owner"."""
+    from backend.models.db import Persona
+    try:
+        persona = db.query(Persona).order_by(Persona.id).first()
+        contact = (persona.contact if persona else None) or {}
+        name = " ".join(str(contact.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
+        return name or str(contact.get("name") or "").strip() or "Owner"
+    except Exception:
+        db.rollback()
+        return "Owner"
+
+
+def _migrate_accounts(db):
+    """Create the owner account if none exists and give every row that has no account to
+    it (the columns themselves are added at the top of run_migrations). Idempotent."""
+    from sqlalchemy import update
+    from backend.models.db import ACCOUNT_COLORS, Account, Base, get_owner_id
+
+    owner_id = get_owner_id(db)
+    if owner_id is None:
+        owner = Account(name=_owner_display_name(db), color=ACCOUNT_COLORS[0], role="owner")
+        db.add(owner)
+        db.commit()
+        owner_id = owner.id
+        logger.info("Created owner account %r", owner.name)
+
+    for t in ACCOUNT_TABLES:
+        table = Base.metadata.tables[t]
+        try:
+            with db.begin_nested():
+                db.execute(update(table).where(table.c.account_id.is_(None)).values(account_id=owner_id))
+        except Exception as e:
+            logger.warning("Account backfill skipped for %s: %s", t, str(e).strip()[:200])
+    db.commit()
 
 
 def _backfill_search_country(db):

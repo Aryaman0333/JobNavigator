@@ -48,6 +48,31 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+# ── Accounts (multi-tenancy) ─────────────────────────────────────────────────
+# One row per person sharing the install. MT-1 only introduces the table and the
+# nullable owner column on every owned table; nothing reads account_id yet.
+ACCOUNT_COLORS = ["#2f6fed", "#d9534f", "#2e9e6b", "#e0912b", "#8a5cd6"]
+
+
+class Account(Base):
+    __tablename__ = "accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    color = Column(String, nullable=False, default=ACCOUNT_COLORS[0])
+    role = Column(String, nullable=False, default="member")  # owner | member (max 5 accounts, enforced in the API)
+    pin_hash = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    last_active_at = Column(DateTime(timezone=True), nullable=True)
+
+
+def _account_fk():
+    """The owning-account column every user-data table carries. Nullable until the
+    scoping batches land; seed.run_migrations backfills existing rows with the owner."""
+    return Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"),
+                  nullable=True, index=True)
+
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
@@ -62,6 +87,7 @@ class Search(Base):
     __tablename__ = "searches"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     name = Column(String, nullable=False)
     active = Column(Boolean, default=True)
     sources = Column(JSON, default=["linkedin", "indeed", "zip_recruiter", "google", "direct"])
@@ -106,6 +132,7 @@ class Company(Base):
     __tablename__ = "companies"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     name = Column(String, nullable=False, unique=True)
     active = Column(Boolean, default=True)
     scrape_urls = Column(JSON, default=[])              # list of career/search URLs
@@ -153,6 +180,7 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     short_id = Column(Integer, unique=True, nullable=True, index=True, server_default=text("nextval('jobs_short_id_seq')"))  # Auto-increment numeric ID for URLs
     external_id = Column(String, unique=True, nullable=False)  # SHA256 dedup key
     content_hash = Column(String, nullable=True, index=True)  # SHA256 of company+title for cross-source dedup
@@ -303,6 +331,7 @@ class Application(Base):
     __tablename__ = "applications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False)
     status = Column(String, default="applied")
     # applied|interview|offer|rejected. Retired screening/phone_screen/final_round
@@ -327,6 +356,7 @@ class Interview(Base):
     __tablename__ = "interviews"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     application_id = Column(UUID(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"),
                             nullable=False, index=True)
     what = Column(String, nullable=False)
@@ -376,6 +406,7 @@ class ScrapeLog(Base):
     __tablename__ = "scrape_log"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     # The audit trail outlives the entity it describes; SET NULL keeps the row
     # readable instead of blocking the delete with a ForeignKeyViolation (500).
     search_id = Column(UUID(as_uuid=True), ForeignKey("searches.id", ondelete="SET NULL"), nullable=True)
@@ -402,6 +433,7 @@ class JobRun(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     job_type = Column(String, nullable=False)          # scrape_all, email_check, etc.
     trigger = Column(String, nullable=False)            # scheduler | manual
     status = Column(String, nullable=False, default="running")  # running | completed | failed
@@ -425,6 +457,7 @@ class LlmCallLog(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     purpose = Column(String, nullable=False)  # score_light, score_full, tailor, email, pdf
     provider = Column(String, nullable=False, default="")  # claude_api, claude_code, codex_cli, antigravity_cli, openai, ollama
@@ -445,6 +478,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_log_v2"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     type = Column(String, nullable=False)       # scrape | h1b | cv_score | email | telegram
     message = Column(Text, nullable=False)
     company = Column(String, nullable=True)
@@ -468,6 +502,7 @@ class Resume(Base):
     __tablename__ = "resumes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     name = Column(String, nullable=False)
     is_base = Column(Boolean, default=True)
     parent_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
@@ -489,6 +524,7 @@ class CoverLetter(Base):
     __tablename__ = "cover_letters"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     name = Column(String, nullable=False)
     job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
@@ -517,12 +553,14 @@ class CoverLetter(Base):
 
 
 # ── Persona ──────────────────────────────────────────────────────────────────
-# Singleton row (id=1). contact/preferences feed tailoring + cover letter + autofill;
+# One row per account. Until MT-5 scopes it, the code still treats id=1 as the only
+# row (the owner's); do not assume that in new code. contact/preferences feed tailoring + cover letter + autofill;
 # work_auth/demographics/compensation/qa_bank feed autofill; resume_content feeds tailoring.
 class Persona(Base):
     __tablename__ = "personas"
 
-    id = Column(Integer, primary_key=True)  # singleton: always 1
+    id = Column(Integer, primary_key=True)  # 1 for the owner's row today
+    account_id = _account_fk()
     contact = Column(JSON, default=dict)
     work_auth = Column(JSON, default=dict)
     demographics = Column(JSON, default=dict)
@@ -539,6 +577,7 @@ class TracerLink(Base):
     __tablename__ = "tracer_links"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = _account_fk()
     token = Column(String(10), unique=True, nullable=False, index=True)
     # A tracer link belongs to a resume, a cover letter, or — when the two share the
     # same job and token — both at once; each document's /tracer-stats filters on its own FK.
@@ -615,6 +654,12 @@ def get_global_title_exclude(db) -> list:
         except _json.JSONDecodeError:
             pass
     return []
+
+
+def get_owner_id(db):
+    """Id of the install's owner account, or None before the migration has created it."""
+    row = db.query(Account.id).filter(Account.role == "owner").order_by(Account.created_at).first()
+    return row[0] if row else None
 
 
 def get_existing_external_ids(db) -> set:
