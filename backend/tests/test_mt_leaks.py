@@ -64,10 +64,6 @@ def _cl_token(token):
 # ── Routes that leak today (worklist for MT-4..6; MT-PLAN.md "Unscoped call sites") ──
 # Value: "<batch>: why". Fixing a route makes its case XPASS (strict) -> delete the entry.
 KNOWN_LEAKS: dict[tuple[str, str], str] = {
-    # MT-4 · jobs, searches, companies
-    ("GET", "/api/jobs/feed-stats"): "MT-4: raw text() count over jobs (unscoped; Postgres-only SQL, 500 on SQLite)",
-    ("GET", "/api/jobs/unscored-ids"): "MT-4: raw text() select over jobs (unscoped; Postgres-only SQL, 500 on SQLite)",
-    ("GET", "/api/searches/test-result/{run_id}"): "MT-4: in-memory _test_results not keyed by account",
     # MT-5 · résumés, letters, persona, applications, interviews
     ("POST", "/api/resumes"): "MT-5: body job_id / parent_id not checked against the account (A row -> B job)",
     ("POST", "/api/cover-letters"): "MT-5: body job_id / resume_id not checked against the account",
@@ -254,7 +250,7 @@ def _seed(db, account_id, ids, text, token, persona_id):
     db.expunge_all()
 
 
-def _seed_memory_b(ids):
+def _seed_memory_b(ids, b_account):
     """In-memory state that belongs to B: a running monitor entry and a search test result."""
     import backend.job_monitor as jm
     from backend.api import routes_searches as rs
@@ -262,7 +258,8 @@ def _seed_memory_b(ids):
         run_id=ids["job_run"], job_type="search_run", trigger="manual",
         started_at=datetime.now(timezone.utc), scope_key=str(ids["search"]),
         target_job_id=ids["job"], company_id=str(ids["company"]), meta={"search": MARKER})
-    rs._test_results[str(ids["job_run"])] = {"status": "done", "result": {"jobs": [{"title": MARKER}]}}
+    rs._test_results[str(ids["job_run"])] = {"status": "done", "result": {"jobs": [{"title": MARKER}]},
+                                             "account": str(b_account)}
 
 
 def _clear_memory_b(ids):
@@ -556,7 +553,7 @@ def test_route_does_not_leak_b(method, path, client, test_db, accounts, launches
             before = (r0a.status_code, _normalise(text_of(r0a)))
 
     _seed(test_db, b_id, b, MARKER, B_TOKEN, persona_id=2)
-    _seed_memory_b(b)
+    _seed_memory_b(b, b_id)
     snap = _snapshot(b_id)
     launches.clear()
     try:

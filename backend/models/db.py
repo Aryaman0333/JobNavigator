@@ -140,10 +140,12 @@ class Search(AccountScoped, Base):
 # ── Companies ────────────────────────────────────────────────────────────────
 class Company(AccountScoped, Base):
     __tablename__ = "companies"
+    # Unique per account (MT-4): two accounts may each track "Acme".
+    __table_args__ = (UniqueConstraint("account_id", "name", name="uq_companies_account_name"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id = _account_fk()
-    name = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
     active = Column(Boolean, default=True)
     scrape_urls = Column(JSON, default=[])              # list of career/search URLs
     tier = Column(Integer, nullable=True)
@@ -188,11 +190,13 @@ class VisaCache(Base):
 # ── Jobs ─────────────────────────────────────────────────────────────────────
 class Job(AccountScoped, Base):
     __tablename__ = "jobs"
+    # Dedup key unique per account (MT-4): the same posting can sit in two accounts' feeds.
+    __table_args__ = (UniqueConstraint("account_id", "external_id", name="uq_jobs_account_external_id"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id = _account_fk()
     short_id = Column(Integer, unique=True, nullable=True, index=True, server_default=text("nextval('jobs_short_id_seq')"))  # Auto-increment numeric ID for URLs
-    external_id = Column(String, unique=True, nullable=False)  # SHA256 dedup key
+    external_id = Column(String, nullable=False)  # SHA256 dedup key, unique per account
     content_hash = Column(String, nullable=True, index=True)  # SHA256 of company+title for cross-source dedup
     linkedin_job_id = Column(String, nullable=True, index=True)  # LinkedIn numeric ID for cross-scraper dedup
     company = Column(String, nullable=True)

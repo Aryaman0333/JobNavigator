@@ -20,8 +20,15 @@ EXTENSION_MODES = ("extension", "linkedin_extension")
 
 router = APIRouter(prefix="/searches", tags=["searches"])
 
-# In-memory store for async test results
-_test_results: dict[str, dict] = {}  # run_id -> {"status": "running"|"done", "result": ...}
+# In-memory store for async test results, each tagged with the account that started it
+# (MT-4): run_id -> {"status": "running"|"done", "result": ..., "account": "<uuid>"}.
+_test_results: dict[str, dict] = {}
+
+
+def _account_key() -> Optional[str]:
+    from backend.accounts.context import current_account
+    acc = current_account.get()
+    return str(acc) if acc is not None else None
 
 
 class SearchCreate(BaseModel):
@@ -248,7 +255,11 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
 
     if search.search_mode in ("levels_fyi", "linkedin_personal", "jobright", "freehire"):
         run_id = str(uuid.uuid4())[:8]
-        _test_results[run_id] = {"status": "running", "result": None}
+        account = _account_key()
+
+        def _store(status, result):
+            _test_results[run_id] = {"status": status, "result": result, "account": account}
+        _store("running", None)
 
         # Snapshot search fields needed by the test functions (DB session won't survive across await)
         from backend.models.db import SessionLocal
@@ -257,7 +268,7 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
             try:
                 test_search_obj = test_db.query(Search).filter(Search.id == search_id).first()
                 if not test_search_obj:
-                    _test_results[run_id] = {"status": "done", "result": {"error": "Search not found"}}
+                    _store("done", {"error": "Search not found"})
                     return
                 if search.search_mode == "levels_fyi":
                     result = await _test_levelsfyi_search(test_search_obj, test_db)
@@ -270,10 +281,10 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
                 else:
                     from backend.scraper.sources.linkedin_personal import preview as test_linkedin_personal
                     result = await test_linkedin_personal(test_search_obj, test_db)
-                _test_results[run_id] = {"status": "done", "result": result}
+                _store("done", result)
             except Exception as e:
                 logger.error(f"Test run {run_id} failed: {e}")
-                _test_results[run_id] = {"status": "done", "result": {"error": str(e)}}
+                _store("done", {"error": str(e)})
             finally:
                 test_db.close()
 
@@ -568,7 +579,8 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
 async def get_test_result(run_id: str):
     """Poll for async test results. Returns 200 with result when done, 202 while running."""
     entry = _test_results.get(run_id)
-    if not entry:
+    # Another account's run (or an untagged entry) is answered exactly like an unknown id.
+    if not entry or entry.get("account") != _account_key():
         raise HTTPException(status_code=404, detail="Test run not found")
     if entry["status"] == "running":
         return JSONResponse(status_code=202, content={"run_id": run_id, "status": "running"})

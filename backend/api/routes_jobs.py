@@ -4,7 +4,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, text, func
+from sqlalchemy import desc, asc, func
 from backend.models.db import get_db, Job, find_company_by_name
 from backend.api._input import str_field, uuid_filter
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
@@ -21,6 +21,16 @@ from backend.scraper.sources.linkedin_extension import (
 logger = logging.getLogger("jobnavigator.jobs")
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+# The process-wide LinkedIn import progress belongs to the account that started the
+# import (MT-4): the route tags the dict under this key; other accounts poll it as idle.
+_PROGRESS_ACCOUNT = "_account"
+
+
+def _account_key():
+    from backend.accounts.context import current_account
+    acc = current_account.get()
+    return str(acc) if acc is not None else None
 
 
 def _score_resume_names(db, job) -> list[str]:
@@ -64,6 +74,7 @@ async def linkedin_import(request: Request, db: Session = Depends(get_db)):
     new_count = sum(1 for lid in linkedin_ids if lid not in existing_li_ids)
 
     _linkedin_import_progress.clear()
+    _linkedin_import_progress[_PROGRESS_ACCOUNT] = _account_key()
 
     async def _do():
         await _scrape_linkedin_ids(linkedin_ids)
@@ -88,10 +99,12 @@ async def linkedin_import(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/linkedin-import/progress")
 def linkedin_import_progress():
-    """Poll LinkedIn import progress."""
-    if not _linkedin_import_progress:
+    """Poll LinkedIn import progress (another account's import reads as idle)."""
+    progress = {k: v for k, v in _linkedin_import_progress.items() if k != _PROGRESS_ACCOUNT}
+    owner = _linkedin_import_progress.get(_PROGRESS_ACCOUNT)
+    if not progress or (owner is not None and owner != _account_key()):
         return {"status": "idle"}
-    return _linkedin_import_progress
+    return progress
 
 
 @router.get("")
@@ -337,29 +350,28 @@ def _apply_common_filters(q, status=None, company=None, source=None, h1b_verdict
     return q
 
 
+def _unscored_filter():
+    """New/saved jobs with no scores yet. ORM (not text()) so the account scoping applies
+    (MT-4); cv_scorer's predicate is the old `cv_scores::text = '{}'` as a portable CAST."""
+    from backend.analyzer.cv_scorer import unscored_filter
+    return (Job.status.in_(("new", "saved")), unscored_filter())
+
+
 @router.get("/feed-stats")
 def feed_stats(db: Session = Depends(get_db)):
     """Global counts for the v2 feed header — arrived today + not-yet-scored — since the paged /jobs response only sees the current page."""
     from datetime import datetime, timezone
-    from sqlalchemy import func, text
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     arrived_today = db.query(func.count(Job.id)).filter(Job.discovered_at >= start).scalar() or 0
-    unscored = db.execute(text(
-        "select count(*) from jobs where status in ('new','saved') "
-        "and (cv_scores is null or cv_scores::text = '{}')"
-    )).scalar() or 0
+    unscored = db.query(func.count(Job.id)).filter(*_unscored_filter()).scalar() or 0
     return {"arrived_today": int(arrived_today), "unscored": int(unscored)}
 
 
 @router.get("/unscored-ids")
 def unscored_ids(limit: Annotated[int, Query(ge=0, le=10000)] = 500, db: Session = Depends(get_db)):
     """IDs of not-yet-scored new/saved jobs; the header's "Score N unscored" action scores exactly these, since they sort to the bottom by score and won't be on the feed page."""
-    from sqlalchemy import text
-    rows = db.execute(text(
-        "select id from jobs where status in ('new','saved') "
-        "and (cv_scores is null or cv_scores::text = '{}') "
-        "order by discovered_at desc limit :lim"
-    ), {"lim": limit}).fetchall()
+    rows = (db.query(Job.id).filter(*_unscored_filter())
+            .order_by(Job.discovered_at.desc()).limit(limit).all())
     return {"ids": [str(r[0]) for r in rows]}
 
 

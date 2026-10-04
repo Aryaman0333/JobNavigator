@@ -786,6 +786,29 @@ END $$;""",
 
     _rewrite_retired_status_transitions(db)
     _migrate_accounts(db)
+    _migrate_unique_per_account(db)
+
+
+# MT-4: install-wide UNIQUE constraints become per-account, so two accounts can each hold
+# a company called "Acme" and the same posting. New index first (if it cannot be built the
+# old constraint stays), then the old single-column constraint goes. Idempotent; the names
+# match the UniqueConstraints on the models, so a fresh create_all() makes these no-ops.
+UNIQUE_PER_ACCOUNT_STATEMENTS = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_companies_account_name ON companies (account_id, name)",
+    "ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_name_key",
+    "DROP INDEX IF EXISTS companies_name_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_account_external_id ON jobs (account_id, external_id)",
+    "ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_external_id_key",
+    "DROP INDEX IF EXISTS jobs_external_id_key",
+]
+
+
+def _migrate_unique_per_account(db):
+    """Postgres only: SQLite test databases are built from the models, which already
+    declare the composite constraints."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    run_migration_statements(db, UNIQUE_PER_ACCOUNT_STATEMENTS)
 
 
 # Multi-tenancy (MT-1): every user-data table carries a nullable account_id. The
@@ -981,9 +1004,10 @@ def _rewrite_retired_status_transitions(db):
 def seed_h1b_slugs(db):
     """Migrate hardcoded H-1B slug overrides into Company records."""
     for name, slug in H1B_SLUG_OVERRIDES.items():
-        company = db.query(Company).filter(Company.name == name).first()
-        if company and not company.h1b_slug:
-            company.h1b_slug = slug
+        # Runs unscoped: the name is unique per account only (MT-4), so set every account's row.
+        for company in db.query(Company).filter(Company.name == name).all():
+            if not company.h1b_slug:
+                company.h1b_slug = slug
     db.commit()
 
 
