@@ -373,7 +373,9 @@ async def tracked_run(
     company_id: Optional[str] = None,
 ):
     """Async context manager: tracks a job run in-memory + DB. Raises JobAlreadyRunningError on duplicate."""
-    # MT-2: a scheduled run has no request context; it acts for the owner until MT-7.
+    # Per-account scheduler jobs enter here under acting_as(account) (MT-7), so the run,
+    # its dedup key and its rows belong to that account; with no context (install-level
+    # jobs, direct calls) it acts for the owner.
     with owner_context():
         async with _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id) as rj:
             yield rj

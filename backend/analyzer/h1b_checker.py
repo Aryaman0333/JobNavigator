@@ -308,21 +308,25 @@ async def refresh_all_h1b():
     companies, 0.5 s apart) then runs with no connection held — it used to pin
     one for the whole run, which can be many minutes.
     """
+    # Install-level (MT-7): VisaCache is shared, so the name list covers every account's
+    # companies and jobs, whoever triggered the run.
+    from backend.accounts.context import unscoped
     db = SessionLocal()
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=_TTL_DAYS)
-        cached_keys = {r[0] for r in db.query(VisaCache.name_key).all()}
-        slug_map = {_name_key(c.name): c.h1b_slug for c in db.query(Company).all()}
+        with unscoped():
+            cutoff = datetime.now(timezone.utc) - timedelta(days=_TTL_DAYS)
+            cached_keys = {r[0] for r in db.query(VisaCache.name_key).all()}
+            slug_map = {_name_key(c.name): c.h1b_slug for c in db.query(Company).all()}
 
-        # 1) names to refresh: stale cache rows
-        stale = db.query(VisaCache).filter(
-            (VisaCache.fetched_at == None) | (VisaCache.fetched_at < cutoff)
-        ).all()
-        names = {(r.display_name or r.name_key) for r in stale}
-        # 2) + job companies not cached at all
-        for (n,) in db.query(Job.company).distinct().all():
-            if n and _name_key(n) not in cached_keys:
-                names.add(n)
+            # 1) names to refresh: stale cache rows
+            stale = db.query(VisaCache).filter(
+                (VisaCache.fetched_at == None) | (VisaCache.fetched_at < cutoff)
+            ).all()
+            names = {(r.display_name or r.name_key) for r in stale}
+            # 2) + job companies not cached at all
+            for (n,) in db.query(Job.company).distinct().all():
+                if n and _name_key(n) not in cached_keys:
+                    names.add(n)
     finally:
         db.close()
 

@@ -1,10 +1,22 @@
-"""APScheduler — reads all timing config from settings DB table. No hardcoded schedules."""
+"""APScheduler — reads all timing config from settings DB table. No hardcoded schedules.
+
+Accounts (MT-7). Each job is one of:
+- per account: runs once per account under `acting_as(account)` via `for_each_account()`
+  (its own JobRun, ActivityLog and LlmCallLog rows, its own dedup key; one account failing
+  does not stop the others): daily_digest, auto_reject, job_cleanup, email_check (Gmail
+  accounts only = the owner until MT-19), and the saved-job scoring pass of scrape_all.
+- install-level, run once as the owner (`as_owner`): db_backup, h1b_refresh (reads every
+  account's companies and jobs), the scrape-health system alert (owner's chat).
+- owner only until MT-8: the scraping part of scrape_all (searches + company pages).
+LinkedIn session refresh is install-level too but has no schedule (manual trigger only).
+"""
 import logging
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
+from backend.accounts.background import for_each_account, gmail_account_ids
 from backend.accounts.context import as_owner
 from backend.models.db import SessionLocal, Setting
 
@@ -53,15 +65,17 @@ def configure_scheduler():
     finally:
         db.close()
 
-    def _add_cron_job(func, job_id, cron_expr):
-        """Parse a 5-field cron expression and add to scheduler. Empty = skip."""
+    def _add_cron_job(func, job_id, cron_expr, install_level=False):
+        """Parse a 5-field cron expression and add to scheduler. Empty = skip.
+        install_level=True runs the job once as the owner; per-account jobs set their own
+        account context for each account."""
         if not cron_expr:
             return
         try:
             parts = cron_expr.split()
             if len(parts) == 5:
                 scheduler.add_job(
-                    as_owner(func),
+                    as_owner(func) if install_level else func,
                     CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
                     id=job_id,
                     replace_existing=True,
@@ -75,8 +89,10 @@ def configure_scheduler():
 
     # Interval-based jobs (0 = disabled)
     if scrape_interval > 0:
+        # Scraping runs as the owner until MT-8 (shared-scrape fan-out); run_all_scrapes
+        # sets its own contexts (owner scrape, then the per-account scoring pass).
         scheduler.add_job(
-            as_owner(run_all_scrapes),
+            run_all_scrapes,
             IntervalTrigger(minutes=scrape_interval),
             id="scrape_all",
             replace_existing=True,
@@ -84,18 +100,18 @@ def configure_scheduler():
 
     if email_interval > 0:
         scheduler.add_job(
-            as_owner(run_email_check),
+            run_email_check,  # per account (Gmail accounts)
             IntervalTrigger(minutes=email_interval),
             id="email_check",
             replace_existing=True,
         )
 
     # Cron-based jobs (empty = disabled)
-    _add_cron_job(run_db_backup, "db_backup", backup_cron)
-    _add_cron_job(send_daily_digest, "daily_digest", digest_cron)
-    _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron)
-    _add_cron_job(run_job_cleanup_auto, "job_cleanup", cleanup_cron)
-    _add_cron_job(run_auto_reject, "auto_reject", reject_cron)
+    _add_cron_job(run_db_backup, "db_backup", backup_cron, install_level=True)
+    _add_cron_job(send_daily_digest, "daily_digest", digest_cron)            # per account
+    _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron, install_level=True)
+    _add_cron_job(run_job_cleanup_auto, "job_cleanup", cleanup_cron)         # per account
+    _add_cron_job(run_auto_reject, "auto_reject", reject_cron)               # per account
 
     logger.info(
         f"Scheduler configured: scrape every {scrape_interval}m, "
@@ -170,7 +186,11 @@ def _activity_summary(since, log_type: str, noun: str, plural: str = None) -> st
 
 
 # ── Scheduled jobs ──────────────────────────────────────────────────────────
+@as_owner
 async def run_all_scrapes():
+    """Owner-only scrape (TODO(MT-8): run_all() becomes the shared-scrape fan-out — one
+    fetch per target, ingest per subscribing account — and this run then belongs to the
+    install, not the owner). The saved-job scoring pass already runs per account."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("scrape_all", "scheduler") as run:
@@ -179,16 +199,27 @@ async def run_all_scrapes():
             from backend.scraper.orchestrator import run_all
             await run_all()
             # CV scoring happens per-search/company based on their auto_scoring_depth setting
-            # Also score any saved-but-unscored jobs (from manual saves)
-            from backend.analyzer.cv_scorer import analyze_unscored_jobs
-            await analyze_unscored_jobs(status="saved")
+            # Also score any saved-but-unscored jobs (from manual saves), for every account
+            await for_each_account("saved-job scoring", _score_saved_jobs)
+            # Install-level system alert to the owner's chat; reads the owner's ScrapeLog
+            # until MT-8 writes one row per subscribing account.
             await check_scrape_health(since=started)
             run.summary = _scrape_summary(started)
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
 
 
+async def _score_saved_jobs():
+    from backend.analyzer.cv_scorer import analyze_unscored_jobs
+    await analyze_unscored_jobs(status="saved")
+
+
 async def run_email_check():
+    """Per account with Gmail configured (the owner until MT-19)."""
+    await for_each_account("email_check", _email_check_for_account, gmail_account_ids())
+
+
+async def _email_check_for_account():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("email_check", "scheduler") as run:
@@ -202,6 +233,12 @@ async def run_email_check():
 
 
 async def send_daily_digest():
+    """Per account: each account's digest counts only its own jobs and applications.
+    Until MT-17 every digest goes to the install's Telegram chat."""
+    await for_each_account("daily_digest", _digest_for_account)
+
+
+async def _digest_for_account():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("daily_digest", "scheduler") as run:
@@ -215,6 +252,8 @@ async def send_daily_digest():
 
 
 async def refresh_h1b_data():
+    """Install-level: one run (owner's JobRun); refresh_all_h1b reads every account's
+    companies and jobs, and VisaCache is shared."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("h1b_refresh", "scheduler") as run:
@@ -236,7 +275,11 @@ async def refresh_h1b_data():
 
 
 async def run_auto_reject():
-    """Move old non-rejected/non-offer applications to rejected after X days."""
+    """Move old non-rejected/non-offer applications to rejected after X days, per account."""
+    await for_each_account("auto_reject", _auto_reject_for_account)
+
+
+async def _auto_reject_for_account():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("auto_reject", "scheduler") as run:
@@ -271,7 +314,11 @@ async def run_auto_reject():
 
 
 async def run_job_cleanup_auto():
-    """Auto-delete old skipped jobs if job_archive_after_days > 0."""
+    """Auto-delete old skipped jobs if job_archive_after_days > 0, per account."""
+    await for_each_account("job_cleanup", _job_cleanup_for_account)
+
+
+async def _job_cleanup_for_account():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("job_cleanup", "scheduler") as run:
@@ -299,7 +346,9 @@ async def run_job_cleanup_auto():
 
 
 async def check_scrape_health(since=None):
-    """Alert via Telegram if any scraper has failed 3+ times consecutively.
+    """Install-level system alert, sent to the owner's chat only (runs as the owner inside
+    run_all_scrapes).
+    Alert via Telegram if any scraper has failed 3+ times consecutively.
     With `since`, only a source that ran at or after it can alert: a source that
     stopped running (a paused search) keeps its last three rows forever."""
     from backend.models.db import ScrapeLog
@@ -336,7 +385,7 @@ async def check_scrape_health(since=None):
 
 
 async def run_db_backup():
-    """Run pg_dump and keep max 5 backup files."""
+    """Install-level: run pg_dump of the whole database and keep max 5 backup files."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
         async with tracked_run("db_backup", "scheduler") as run:

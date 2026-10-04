@@ -134,8 +134,9 @@ def resolve_account(session) -> Optional[uuid.UUID]:
 
 def owner_context():
     """`use_account(owner)` when no account is set yet, else a no-op. For entry points of
-    background work (scheduler jobs, tracked runs, launched tasks) until MT-7 runs them
-    per account."""
+    background work with no account of their own: install-level scheduler jobs, tracked
+    runs and launched tasks started without a context (per-account jobs use
+    `backend.accounts.background.for_each_account`)."""
     if current_account.get() is not None or is_unscoped():
         return nullcontext()
     try:
