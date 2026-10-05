@@ -60,6 +60,25 @@ def is_unscoped() -> bool:
     return _unscoped.get()
 
 
+# MT-14: a member's browser that entered the owner's PIN in the last 15 minutes
+# (`request.state.owner_unlocked_until`, MT-10). The middleware sets it per request; it
+# lets that member write install-level settings and policies and start owner-only jobs.
+_owner_unlocked: ContextVar[bool] = ContextVar("jn_owner_unlocked", default=False)
+
+
+@contextmanager
+def owner_unlocked(on: bool = True):
+    token = _owner_unlocked.set(bool(on))
+    try:
+        yield
+    finally:
+        _owner_unlocked.reset(token)
+
+
+def is_owner_unlocked() -> bool:
+    return _owner_unlocked.get()
+
+
 def strict_mode() -> bool:
     return os.environ.get("MT_STRICT", "").strip().lower() in ("1", "true", "yes")
 

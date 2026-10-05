@@ -49,9 +49,14 @@ def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key sec
 
 
 @router.get("/sections")
-def get_sections():
-    """The settings sections: id (matches the Settings screen anchors where `ui` lists them), label, scope ('policy' | 'own_always' | 'owner_only'), default mode for 'policy' sections ('inherit' | 'own'), and the keys each holds."""
-    return acct_settings.sections_payload()
+def get_sections(db: Session = Depends(get_db)):
+    """The settings sections: id (matches the Settings screen anchors where `ui` lists them), label, scope ('policy' | 'own_always' | 'owner_only'), default mode for 'policy' sections ('inherit' | 'own'), and the keys each holds. For a member each section also carries `mode`: that member's effective mode ('inherit' | 'own' | 'own_always' | 'owner_only')."""
+    out = acct_settings.sections_payload()
+    member = acct_settings.member_account(db)
+    if member is not None:
+        for sec in out:
+            sec["mode"] = acct_settings.section_mode(db, member, sec["id"])
+    return out
 
 
 @router.patch("")
@@ -77,7 +82,7 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
         )
 
     try:
-        target = acct_settings.check_writable(db, checkable.keys())
+        targets = acct_settings.write_targets(db, checkable.keys())
     except acct_settings.SettingNotWritable as e:
         raise HTTPException(
             status_code=403,
@@ -86,18 +91,28 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
 
     warnings: list[str] = []
     updated = []
+    install_updated = []
     for key, value in updates.items():
         if isinstance(value, str) and value == "•" * 6:
             continue
         stored = json.dumps(value) if isinstance(value, (list, dict, bool)) else str(value)
+        target = targets.get(key)
         acct_settings.put_setting(db, key, stored, account_id=target)
         updated.append(key)
+        if target is None:
+            install_updated.append(key)
     db.commit()
 
-    if target is not None:
+    if not install_updated:
         # A member's own values touch no process-wide state (scheduler timing, semaphores
-        # and dedup params are read from install values, which the member cannot write).
+        # and dedup params are read from install values).
         return {"updated": updated, "warnings": warnings}
+
+    # A member writing install values through the owner unlock (MT-14): the reconfigure
+    # steps below must read the install values, not that member's own.
+    from contextlib import nullcontext
+    from backend.accounts.context import unscoped
+    member_caller = not acct_settings.is_owner_caller(db)
 
     def _reconfigure(name: str, fn) -> None:
         """Run one post-update reconfigure; a failure becomes a warning naming the step.
@@ -106,7 +121,8 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
         strings and stack detail, and the response is not the place for it.
         """
         try:
-            fn()
+            with (unscoped() if member_caller else nullcontext()):
+                fn()
         except Exception:
             warnings.append(f"{name} failed — see server logs")
             logger.exception("%s failed after settings update", name)
@@ -115,26 +131,27 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
         "scrape_interval_minutes", "email_check_interval_minutes",
         "backup_cron", "digest_cron", "h1b_cron", "cleanup_cron", "reject_cron",
     }
-    if timing_keys & set(updated):
+    if timing_keys & set(install_updated):
         _reconfigure("configure_scheduler", configure_scheduler)
 
-    if "scoring_max_concurrent" in updated:
+    if "scoring_max_concurrent" in install_updated:
         _reconfigure("reset_scoring_semaphore", reset_scoring_semaphore)
 
-    if "tailoring_max_concurrent" in updated:
+    if "tailoring_max_concurrent" in install_updated:
         def _reset_tailoring():
             from backend.api.routes_resumes import reset_tailoring_semaphore
             reset_tailoring_semaphore()
         _reconfigure("reset_tailoring_semaphore", _reset_tailoring)
 
-    if "dedup_tracking_params" in updated:
+    if "dedup_tracking_params" in install_updated:
         _reconfigure("reload_tracking_params", reload_tracking_params)
 
     return {"updated": updated, "warnings": warnings}
 
 
 def _require_owner(db):
-    if not acct_settings.is_owner_caller(db):
+    # MT-14: a member whose browser holds a live owner unlock acts as the owner here too.
+    if not acct_settings.acts_as_owner(db):
         raise HTTPException(status_code=403, detail="Only the account owner can change section policies")
 
 

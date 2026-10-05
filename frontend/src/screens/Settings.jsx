@@ -7,7 +7,10 @@ import { describeCron, whenShort, CRON_PRESETS } from '../time'
 import api from '../api'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
-import { AccountsTable, AddAccountModal, AddPeopleRow, YourAccount, accountsChanged } from './SettingsAccounts'
+import {
+  AccountsTable, AddAccountModal, AddPeopleRow, YourAccount, accountsChanged,
+  LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, memberGroup, rowLocked, scopeTag,
+} from './SettingsAccounts'
 import '../theme.css'
 
 // ── shared bits ──────────────────────────────────────────────────────────────
@@ -207,6 +210,12 @@ export default function Settings() {
   const [acctCount, setAcctCount] = useState(1)
   const [acctData, setAcctData] = useState(null)  // { accounts, max_accounts, self_id }
   const [adding, setAdding] = useState(false)
+  // MT-14: settings by role (all of it only with two or more accounts)
+  const [meta, setMeta] = useState(null)           // member: GET /settings `_meta`
+  const [sidx, setSidx] = useState(null)           // indexSections(GET /settings/sections)
+  const [policies, setPolicies] = useState({})     // owner: {memberId: {section: mode}}
+  const [policyFor, setPolicyFor] = useState('')   // owner: which member the Inherit/Own controls set
+  const [unlockedUntil, setUnlockedUntil] = useState(null)   // member: owner unlock end (ms)
   const { toasts, push, dismiss } = useToasts()
   const loc = useLocation()
   const navigate = useNavigate()
@@ -217,11 +226,22 @@ export default function Settings() {
       const n = Number(data.accounts_count) || 1
       setMe(data.account); setAcctCount(n)
       if (n >= 2) {
-        const r = await api.get('/accounts')
+        const owner = data.account.role === 'owner'
+        const [r, secs, pols] = await Promise.all([
+          api.get('/accounts'),
+          api.get('/settings/sections').catch(() => ({ data: [] })),
+          owner ? api.get('/settings/policies').catch(() => ({ data: {} })) : Promise.resolve({ data: {} }),
+        ])
         setAcctData(r.data || null)
+        setSidx(indexSections(secs.data))
+        setPolicies(pols.data || {})
+        const members = (r.data?.accounts || []).filter((a) => a.role !== 'owner')
+        setPolicyFor((cur) => (members.some((m) => m.id === cur) ? cur : (members[0]?.id || '')))
+        const t = Date.parse(data.owner_unlocked_until || '')
+        setUnlockedUntil(Number.isFinite(t) && t > Date.now() ? t : null)
         const self = (r.data?.accounts || []).find((a) => a.id === data.account.id)
         if (self) setMe((m) => ({ ...m, ...self }))
-      } else setAcctData(null)
+      } else { setAcctData(null); setSidx(null); setPolicies({}); setUnlockedUntil(null) }
     } catch { /* silent: the accounts UI stays hidden, every other row works */ }
   }, [])
   useEffect(() => {
@@ -230,6 +250,37 @@ export default function Settings() {
   }, [loadAccounts])
   const multi = acctCount >= 2 && !!me
   const isOwner = !me || me.role === 'owner'
+  const member = multi && !isOwner
+  const ownerName = (acctData?.accounts || []).find((a) => a.role === 'owner')?.name || 'the owner'
+  const unlocked = !!unlockedUntil
+  // the unlock ends on its own after 15 minutes
+  useEffect(() => {
+    if (!unlockedUntil) return undefined
+    const t = setTimeout(() => setUnlockedUntil(null), Math.max(0, unlockedUntil - Date.now()) + 500)
+    return () => clearTimeout(t)
+  }, [unlockedUntil])
+  const onUnlocked = useCallback((until) => {
+    setUnlockedUntil(until)
+    push({ kind: 'success', msg: `Unlocked as ${ownerName} until ${hhmm(until)}` })
+  }, [ownerName, push])
+  const lockOwner = useCallback(async () => {
+    try { await api.post('/auth/owner-lock') } catch { /* the cookie keeps its unlock until it runs out */ }
+    setUnlockedUntil(null)
+    push({ kind: 'success', msg: 'Owner sections locked' })
+  }, [push])
+  const setPolicy = useCallback(async (section, title, mode) => {
+    if (!policyFor) return
+    const who = (acctData?.accounts || []).find((a) => a.id === policyFor)?.name || 'The member'
+    const prev = policies[policyFor]?.[section]
+    setPolicies((p) => ({ ...p, [policyFor]: { ...(p[policyFor] || {}), [section]: mode } }))
+    try {
+      await api.patch('/settings/policies', { account_id: policyFor, section, mode })
+      flash(mode === 'own' ? `${who} keeps their own ${title}` : `${who} inherits your ${title}`)
+    } catch (e) {
+      setPolicies((p) => ({ ...p, [policyFor]: { ...(p[policyFor] || {}), [section]: prev } }))
+      flash(e?.response?.data?.detail || 'Could not change the policy', true)
+    }
+  }, [policyFor, policies, acctData])  // eslint-disable-line react-hooks/exhaustive-deps
   const scrollRef = useRef(null)
   const timers = useRef([])
   const flashTimer = useRef(null)
@@ -239,7 +290,10 @@ export default function Settings() {
     try {
       const [s, d, e] = await Promise.all([api.get('/settings'), api.get('/settings/defaults').catch(() => ({ data: {} })),
         api.get('/llm/efforts').catch(() => ({ data: {} }))])
-      setS(s.data || {}); setDefaults(d.data || {}); setEfforts(e.data?.efforts || {})
+      // A member's GET /settings carries `_meta` {key: {section, source, editable}} (MT-9);
+      // it is not a setting, so it lives beside the map, never in it.
+      const { _meta: metaMap, ...values } = s.data || {}
+      setS(values); setMeta(metaMap || null); setDefaults(d.data || {}); setEfforts(e.data?.efforts || {})
       // an override row starts open when it actually has a provider or an effort set
       const o = {}
       for (const k of ['scoring_llm', 'llm_fallback', 'cv_tailor_llm', 'cover_letter_llm', 'autofill_llm', 'email_llm']) {
@@ -488,8 +542,8 @@ export default function Settings() {
         SW('Telegram', 'New high-scoring jobs and the daily digest are sent to your chat. The digest schedule is under Scheduler.', 'Off — no push notifications.', 'telegram_enabled'),
         B('Chat ID', 'Your Telegram chat — get it by messaging @userinfobot.', 'telegram_chat_id', { mono: true, w: '135px' }),
         B('Score threshold', 'Only jobs scoring at or above this trigger an instant alert.', 'fit_score_threshold', { mono: true, int: true, w: '135px' }),
-        BT('Test', 'Confirms the bot token and chat ID work end to end.', 'Send test message', () => api.post('/telegram/test')),
-        { kind: 'button', label: 'Webhook secret', help: 'Optional. Checks every call from Telegram to the backend. Alerts and the digest work without it.',
+        BT('Test', 'Confirms the bot token and chat ID work end to end.', 'Send test message', () => api.post('/telegram/test'), { lockKey: 'telegram_chat_id' }),
+        { kind: 'button', lockKey: 'telegram_webhook_secret', label: 'Webhook secret', help: 'Optional. Checks every call from Telegram to the backend. Alerts and the digest work without it.',
           btnLabel: 'Rotate', previewBox: '260px',
           preview: S.telegram_webhook_secret === MASK ? 'Set (hidden — rotate to view)' : (S.telegram_webhook_secret ? 'Set' : 'Not set'),
           info: 'Telegram sends this secret with every webhook call. Calls with the wrong secret are rejected. After rotating, the new secret is shown once: copy it, then register the webhook again.',
@@ -507,7 +561,7 @@ export default function Settings() {
           // local failures carry `error`, Telegram's own carry `description`
           const failed = data?.ok === false
           flash(failed ? (data.description || data.error || 'Registration failed') : 'Webhook registered', failed)
-        }),
+        }, { lockKey: 'telegram_webhook_secret' }),
       ]],
       ['tracer', '', 'Tracked links', '', [
         SW('Rewrite links', 'Résumé and letter links become short links on your domain that record when a recruiter opens them.', 'Off — documents keep their original links.', 'tracer_links_enabled',
@@ -529,7 +583,7 @@ export default function Settings() {
       ['linkedin', '', 'LinkedIn', '', [
         B('Personal email', 'Used by LinkedIn Personal collections.', 'linkedin_email', { w: '260px' }),
         B('Personal password', 'Stored locally.', 'linkedin_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
+        { kind: 'linkedin', ownerOnly: true, label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
         SW('Use a mock account', 'The session signs in with the mock account below.', 'Off — the session signs in with the personal account above.', 'linkedin_use_mock_account',
           { dflt: !!val('linkedin_mock_email'), info: 'Optional. The extension captures jobs while you browse LinkedIn collections. A separate account keeps rate limits, CAPTCHAs or bans off your real profile.' }),
         ...(isOn('linkedin_use_mock_account', !!val('linkedin_mock_email')) ? [
@@ -540,7 +594,7 @@ export default function Settings() {
       ['advanced', 'System', 'Advanced', '', [
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),
         { kind: 'apikey', label: 'Dashboard API key', help: 'Saving refreshes the session cookie so iframes keep working.' },
-        BT('DB backup', 'DB snapshot now, outside the cron.', 'Run backup', () => api.post('/db/backup')),
+        BT('DB backup', 'DB snapshot now, outside the cron.', 'Run backup', () => api.post('/db/backup'), { ownerOnly: true }),
         // MT-13: the one row a single-account install gains — the owner's way in to adding the first member.
         // From two accounts on, the full Accounts section at the top takes over.
         ...(!multi && isOwner ? [{ kind: 'addpeople', label: 'Accounts', help: 'Add people to this install — each gets their own jobs, résumés and settings.' }] : []),
@@ -576,7 +630,24 @@ export default function Settings() {
   const q = query.trim().toLowerCase()
   const matches =(sec) => !q || sec[2].toLowerCase().includes(q) ||
     sec[4].some((r) => `${r.label} ${r.help || ''}`.toLowerCase().includes(q))
-  const visible = sections.filter(matches)
+  // MT-14 · a member's nav regroups into You · AI · yours · Yours · Shared · <owner> 🔒
+  // (contiguous groups, the page's own order inside each); everyone else keeps the page.
+  const MEMBER_GROUPS = ['You', 'AI · yours', 'Yours']
+  const ordered = useMemo(() => {
+    if (!member) return sections
+    const tagged = sections.map((s) => ({ s, g: memberGroup(s[0], sidx, ownerName, unlocked) }))
+    const rank = (g) => { const i = MEMBER_GROUPS.indexOf(g); return i < 0 ? MEMBER_GROUPS.length : i }
+    const out = []
+    let last = null
+    tagged.map((t, i) => ({ ...t, i })).sort((a, b) => rank(a.g) - rank(b.g) || a.i - b.i).forEach(({ s, g }) => {
+      out.push([s[0], g !== last ? g : '', ...s.slice(2)])
+      last = g
+    })
+    return out
+  }, [sections, member, sidx, ownerName, unlocked])  // eslint-disable-line react-hooks/exhaustive-deps
+  const lockCtx = { member, unlocked, meta, idx: sidx }
+  const sectionLocked = (rows) => rows.some((r) => !(r.hide && r.hide()) && rowLocked(r, lockCtx))
+  const visible = ordered.filter(matches)
 
   // Hoisted so the LOADING frame paints the same chrome the settled one does —
   // this screen used to render a bare centred div, so on a slow link it was
@@ -587,11 +658,25 @@ export default function Settings() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
         <PageTitle>Settings</PageTitle>
         <span style={{ fontSize: 13, lineHeight: '20px', color: toast?.bad ? 'var(--bad)' : (toast ? 'var(--accent)' : 'var(--muted)'), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', transition: 'color .15s' }}>
-          {toast ? toast.msg : (ready ? 'Saves automatically · everything stays on this machine' : NBSP)}
+          {toast ? toast.msg : (ready ? (member ? `Your settings save automatically · shared settings are ${ownerName}’s` : 'Saves automatically · everything stays on this machine') : NBSP)}
         </span>
       </div>
+      {/* MT-14: a member's lock pill; the owner's "whose policies" picker */}
+      {ready && member && (
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: 32 }}>
+          <UnlockPill ownerName={ownerName} unlockedUntil={unlockedUntil} onUnlocked={onUnlocked} onLock={lockOwner} />
+        </span>
+      )}
+      {ready && multi && isOwner && policyFor && (
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Helper style={{ whiteSpace: 'nowrap' }}>Policies for</Helper>
+          <Select value={policyFor} width="180px" ariaLabel="Member whose section policies you set"
+            options={(acctData?.accounts || []).filter((a) => a.role !== 'owner').map((a) => [a.id, a.name])}
+            onPick={setPolicyFor} />
+        </span>
+      )}
       {/* ui: keep — settings search field wrapper (Input role), not a pill; h32 tracks ui.jsx's boxed SearchInput */}
-      <div className="v2-fieldwrap" style={{ marginLeft: 'auto', flex: '0 0 auto', height: 32, width: 230, padding: '0 12px', border: '1px solid var(--edge)', background: 'var(--surface)', borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', gap: 7 }}>
+      <div className="v2-fieldwrap" style={{ marginLeft: ready && multi && (member || policyFor) ? 0 : 'auto', flex: '0 0 auto', height: 32, width: 230, padding: '0 12px', border: '1px solid var(--edge)', background: 'var(--surface)', borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', gap: 7 }}>
         {/* ui: keep — the field's search glyph (an icon adornment), not a helper sub-line; Helper's 11.5 would grow the glyph */}
         <span style={{ flex: '0 0 auto', fontSize: 11, color: 'var(--muted)' }}>⌕</span>
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search settings…"
@@ -633,11 +718,13 @@ export default function Settings() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {/* anchor rail */}
         <div className="v2-scroll" style={{ flex: '0 0 216px', borderRight: '1px solid var(--line)', overflow: 'auto', padding: '16px 0 20px' }}>
-          {sections.map(([id, group, title]) => (
+          {ordered.map(([id, group, title, , rows]) => (
             <div key={id} style={{ display: 'flex', flexDirection: 'column' }}>
               {group && <Label style={{ padding: '14px 26px 6px 30px' }}>{group}</Label>}
               {/* ui: keep — a nav row, not an inline link: h29 with a selected state (accent border-left, 600 weight) */}
               <div onClick={() => jump(id)} {...kb(() => jump(id), 'link')} aria-label={`Jump to ${title}`} className="v2-anchor" style={{ display: 'flex', alignItems: 'center', height: 29, padding: '0 26px 0 29px', fontSize: 12.5, cursor: 'pointer',
+                // MT-14: a member's locked sections read dimmed in the nav
+                ...(member && sectionLocked(rows) ? { opacity: 0.55 } : null),
                 color: active === id && !q ? 'var(--text)' : 'var(--text-2)', fontWeight: active === id && !q ? 600 : 400,
                 /* 3px accent border + 29px left pad keeps the label position consistent whether or not the border shows */
                 borderLeft: `3px solid ${active === id && !q ? 'var(--accent)' : 'transparent'}` }}>{title}</div>
@@ -659,12 +746,36 @@ export default function Settings() {
                   <Heading strong size={19}>{title}</Heading>
                   {/* ui: keep — the 26px line-height is the alignment (see above): Helper's 16px would drop this off the grid */}
                   <span style={{ fontSize: 11.5, lineHeight: '26px', color: 'var(--muted)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</span>
+                  {/* MT-14 (two or more accounts only): the section's scope, or the owner's Inherit / Own control */}
+                  {multi && !block && (() => {
+                    const sec = sidx?.byId?.[id]
+                    if (isOwner && sec?.scope === 'policy') {
+                      if (!policyFor) return null
+                      const name = (acctData?.accounts || []).find((a) => a.id === policyFor)?.name || 'Member'
+                      return <PolicyToggle memberName={name} sectionTitle={title}
+                        mode={policies[policyFor]?.[id] || sec.default} onChange={(m) => setPolicy(id, title, m)} />
+                    }
+                    const tag = scopeTag(id, { idx: sidx, member, ownerName })
+                    return tag ? <span data-scope-tag={tag.label} style={{ marginLeft: 'auto', display: 'flex' }}><ScopeTag tag={tag} /></span> : null
+                  })()}
                 </div>
                 {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push} />}
                 {block === 'account' && <YourAccount data={acctData} me={me} onChanged={accountsChanged} push={push} />}
-                {rows.filter((r) => !(r.hide && r.hide())).map((r) => (
-                  <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow, openAdd: () => setAdding(true) }} />
-                ))}
+                {rows.filter((r) => !(r.hide && r.hide())).map((r) => {
+                  const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow, openAdd: () => setAdding(true) }} />
+                  if (!member) return row
+                  // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and inert
+                  const locked = rowLocked(r, lockCtx)
+                  return (
+                    <div key={r.label} data-locked={locked ? 'true' : undefined} aria-disabled={locked || undefined}
+                      ref={(el) => { if (el) { if (locked) el.setAttribute('inert', ''); else el.removeAttribute('inert') } }}
+                      style={locked ? { opacity: 0.55, pointerEvents: 'none' } : undefined}>{row}</div>
+                  )
+                })}
+                {member && !block && sectionLocked(rows) && (
+                  <LockCard ownerName={ownerName} sectionTitle={title} onUnlocked={onUnlocked}
+                    inherited={sidx?.byId?.[id]?.scope === 'policy' && sidx?.byId?.[id]?.mode === 'inherit'} />
+                )}
               </div>
             ))}
             {visible.length === 0 && (

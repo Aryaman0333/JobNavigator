@@ -52,6 +52,14 @@ def _wait_text(pg, text, ms=8000):
         return False
 
 
+def _wait_text_ci(pg, text, ms=8000):
+    try:
+        pg.wait_for_function('(t) => (document.body.innerText || "").toLowerCase().includes(t.toLowerCase())', arg=text, timeout=ms)
+        return True
+    except Exception:
+        return False
+
+
 def _gone_text(pg, text, ms=8000):
     try:
         pg.wait_for_function('(t) => !(document.body.innerText || "").includes(t)', arg=text, timeout=ms)
@@ -215,6 +223,105 @@ def _mt_settings(c):
             c.eq('… with no owner PIN', d['accounts'][0]['has_pin'], False)
 
 
+def _sec_has(pg, sec, selector):
+    return pg.evaluate("""([s, sel]) => {
+      const head = document.querySelector(`[data-sec="sec-${s}"]`);
+      return head ? head.parentElement.querySelectorAll(sel).length : -1;
+    }""", [sec, selector])
+
+
+def _tag(pg, sec):
+    return pg.evaluate("""(s) => { const h = document.querySelector(`[data-sec="sec-${s}"] [data-scope-tag]`);
+      return h ? h.getAttribute('data-scope-tag') : null }""", sec)
+
+
+def _fetch(pg, method, path, body=None):
+    return pg.evaluate("""async ([m, p, b]) => {
+      const r = await fetch('/api' + p, { method: m, credentials: 'include',
+        headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+      return r.status;
+    }""", [method, path, body])
+
+
 def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
-    """MT-14 flows; filled in by that batch."""
-    return None
+    """MT-14: scope tags, the member's locked view, the owner's Inherit/Own, the owner-PIN unlock."""
+    st, s = _api('GET', '/settings', account=owner_id)
+    tracer_before = (s or {}).get('tracer_links_base_url') or ''
+    prep_before = (s or {}).get('prep_include', '')
+    try:
+        # ── member, locked ──
+        C.go(mpg, '/settings', settle=1500)
+        labels = mpg.evaluate("() => [...document.querySelectorAll('label, span')].map((e) => e.textContent.trim()).filter((t) => /^(You|AI · yours|Yours|Shared · )/.test(t))")
+        c.check('member nav groups: You · AI · yours · Yours · Shared · owner',
+                all(any(l.startswith(g) for l in labels) for g in ('You', 'AI · yours', 'Yours', f'Shared · {owner_name}')), labels[:8])
+        c.eq('Advanced is tagged Owner only', _tag(mpg, 'advanced'), 'Owner only')
+        c.eq('Display is tagged Per device', _tag(mpg, 'appearance'), 'Per device')
+        c.eq('Interview prep is inherited', _tag(mpg, 'prep'), f'Inherited from {owner_name}')
+        c.eq('Global exclude is the member’s', _tag(mpg, 'exclude'), 'Yours')
+        c.check('Advanced rows are locked', _sec_has(mpg, 'advanced', '[data-locked="true"]') >= 2)
+        c.eq('… with a lock card', _sec_has(mpg, 'advanced', '[data-lock-card]'), 1)
+        c.eq('Global exclude has no lock card', _sec_has(mpg, 'exclude', '[data-lock-card]'), 0)
+        c.check('the header pill says locked', C.body_has(mpg, f'Owner sections locked · Unlock as {owner_name}'))
+        c.eq('a member cannot write an owner-only setting', _fetch(mpg, 'PATCH', '/settings', {'tracer_links_base_url': 'https://zzs.example'}), 403)
+        c.eq('… nor an inherited one', _fetch(mpg, 'PATCH', '/settings', {'prep_include': 'posting'}), 403)
+        _scroll_to(mpg, 'advanced')
+        mpg.screenshot(path=f'{SHOTS}/member-lock-card.png')
+
+        # ── owner flips Interview prep to Own for the member ──
+        C.go(opg, '/settings', settle=1500)
+        c.check('owner: Accounts has no scope tag; Advanced says Owner only', _tag(opg, 'advanced') == 'Owner only', _tag(opg, 'advanced'))
+        c.check('owner: the policy picker names the member', C.body_has(opg, 'Policies for'))
+        _scroll_to(opg, 'prep')
+        opg.locator('[data-sec="sec-prep"] [role="radio"]', has_text='Own').click()
+        c.check('owner: flipping toasts in the header', _wait_text(opg, f'{member_name} keeps their own Interview prep'))
+        st, pol = _api('GET', '/settings/policies', account=owner_id)
+        c.eq('the policy is stored', (pol or {}).get(member_id, {}).get('prep'), 'own')
+        opg.screenshot(path=f'{SHOTS}/owner-policy.png')
+
+        # ── member edits it now ──
+        C.go(mpg, '/settings', settle=1500)
+        c.eq('member: Interview prep is theirs now', _tag(mpg, 'prep'), 'Yours')
+        c.eq('… and not locked', _sec_has(mpg, 'prep', '[data-locked="true"]'), 0)
+        _scroll_to(mpg, 'prep')
+        mpg.locator('[aria-label="Include by default"]').click()
+        mpg.get_by_text('Posting only', exact=True).click()
+        c.check('member: the edit saves', _wait_text(mpg, 'Saved'))
+        st, s = _api('GET', '/settings', account=member_id)
+        c.eq('… to the member’s own value', (s or {}).get('prep_include'), 'posting')
+        st, s = _api('GET', '/settings', account=owner_id)
+        c.eq('… the owner’s value is untouched', (s or {}).get('prep_include'), prep_before)
+
+        # ── unlock with the owner PIN, edit an owner section, lock again ──
+        _scroll_to(mpg, 'advanced')
+        mpg.locator('[data-lock-card="Advanced"] input').first.click()
+        mpg.keyboard.type('0000', delay=60)
+        c.check('a wrong owner PIN is refused', _wait_text(mpg, 'Wrong PIN'))
+        mpg.wait_for_timeout(300)
+        mpg.locator('[data-lock-card="Advanced"] input').first.click()
+        mpg.keyboard.type(OWNER_PIN, delay=60)
+        # the Tag paints caps in some themes (innerText follows text-transform): match the attribute-free text case-insensitively
+        c.check('the owner PIN unlocks', _wait_text_ci(mpg, f'Unlocked as {owner_name} · until'))
+        me = mpg.evaluate("async () => (await (await fetch('/api/auth/me', { credentials: 'include' })).json()).owner_unlocked_until")
+        c.check('… the server knows the unlock', bool(me), me)
+        c.eq('the lock cards are gone', _sec_has(mpg, 'advanced', '[data-lock-card]'), 0)
+        c.eq('… and the rows are live', _sec_has(mpg, 'tracer', '[data-locked="true"]'), 0)
+        _scroll_to(mpg, 'tracer')
+        box = mpg.locator('[aria-label="Base URL"]')
+        box.click()
+        box.fill('https://zzs-unlock.example')
+        with mpg.expect_response(lambda r: r.request.method == 'PATCH' and r.url.endswith('/api/settings')) as resp:
+            box.blur()
+        c.eq('… the PATCH goes through as the owner', resp.value.status, 200)
+        c.check('an owner section edit saves while unlocked', _wait_text(mpg, 'Saved'))
+        st, s = _api('GET', '/settings', account=owner_id)
+        c.eq('… as the install value', (s or {}).get('tracer_links_base_url'), 'https://zzs-unlock.example')
+        mpg.screenshot(path=f'{SHOTS}/member-unlocked.png')
+        mpg.get_by_text('Lock', exact=True).click()
+        c.check('Lock relocks', _wait_text(mpg, f'Owner sections locked · Unlock as {owner_name}'))
+        c.check('… and the rows lock again', _sec_has(mpg, 'tracer', '[data-locked="true"]') >= 1)
+        c.eq('… also on the server', _fetch(mpg, 'PATCH', '/settings', {'tracer_links_base_url': 'https://x.example'}), 403)
+    finally:
+        st, _ = _api('PATCH', '/settings', {'tracer_links_base_url': tracer_before}, account=owner_id)
+        st2, s = _api('GET', '/settings', account=owner_id)
+        c.eq('the tracer base URL is restored', (s or {}).get('tracer_links_base_url'), tracer_before)
+        c.eq('the owner’s prep_include is unchanged', (s or {}).get('prep_include'), prep_before)

@@ -144,7 +144,7 @@ def _pool_busy_response() -> JSONResponse:
 # owner when the install has one account, else 401 account_required). The rules and the
 # cookie format are documented in backend/accounts/auth.py.
 import hmac as _hmac_mw
-from backend.accounts.context import owner_context, use_account, is_unscoped
+from backend.accounts.context import owner_context, owner_unlocked, use_account, is_unscoped
 from backend.accounts import auth as acct_auth
 
 # Paths that NEVER require auth (exact or prefix match)
@@ -243,7 +243,8 @@ async def _api_key_auth(request: Request, call_next):
         return await _as_owner(request, call_next)
     request.state.account_id = res.account["id"]
     request.state.owner_unlocked_until = res.unlocked_until
-    with use_account(res.account["id"]):
+    unlocked = bool(res.unlocked_until) and res.unlocked_until > acct_auth._now()
+    with use_account(res.account["id"]), owner_unlocked(unlocked):
         return await call_next(request)
 
 
@@ -455,6 +456,24 @@ def auth_verify_owner_pin(body: dict, request: Request, response: _Response):
         until = int(acct_auth._now() + acct_auth.OWNER_UNLOCK_SECONDS)
         acct_auth.set_account_cookie(response, db, acc, unlocked_until=until)
         return {"ok": True, "unlocked_until": _epoch_iso(until)}
+    finally:
+        db.close()
+
+
+@app.post("/api/auth/owner-lock", tags=["auth"], summary="End the owner unlock in this browser")
+def auth_owner_lock(request: Request, response: _Response):
+    """MT-14 "Lock": re-issues this browser's `jn_account` cookie for the same account with no owner unlock. Returns {ok, locked}. A browser with no account cookie (one account, or the API path) has nothing to lock: {ok, locked: false}."""
+    from backend.accounts.context import current_account
+    if not request.cookies.get(acct_auth.COOKIE_NAME):
+        return {"ok": True, "locked": False}
+    db = SessionLocal()
+    try:
+        accounts = acct_auth.load_accounts(db)
+        acc = acct_auth._find(accounts, current_account.get())
+        if acc is None:
+            return {"ok": True, "locked": False}
+        acct_auth.set_account_cookie(response, db, acc, unlocked_until=0)
+        return {"ok": True, "locked": True}
     finally:
         db.close()
 

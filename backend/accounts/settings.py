@@ -240,6 +240,39 @@ def check_writable(db, keys) -> Optional[uuid.UUID]:
     return member
 
 
+def write_targets(db, keys) -> dict:
+    """{key: account id or None (install)} for a PATCH, all-or-nothing (MT-14).
+
+    Owner / system: every key → install. Member: keys of sections it owns → its own rows;
+    the rest → install when the browser holds a live owner unlock (the owner entered their
+    PIN, `is_owner_unlocked()`), else SettingNotWritable naming them."""
+    from backend.accounts.context import is_owner_unlocked
+    member = member_account(db)
+    if member is None:
+        return {k: None for k in keys}
+    modes = {}
+    out, denied = {}, []
+    for k in keys:
+        sid = section_of(k)
+        if sid not in modes:
+            modes[sid] = section_mode(db, member, sid)
+        if _owns(modes[sid]):
+            out[k] = member
+        elif is_owner_unlocked():
+            out[k] = None
+        else:
+            denied.append(k)
+    if denied:
+        raise SettingNotWritable(denied)
+    return out
+
+
+def acts_as_owner(db) -> bool:
+    """Owner, system code, or a member with a live owner unlock (MT-14)."""
+    from backend.accounts.context import is_owner_unlocked
+    return member_account(db) is None or is_owner_unlocked()
+
+
 def put_setting(db, key: str, value: str, account_id=None, description=None):
     """Upsert the row for (key, account_id) — None = install. No commit."""
     from backend.models.db import Setting

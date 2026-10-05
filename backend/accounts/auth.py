@@ -431,8 +431,8 @@ def require_owner():
     """FastAPI dependency: 403 for a member (install-level jobs: backup, H-1B refresh,
     LinkedIn session). Owner, system code and no-context callers pass."""
     from fastapi import HTTPException
-    from backend.accounts.context import current_account, is_unscoped, owner_account_id
-    if is_unscoped():
+    from backend.accounts.context import current_account, is_owner_unlocked, is_unscoped, owner_account_id
+    if is_unscoped() or is_owner_unlocked():   # MT-14: the owner entered their PIN here
         return
     acc = current_account.get()
     if acc is None:

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import api, { authFailure } from '../api'
 import {
   ACCOUNT_SWATCHES, Avatar, Button, Check, Heading, Helper, Input, Link, ModalPanel, Pill,
-  PinPad, Select, Surface, Tag, kb,
+  PinPad, Segmented, Select, Surface, Tag, kb,
 } from '../ui'
 
 // Settings › Accounts (owner) and Settings › Your account (member) — MT-13.
@@ -475,5 +475,193 @@ export function YourAccount({ data, me, onChanged, push }) {
           onClose={() => setPinMode(null)} />
       )}
     </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MT-14 · Settings by role
+// ════════════════════════════════════════════════════════════════════════════
+
+// The AI sections (the member's "AI · yours" nav group).
+export const AI_SECTIONS = ['models', 'scoring', 'tailoring', 'letters', 'autofill', 'prep', 'emailclass']
+
+// The setting key a row stands for (its lock follows that key's section), or a
+// `lockKey` the row names; `ownerOnly` rows call owner-only endpoints.
+export function rowKey(r) {
+  if (!r) return null
+  if (r.lockKey) return r.lockKey
+  if (r.key) return r.key
+  if (r.pKey) return r.pKey
+  if (r.base) return `${r.base}_provider`
+  if (r.kind === 'models') return 'llm_models_list'
+  if (r.kind === 'apikey') return 'dashboard_api_key'
+  return null
+}
+
+// Map GET /settings/sections into { byId, keySection }.
+export function indexSections(list) {
+  const byId = {}
+  const keySection = {}
+  for (const s of Array.isArray(list) ? list : []) {
+    byId[s.id] = s
+    for (const k of s.keys || []) keySection[k] = s.id
+  }
+  return { byId, keySection }
+}
+
+const OWNS = ['own', 'own_always']
+
+// Can a member edit `key`? `_meta` (from GET /settings) first, else the section's mode.
+export function memberCanEdit(key, meta, idx) {
+  if (!key) return true
+  const m = meta && meta[key]
+  if (m && typeof m.editable === 'boolean') return m.editable
+  const sid = idx?.keySection?.[key] || 'system'
+  const sec = idx?.byId?.[sid]
+  return !!sec && OWNS.includes(sec.mode)
+}
+
+// Is this row locked for the viewer? Only members, only while not unlocked.
+export function rowLocked(r, { member, unlocked, meta, idx }) {
+  if (!member || unlocked) return false
+  if (r.ownerOnly) return true
+  if (r.kind === 'appearance' || r.kind === 'theme' || r.href) return false
+  return !memberCanEdit(rowKey(r), meta, idx)
+}
+
+// The member's nav group for a section (`You`, `AI · yours`, `Yours`, `Shared · <owner>`).
+// No 🔒 glyph: the headless Chromium (and some Linux desktops) have no emoji font, it drew a
+// box; the locked sections read dimmed in the nav instead.
+export function memberGroup(id, idx, ownerName, unlocked) {
+  if (id === 'account') return 'You'
+  if (AI_SECTIONS.includes(id)) return 'AI · yours'
+  if (id === 'appearance') return 'Yours'
+  const sec = idx?.byId?.[id]
+  if (sec && OWNS.includes(sec.mode)) return 'Yours'
+  return `Shared · ${ownerName || 'owner'}`
+}
+
+// The scope tag beside a section title.
+export function scopeTag(id, { idx, member, ownerName }) {
+  if (id === 'appearance') return { label: 'Per device', tone: 'neutral' }
+  const sec = idx?.byId?.[id]
+  if (!sec) return null
+  if (sec.scope === 'owner_only') return { label: 'Owner only', tone: 'good' }
+  if (sec.scope === 'own_always') return member ? { label: 'Yours', tone: 'accent' } : { label: 'Per account', tone: 'neutral' }
+  if (!member) return null   // the owner gets the Inherit / Own control instead
+  return sec.mode === 'own' ? { label: 'Yours', tone: 'accent' } : { label: `Inherited from ${ownerName || 'the owner'}`, tone: 'neutral' }
+}
+
+export function ScopeTag({ tag }) {
+  if (!tag) return null
+  return <Tag tone={tag.tone}>{tag.label}</Tag>
+}
+
+// Owner: "<member>: Inherit | Own" for one policy section.
+export function PolicyToggle({ memberName, mode, onChange, sectionTitle }) {
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 7, marginLeft: 'auto', flex: '0 0 auto' }}>
+      <Helper size="xs">{memberName}:</Helper>
+      <Segmented variant="inset" grow={false} value={mode} onChange={onChange}
+        ariaLabel={`${sectionTitle} for ${memberName}`}
+        options={[{ value: 'inherit', label: 'Inherit', hint: `${memberName} sees your values, read-only` },
+          { value: 'own', label: 'Own', hint: `${memberName} keeps their own values` }]} />
+    </span>
+  )
+}
+
+// POST /api/auth/verify-owner-pin; resolves with the unlock's end (ms), rejects with
+// a message (and `retryAfter` on a cooldown).
+export async function verifyOwnerPin(pin) {
+  try {
+    const { data } = await api.post('/auth/verify-owner-pin', { pin })
+    const t = Date.parse(data?.unlocked_until || '')
+    return Number.isFinite(t) ? t : Date.now() + 15 * 60000
+  } catch (err) {
+    const f = authFailure(err)
+    const e = new Error(errorText(err, 'Could not check the PIN — try again.'))
+    if (f?.kind === 'pin_cooldown') e.retryAfter = f.retryAfter
+    throw e
+  }
+}
+
+export const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+// The owner-PIN pad used by the lock card and the header pill's dialog.
+export function OwnerPinPad({ ownerName, onUnlocked, autoFocus = false }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [cooldown, setCooldown] = useState(0)
+  const [attempt, setAttempt] = useState(0)
+  const submit = async (pin) => {
+    setBusy(true); setError('')
+    try {
+      const until = await verifyOwnerPin(pin)
+      setBusy(false)
+      onUnlocked(until)
+    } catch (e) {
+      setBusy(false); setError(e.retryAfter ? '' : e.message); setCooldown(e.retryAfter || 0); setAttempt((n) => n + 1)
+    }
+  }
+  return (
+    <PinPad onComplete={submit} busy={busy} error={error} cooldown={cooldown} onCooldownEnd={() => setCooldown(0)}
+      resetKey={attempt} autoFocus={autoFocus} hint={`${ownerName}’s PIN`} ariaLabel={`${ownerName}’s PIN`} />
+  )
+}
+
+// After the last row of a section a member cannot edit.
+export function LockCard({ ownerName, inherited, sectionTitle, onUnlocked }) {
+  return (
+    <Surface radius="card" pad="12px 14px" data-lock-card={sectionTitle}
+      style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 12 }}>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ fontSize: 12.5, lineHeight: '18px', fontWeight: 500 }}>
+          {inherited ? `Inherited from ${ownerName}` : `Shared by everyone on this install`}
+        </span>
+        <Helper style={{ textWrap: 'pretty' }}>
+          {inherited
+            ? `You see ${ownerName}’s values. ${ownerName} can give you your own here, or enter their PIN to change the shared values for 15 minutes.`
+            : `${ownerName} can change it. Ask them, or have them enter their PIN to unlock for 15 minutes.`}
+        </Helper>
+      </div>
+      <OwnerPinPad ownerName={ownerName} onUnlocked={onUnlocked} />
+    </Surface>
+  )
+}
+
+// Header pill: "🔒 Owner sections locked · Unlock as X" ↔ "Unlocked as X · until HH:MM · Lock".
+export function UnlockPill({ ownerName, unlockedUntil, onUnlocked, onLock }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  if (unlockedUntil) {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto' }}>
+        <Tag tone="warn">Unlocked as {ownerName} · until {hhmm(unlockedUntil)}</Tag>
+        <Pill size="sm" disabled={busy} ariaLabel="Lock the owner sections again"
+          onClick={async () => { setBusy(true); try { await onLock() } finally { setBusy(false) } }}>Lock</Pill>
+      </span>
+    )
+  }
+  return (
+    <>
+      <Pill size="sm" onClick={() => setOpen(true)} ariaLabel={`Owner sections locked — unlock as ${ownerName}`}>
+        Owner sections locked · Unlock as {ownerName}
+      </Pill>
+      {open && (
+        <ModalPanel width={380} title={`Unlock as ${ownerName}`} onClose={() => setOpen(false)} zIndex={75}
+          style={{ padding: '22px 24px 18px', gap: 12 }}>
+          <Heading size={19} className="v2-dialogtitle">Unlock as {ownerName}</Heading>
+          <Helper style={{ textWrap: 'pretty' }}>
+            {ownerName} enters their PIN; for 15 minutes this browser can change the shared settings as {ownerName}.
+          </Helper>
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
+            <OwnerPinPad ownerName={ownerName} autoFocus onUnlocked={(t) => { setOpen(false); onUnlocked(t) }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+          </div>
+        </ModalPanel>
+      )}
+    </>
   )
 }

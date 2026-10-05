@@ -18,6 +18,7 @@ vi.mock('../api', () => {
 import api from '../api'
 import {
   countsLine, errorText, PinDialog, AddAccountModal, RemoveAccountModal, ColorPicker, COPY_ITEMS,
+  indexSections, rowKey, memberCanEdit, rowLocked, memberGroup, scopeTag, LockCard, UnlockPill,
 } from '../screens/SettingsAccounts'
 
 const typePin = (pin, label) => {
@@ -157,5 +158,92 @@ describe('RemoveAccountModal', () => {
     fireEvent.click(screen.getByText('Remove Alex', { selector: '[role="button"], button' }))
     await flush()
     expect(screen.getByText(/nothing was removed/)).toBeTruthy()
+  })
+})
+
+// ── MT-14 · settings by role ────────────────────────────────────────────────
+describe('role helpers', () => {
+  const idx = indexSections([
+    { id: 'models', scope: 'policy', default: 'inherit', mode: 'inherit', keys: ['llm_provider', 'scoring_llm_provider', 'llm_models_list'] },
+    { id: 'exclude', scope: 'policy', default: 'own', mode: 'own', keys: ['title_exclude_global'] },
+    { id: 'advanced', scope: 'owner_only', default: 'inherit', mode: 'owner_only', keys: ['proxy_url', 'dashboard_api_key'] },
+    { id: 'notifications', scope: 'own_always', default: 'own', mode: 'own_always', keys: ['telegram_chat_id'] },
+    { id: 'scheduler', scope: 'policy', default: 'inherit', mode: 'own', keys: ['reject_cron'] },
+  ])
+  it('rowKey follows the row kind', () => {
+    expect(rowKey({ key: 'a' })).toBe('a')
+    expect(rowKey({ kind: 'pair', pKey: 'llm_provider' })).toBe('llm_provider')
+    expect(rowKey({ kind: 'llm', base: 'scoring_llm' })).toBe('scoring_llm_provider')
+    expect(rowKey({ kind: 'models' })).toBe('llm_models_list')
+    expect(rowKey({ kind: 'apikey' })).toBe('dashboard_api_key')
+    expect(rowKey({ kind: 'button', lockKey: 'telegram_chat_id' })).toBe('telegram_chat_id')
+  })
+  it('a member edits own sections; _meta wins over the section table', () => {
+    expect(memberCanEdit('title_exclude_global', null, idx)).toBe(true)
+    expect(memberCanEdit('telegram_chat_id', null, idx)).toBe(true)
+    expect(memberCanEdit('proxy_url', null, idx)).toBe(false)
+    expect(memberCanEdit('llm_provider', null, idx)).toBe(false)
+    expect(memberCanEdit('llm_provider', { llm_provider: { editable: true } }, idx)).toBe(true)
+    expect(memberCanEdit('unknown_key', null, idx)).toBe(false)   // → system, owner only
+  })
+  it('rows lock only for a member, only while not unlocked', () => {
+    const ctx = { member: true, unlocked: false, meta: null, idx }
+    expect(rowLocked({ key: 'proxy_url' }, ctx)).toBe(true)
+    expect(rowLocked({ key: 'title_exclude_global' }, ctx)).toBe(false)
+    expect(rowLocked({ kind: 'appearance' }, ctx)).toBe(false)
+    expect(rowLocked({ kind: 'button', ownerOnly: true }, ctx)).toBe(true)
+    expect(rowLocked({ key: 'proxy_url' }, { ...ctx, unlocked: true })).toBe(false)
+    expect(rowLocked({ key: 'proxy_url' }, { ...ctx, member: false })).toBe(false)
+  })
+  it('member nav groups', () => {
+    expect(memberGroup('account', idx, 'Viktor')).toBe('You')
+    expect(memberGroup('models', idx, 'Viktor')).toBe('AI · yours')
+    expect(memberGroup('exclude', idx, 'Viktor')).toBe('Yours')
+    expect(memberGroup('scheduler', idx, 'Viktor')).toBe('Yours')      // flipped to own
+    expect(memberGroup('advanced', idx, 'Viktor')).toBe('Shared · Viktor')
+    expect(memberGroup('advanced', idx, 'Viktor', true)).toBe('Shared · Viktor')
+  })
+  it('scope tags', () => {
+    expect(scopeTag('appearance', { idx, member: false })).toEqual({ label: 'Per device', tone: 'neutral' })
+    expect(scopeTag('advanced', { idx, member: true })).toEqual({ label: 'Owner only', tone: 'good' })
+    expect(scopeTag('models', { idx, member: true, ownerName: 'Viktor' }).label).toBe('Inherited from Viktor')
+    expect(scopeTag('exclude', { idx, member: true }).label).toBe('Yours')
+    expect(scopeTag('notifications', { idx, member: false }).label).toBe('Per account')
+    expect(scopeTag('models', { idx, member: false })).toBe(null)    // the owner gets the toggle
+  })
+})
+
+describe('LockCard / UnlockPill', () => {
+  it('the lock card unlocks with the owner PIN', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, unlocked_until: '2026-10-05T12:15:00+00:00' } })
+    const onUnlocked = vi.fn()
+    render(<LockCard ownerName="Viktor" sectionTitle="Advanced" onUnlocked={onUnlocked} />)
+    expect(screen.getByText(/Shared by everyone on this install/)).toBeTruthy()
+    typePin('9999', 'Viktor’s PIN')
+    await flush()
+    expect(api.post).toHaveBeenCalledWith('/auth/verify-owner-pin', { pin: '9999' })
+    expect(onUnlocked).toHaveBeenCalledWith(Date.parse('2026-10-05T12:15:00+00:00'))
+  })
+  it('a wrong owner PIN says so and stays locked', async () => {
+    api.post.mockRejectedValue({ response: { status: 401, data: { detail: 'wrong_pin', tries_left: 4 } } })
+    const onUnlocked = vi.fn()
+    render(<LockCard ownerName="Viktor" sectionTitle="Advanced" inherited onUnlocked={onUnlocked} />)
+    expect(screen.getByText(/Inherited from Viktor/)).toBeTruthy()
+    typePin('1111', 'Viktor’s PIN')
+    await flush()
+    expect(onUnlocked).not.toHaveBeenCalled()
+    expect(screen.getByText('Wrong PIN · 4 tries left')).toBeTruthy()
+  })
+  it('the pill reads locked ↔ unlocked and Lock calls back', async () => {
+    const onLock = vi.fn().mockResolvedValue()
+    const { rerender } = render(<UnlockPill ownerName="Viktor" unlockedUntil={null} onUnlocked={() => {}} onLock={onLock} />)
+    expect(screen.getByText(/Owner sections locked · Unlock as Viktor/)).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Owner sections locked — unlock as Viktor'))
+    expect(screen.getAllByLabelText(/Viktor’s PIN digit/)).toHaveLength(4)
+    rerender(<UnlockPill ownerName="Viktor" unlockedUntil={Date.now() + 600000} onUnlocked={() => {}} onLock={onLock} />)
+    expect(screen.getByText(/Unlocked as Viktor · until/)).toBeTruthy()
+    fireEvent.click(screen.getByText('Lock'))
+    await flush()
+    expect(onLock).toHaveBeenCalled()
   })
 })
