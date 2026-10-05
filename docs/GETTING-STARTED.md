@@ -123,7 +123,7 @@ If you change the extension's files later, remove and re-add it; a plain reload 
 
 **Telegram**: create a bot with @BotFather, put the token in `.env` as `TELEGRAM_BOT_TOKEN`, restart, then enter your chat id under Settings › Integrations and enable notifications. You get new-job alerts, a daily digest and scrape health, with inline actions.
 
-**Gmail**: create OAuth credentials in Google Cloud (Gmail read-only scope), put client id and secret in `.env`, run `py backend/gmail_oauth_setup.py` (or `python`) on your machine once, and paste the refresh token it prints into `.env`. Restart. The backend then polls replies, classifies them and updates the matching application.
+**Gmail**: create OAuth credentials in Google Cloud (Gmail read-only scope), put client id and secret in `.env` and restart. In the same OAuth client add `<your dashboard address>/api/gmail/callback` (e.g. `http://localhost/api/gmail/callback`) under Authorized redirect URIs. Then each account connects its own mailbox under Settings › Email classification › Gmail › Connect Gmail. The older route still works for the owner: run `py backend/gmail_oauth_setup.py` (or `python`) on your machine once and paste the refresh token it prints into `.env` as `GMAIL_REFRESH_TOKEN`; the owner uses it until they connect in the app. Members never use it. The backend then polls each connected mailbox, classifies replies and updates the matching application.
 
 **H-1B**: Settings › Pipeline holds the global exclude phrases scanned in every description and the cron that refreshes the sponsorship dataset. Ignore it if visa sponsorship is not your concern.
 

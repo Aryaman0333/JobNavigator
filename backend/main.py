@@ -25,6 +25,7 @@ from backend.api.routes_linkedin import router as linkedin_router
 from backend.api.routes_autofill import router as autofill_router
 from backend.api.routes_llm import router as llm_router
 from backend.api.routes_accounts import router as accounts_router
+from backend.api.routes_gmail import router as gmail_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jobnavigator")
@@ -148,7 +149,8 @@ from backend.accounts.context import owner_context, owner_unlocked, use_account,
 from backend.accounts import auth as acct_auth
 
 # Paths that NEVER require auth (exact or prefix match)
-_PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/telegram/webhook", "/api/auth/set-session", "/api/auth/verify", "/api/auth/logout")
+_PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/telegram/webhook", "/api/auth/set-session", "/api/auth/verify", "/api/auth/logout",
+                    "/api/gmail/callback")  # Google redirects the browser there (MT-19; signed state)
 # Need the install password but no account (the picker reads and calls these).
 _ACCOUNT_OPTIONAL = ("/api/auth/accounts", "/api/auth/switch", "/api/auth/verify-pin")
 
@@ -514,6 +516,7 @@ app.include_router(linkedin_router, prefix="/api")
 app.include_router(autofill_router, prefix="/api")
 app.include_router(llm_router, prefix="/api")
 app.include_router(accounts_router, prefix="/api")
+app.include_router(gmail_router, prefix="/api")
 
 
 # A malformed UUID in a path (/api/jobs/abc) makes Postgres raise DataError deep in

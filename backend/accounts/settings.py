@@ -91,8 +91,10 @@ _SECTIONS = [
         "linkedin_email", "linkedin_password", "linkedin_mock_email", "linkedin_mock_password",
         "linkedin_use_mock_account"]),
     ("advanced", "Advanced", OWNER_ONLY, INHERIT, ["advanced"], ["proxy_url", "dashboard_api_key"]),
-    # Not on the Settings screen.
-    ("gmail", "Gmail", OWN_ALWAYS, OWN, [], ["gmail_processed_ids", "gmail_refresh_token"]),
+    # Not a section of the Settings screen. MT-19: the token is connected from a row in Email
+    # classification (GET /api/gmail/connect); gmail_token_status = the "expired" marker after
+    # an invalid_grant (never served).
+    ("gmail", "Gmail", OWN_ALWAYS, OWN, [], ["gmail_processed_ids", "gmail_refresh_token", "gmail_token_status"]),
     # account_cookie_secret: HMAC key of the jn_account cookie (MT-10); never served.
     ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "account_cookie_secret"]),
 ]

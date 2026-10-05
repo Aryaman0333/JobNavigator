@@ -4,7 +4,8 @@ Accounts (MT-7). Each job is one of:
 - per account: runs once per account under `acting_as(account)` via `for_each_account()`
   (its own JobRun, ActivityLog and LlmCallLog rows, its own dedup key; one account failing
   does not stop the others): daily_digest, auto_reject, job_cleanup, email_check (Gmail
-  accounts only = the owner until MT-19), and the saved-job scoring pass of scrape_all.
+  accounts: the owner plus members with a connected token, MT-19), and the saved-job
+  scoring pass of scrape_all.
 - install-level, run once as the owner (`as_owner`): db_backup, h1b_refresh (reads every
   account's companies and jobs), the scrape-health system alert (owner's chat).
 - shared fan-out (MT-8): the scraping part of scrape_all — one install-level run (owner's
@@ -233,7 +234,8 @@ async def _score_saved_jobs():
 
 
 async def run_email_check():
-    """Per account with Gmail configured (the owner until MT-19)."""
+    """The owner plus every member with a connected Gmail token (MT-19), each with its own
+    credentials and processed-id state; an invalid_grant marks only that account expired."""
     await for_each_account("email_check", _email_check_for_account, gmail_account_ids())
 
 

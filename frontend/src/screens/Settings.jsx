@@ -193,6 +193,7 @@ export default function Settings() {
   const [modelsOpen, setModelsOpen] = useState(false)
   const [efforts, setEfforts] = useState({})  // provider -> reasoning-effort values, from GET /llm/efforts
   const [li, setLi] = useState(null)          // linkedin session status
+  const [gmail, setGmail] = useState(null)    // MT-19: GET /gmail/status {status, source, configured}
   const [toast, setToast] = useState(null)
   const [loadErr, setLoadErr] = useState(null)   // set on a failed GET /settings
   const [narrow, setNarrow] = useState(false)    // stack rows when the pane is tight
@@ -344,6 +345,7 @@ export default function Settings() {
     () => api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in that picker */ }),
     () => api.get('/linkedin/session').then(({ data }) => setLi(data)).catch(() => { /* silent: the LinkedIn row reads “unknown” and its own actions report their failures */ }),
     () => loadAccounts(),
+    () => api.get('/gmail/status').then(({ data }) => setGmail(data || null)).catch(() => { /* silent: the Gmail row stays hidden */ }),
   ])
 
   // One shared timer, not one per flash — otherwise two saves inside 2.2s let the first timer clear the second message early.
@@ -518,6 +520,33 @@ export default function Settings() {
             ['posting,notes', 'Posting · notes'], ['resume', 'Résumé only'], ['posting', 'Posting only']], { w: '260px', dflt: 'resume,posting,notes' }),
       ]],
       ['emailclass', '', 'Email classification', '', [
+        // MT-19: each account connects its own mailbox. Shown from two accounts on, and to a
+        // single account that is not already reading the .env mailbox (so the one-account
+        // owner with GMAIL_REFRESH_TOKEN sees today's page unchanged).
+        { kind: 'button', lockKey: 'gmail_refresh_token', label: 'Gmail', help: 'The mailbox the email check reads for replies to your applications.',
+          previewBox: '260px', hide: () => !gmail || !(multi || (gmail.configured && gmail.source !== 'env')),
+          preview: !gmail ? '' : gmail.status === 'expired' ? 'Expired — Google refused the token'
+            : gmail.status === 'connected' ? (gmail.source === 'env' ? 'Connected (from .env)' : 'Connected')
+              : gmail.configured ? 'Not connected' : 'Not set up on this install',
+          btnLabel: gmail?.status === 'connected' && gmail.source === 'account' ? 'Disconnect'
+            : gmail?.status === 'none' ? 'Connect Gmail ↗' : 'Reconnect ↗',
+          info: 'Connecting opens Google’s consent page (read-only access). The token is stored with this account only. The install’s Google OAuth client comes from GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET in .env.',
+          act: async () => {
+            if (gmail?.status === 'connected' && gmail.source === 'account') {
+              const go = await ask({ title: 'Disconnect Gmail?', body: 'The email check stops reading this mailbox for this account. You can connect again any time.', label: 'Disconnect', danger: true })
+              if (!go) return false
+              const { data } = await api.post('/gmail/disconnect')
+              setGmail(data || null)
+              return true
+            }
+            if (!gmail?.configured) {
+              flash('Gmail is not set up: the owner adds GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to .env', true)
+              return false
+            }
+            const { data } = await api.get('/gmail/connect')
+            window.location.assign(data.url)
+            return false
+          } },
         SW('LLM classification', 'Replies are auto-classified into interview / rejection / offer and attached to the right application.', 'Disabled — replies only show as raw snippets.', 'email_llm_enabled'),
         B('Confidence threshold', '0–100 — below this, the email is flagged for manual review instead.', 'email_llm_confidence_threshold', { mono: true, int: true, w: '135px' }),
         E('Classification prompt', 'Labels + confidence + application hint.', 'email_llm_prompt', { sub: 'placeholders: {applications} {from} {subject} {body}' }),
@@ -628,7 +657,7 @@ export default function Settings() {
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, sidx])
+  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, sidx, gmail])
 
   // The rail's account menu lands here: `#accounts` (Manage accounts) scrolls to the
   // Accounts / Your account section, `#add-account` also opens the Add dialog. The hash is
@@ -647,6 +676,22 @@ export default function Settings() {
     if (h === 'add-account' && isOwner) setAdding(true)
     navigate(loc.pathname + loc.search, { replace: true })
   }, [loc.hash, ready, hasS, multi, isOwner])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // MT-19: Google's consent comes back to /settings?gmail=connected|error&reason=…#gmail.
+  useEffect(() => {
+    const p = new URLSearchParams(loc.search)
+    const g = p.get('gmail')
+    if (!ready || !hasS || !g) return
+    if (g === 'connected') push({ kind: 'success', msg: 'Gmail connected' })
+    else push({ kind: 'error', msg: `Gmail was not connected (${p.get('reason') || 'error'}) — try Connect Gmail again` })
+    setActive('emailclass')
+    requestAnimationFrame(() => {
+      const c = scrollRef.current
+      const el = c && c.querySelector('[data-sec="sec-emailclass"]')
+      if (c && el) c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 4
+    })
+    navigate(loc.pathname, { replace: true })
+  }, [loc.search, ready, hasS])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const created = (acc) => {
     setAdding(false)

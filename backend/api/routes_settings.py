@@ -19,7 +19,7 @@ _REDACT_SUFFIXES = ("_password", "_api_key", "_session_id", "_secret")
 _REDACT_KEYS = {"dashboard_api_key", "gmail_refresh_token", "claude_code_oauth_token",
                 "telegram_bot_token"}
 # Server-side only, never listed (not even redacted) and not writable (not a known key).
-_HIDDEN_KEYS = {"account_cookie_secret", "telegram_own_webhook_secret"}
+_HIDDEN_KEYS = {"account_cookie_secret", "telegram_own_webhook_secret", "gmail_token_status"}
 
 
 def _is_secret(key: str) -> bool:

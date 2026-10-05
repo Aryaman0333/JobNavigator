@@ -1,4 +1,10 @@
-"""Gmail API OAuth2 client — polls for recruiter responses."""
+"""Gmail API OAuth2 client — polls for recruiter responses.
+
+MT-19: runs per account (scheduler: `gmail_account_ids()`), each with its own refresh token
+(`gmail_auth.resolve_token`) and its own processed-id state (`gmail_processed_ids`, an
+own_always setting). The three GMAIL_* names below are the install's .env values; the
+client id/secret are the OAuth app every account consents through, the refresh token is
+the owner's pre-MT-19 fallback."""
 import asyncio
 import base64
 import json
@@ -19,25 +25,51 @@ GMAIL_API_BASE = "https://www.googleapis.com/gmail/v1"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
+def _is_invalid_grant(resp) -> bool:
+    try:
+        body = resp.json()
+    except Exception:
+        return "invalid_grant" in (getattr(resp, "text", "") or "")
+    return isinstance(body, dict) and body.get("error") == "invalid_grant"
+
+
 async def _get_access_token() -> str:
-    """Exchange refresh token for access token."""
-    if not GMAIL_REFRESH_TOKEN:
-        logger.warning("GMAIL_REFRESH_TOKEN not set, skipping email check")
-        return ""
+    """Exchange the current account's refresh token for an access token (MT-19).
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(TOKEN_URL, data={
-            "client_id": GMAIL_CLIENT_ID,
-            "client_secret": GMAIL_CLIENT_SECRET,
-            "refresh_token": GMAIL_REFRESH_TOKEN,
-            "grant_type": "refresh_token",
-        })
-
-        if resp.status_code != 200:
-            logger.error(f"Gmail token refresh failed: {resp.text}")
+    The token is the account's own (connected in Settings); the owner falls back to
+    GMAIL_REFRESH_TOKEN from .env. No token, or a token Google already refused with
+    `invalid_grant` → "" without calling Google. A new `invalid_grant` marks the account
+    expired (Settings shows Reconnect) and returns ""."""
+    from backend.email_monitor import gmail_auth
+    db = SessionLocal()
+    try:
+        token, source = gmail_auth.resolve_token(db)
+        if not token:
+            logger.warning("No Gmail token for this account, skipping email check")
             return ""
+        if gmail_auth.is_expired(db, token):
+            logger.info("Gmail token for this account is expired (invalid_grant), reconnect in Settings")
+            return ""
+        client_id, client_secret = gmail_auth.client_config()
 
-        return resp.json().get("access_token", "")
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(TOKEN_URL, data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": token,
+                "grant_type": "refresh_token",
+            })
+
+            if resp.status_code != 200:
+                logger.error(f"Gmail token refresh failed: {resp.text}")
+                if _is_invalid_grant(resp):
+                    gmail_auth.mark_expired(db, token)
+                return ""
+
+            gmail_auth.clear_status(db, gmail_auth._target(db))
+            return resp.json().get("access_token", "")
+    finally:
+        db.close()
 
 
 

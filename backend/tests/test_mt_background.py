@@ -70,7 +70,7 @@ def test_all_account_ids_lists_the_owner_first(test_db, accounts):
     ids = all_account_ids()
     assert ids[0] == a and set(ids) == {a, b, c.id}
     assert ids.index(c.id) < ids.index(b)          # members by creation time
-    assert gmail_account_ids() == [a]              # Gmail is the owner's until MT-19
+    assert gmail_account_ids() == [a]              # no member connected Gmail: the owner (MT-19)
 
 
 def test_all_account_ids_falls_back_to_the_owner_context_when_unreadable(monkeypatch):

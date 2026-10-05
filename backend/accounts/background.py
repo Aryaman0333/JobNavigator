@@ -43,10 +43,24 @@ def all_account_ids() -> list[Optional[uuid.UUID]]:
 
 
 def gmail_account_ids() -> list[Optional[uuid.UUID]]:
-    """Accounts with Gmail configured. Until MT-19 moves the token into each account's
-    settings, the one Gmail mailbox (from .env) belongs to the owner."""
+    """Accounts the email check runs for (MT-19): the owner, as before (its own connected
+    token, else GMAIL_REFRESH_TOKEN from .env; with neither the check returns at once without
+    calling Google), plus every member with a connected token not marked expired."""
     ids = all_account_ids()
-    return ids[:1]  # the owner (all_account_ids lists it first), or [None]
+    if ids == [None] or len(ids) == 1:
+        return ids[:1]
+    from backend.email_monitor.gmail_auth import connected_member_ids
+    from backend.models import db as db_mod
+    try:
+        s = db_mod.SessionLocal()
+        try:
+            members = connected_member_ids(s)
+        finally:
+            s.close()
+    except Exception as e:
+        logger.error("Could not read members' Gmail tokens, checking the owner only: %s", e)
+        return ids[:1]
+    return ids[:1] + [i for i in ids[1:] if i in members]
 
 
 @contextmanager
