@@ -14,6 +14,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     # MT-10 account selection: covered by test_mt_auth.py
     ("GET", "/api/auth/accounts"): "the picker lists every account (id, name, colour, role, has_pin) by design",
     ("POST", "/api/auth/switch"): "switches this browser's own cookie; PIN rules in test_mt_auth.py",
+    ("POST", "/api/auth/verify-pin"): "checks a PIN, sets no cookie, changes nothing (MT-18); test_mt_extension.py",
     ("GET", "/api/auth/me"): "the caller's own account; test_mt_auth.py",
     ("POST", "/api/auth/verify-owner-pin"): "re-signs the caller's own cookie; test_mt_auth.py",
     ("GET", "/health"): "liveness probe, no user data",

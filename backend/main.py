@@ -150,7 +150,7 @@ from backend.accounts import auth as acct_auth
 # Paths that NEVER require auth (exact or prefix match)
 _PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/telegram/webhook", "/api/auth/set-session", "/api/auth/verify", "/api/auth/logout")
 # Need the install password but no account (the picker reads and calls these).
-_ACCOUNT_OPTIONAL = ("/api/auth/accounts", "/api/auth/switch")
+_ACCOUNT_OPTIONAL = ("/api/auth/accounts", "/api/auth/switch", "/api/auth/verify-pin")
 
 
 def _account_required_response(detail: str) -> JSONResponse:
@@ -416,6 +416,29 @@ def auth_switch(body: dict, response: _Response):
             return _switch_denied(e)
         acct_auth.touch_last_active(db, target["id"], force=True)
         acct_auth.set_account_cookie(response, db, target)
+        return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
+    finally:
+        db.close()
+
+
+@app.post("/api/auth/verify-pin", tags=["auth"], summary="Check an account PIN without signing in")
+def auth_verify_pin(body: dict):
+    """Body {account_id, pin?}. Same PIN rules, cooldown counters and owner-covers-member as /api/auth/switch, but sets no cookie and changes nothing (the extension uses it before storing a target account). Returns {ok, via, account}; errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown`. Needs the install key; no account needed."""
+    body = body or {}
+    pin = body.get("pin")
+    if pin is not None and not isinstance(pin, str):
+        pin = str(pin)
+    db = SessionLocal()
+    try:
+        accounts = acct_auth.load_accounts(db)
+        target = acct_auth._find(accounts, body.get("account_id"))
+        if target is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+        try:
+            how = acct_auth.check_switch(accounts, target, pin)
+        except acct_auth.SwitchDenied as e:
+            logger.info("pin check denied: account=%s reason=%s", target["id"], e.detail)
+            return _switch_denied(e)
         return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
     finally:
         db.close()
