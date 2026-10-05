@@ -646,3 +646,17 @@ def test_last_active_at_is_stamped_at_most_once_a_minute(client, test_db, owner,
     clock[0] += 31
     client.get("/api/jobs")
     assert stamp() is not None
+
+
+def test_adding_the_second_account_pins_the_owners_browser(client, test_db, owner, owner_pin):
+    """MT-13: the owner's browser had no jn_account cookie (one account = the owner); after
+    adding a member it keeps acting as the owner instead of landing on the picker."""
+    client.headers.pop("X-Account", None)
+    client.cookies.clear()
+    assert client.get("/api/auth/me").json()["account"]["id"] == str(owner.id)
+    r = client.post("/api/accounts", json={"name": "Alex"})
+    assert r.status_code == 201
+    assert any(c.startswith(A.COOKIE_NAME + "=") for c in r.headers.get_list("set-cookie"))
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200 and me.json()["account"]["id"] == str(owner.id)
+    assert me.json()["accounts_count"] == 2

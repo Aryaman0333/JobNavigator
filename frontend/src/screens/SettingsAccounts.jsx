@@ -1,0 +1,479 @@
+import React, { useEffect, useState } from 'react'
+import api, { authFailure } from '../api'
+import {
+  ACCOUNT_SWATCHES, Avatar, Button, Check, Heading, Helper, Input, Link, ModalPanel, Pill,
+  PinPad, Select, Surface, Tag, kb,
+} from '../ui'
+
+// Settings › Accounts (owner) and Settings › Your account (member) — MT-13.
+//
+// With one account none of this shows except one row at the end of System ›
+// Advanced ("Accounts — add people to this install", `AddPeopleRow`), which is
+// the owner's way in to the first member. From two accounts on the owner gets a
+// full "Accounts" section first in the page and a member gets "Your account".
+//
+// Every account change dispatches `jn:accounts-changed` (the rail switcher and
+// the Settings page reload their lists) and `jn:counts-changed` (rail badges).
+
+export const COPY_ITEMS = [
+  ['persona', 'Persona', 'every node, Q&A bank included'],
+  ['qa', 'Q&A bank only', 'autofill answers, without the rest of the Persona'],
+  ['resumes', 'Base résumés', 'tailored copies stay behind'],
+  ['companies', 'Companies', 'they ride the same scrapes'],
+  ['searches', 'Searches', 'the built-in extension searches are always there'],
+  ['settings', 'Settings', 'never keys, sessions, chat ids or Gmail'],
+  ['voices', 'Cover-letter voices', 'presets and the default voice'],
+  ['excludes', 'Global excludes', 'body, title and company excludes'],
+]
+
+const COUNT_LABELS = [
+  ['jobs', 'job', 'jobs'], ['applications', 'application', 'applications'], ['resumes', 'résumé', 'résumés'],
+  ['cover_letters', 'cover letter', 'cover letters'], ['searches', 'search', 'searches'], ['companies', 'company', 'companies'],
+]
+
+// "1,204 jobs · 12 applications · …" — zero counts are left out.
+export function countsLine(counts, all = false) {
+  const c = counts || {}
+  const parts = COUNT_LABELS
+    .filter(([k]) => all || Number(c[k]) > 0)
+    .map(([k, one, many]) => `${Number(c[k] || 0).toLocaleString()} ${Number(c[k]) === 1 ? one : many}`)
+  return parts.length ? parts.join(' · ') : 'no data yet'
+}
+
+export const accountsChanged = () => {
+  window.dispatchEvent(new CustomEvent('jn:accounts-changed'))
+  window.dispatchEvent(new CustomEvent('jn:counts-changed'))
+}
+
+// The MT-11 error bodies are `{detail: code, message}`; PIN answers carry their own numbers.
+const CODE_TEXT = {
+  account_limit: 'This install already has 5 accounts — remove one first.',
+  owner_pin_required: 'Set your own PIN first.',
+  name_taken: 'Another account already has that name.',
+  account_busy: 'That account has background work running — try again when it finishes.',
+  backup_failed: 'The database backup failed, so nothing was removed. See the server log.',
+  confirm_name_mismatch: 'Type the account’s name exactly to confirm.',
+  cannot_remove_owner: 'The owner account cannot be removed.',
+  cannot_remove_self: 'You cannot remove the account you are using.',
+  owner_only: 'Only the owner can do that.',
+}
+export function errorText(err, fallback = 'Something went wrong — try again.') {
+  const f = authFailure(err)
+  if (f?.kind === 'wrong_pin') return f.triesLeft != null ? `Wrong PIN · ${f.triesLeft} ${f.triesLeft === 1 ? 'try' : 'tries'} left` : 'Wrong PIN'
+  if (f?.kind === 'pin_required') return 'Enter the current PIN.'
+  if (f?.kind === 'pin_cooldown') return `Too many tries — wait ${f.retryAfter}s.`
+  const d = err?.response?.data
+  if (d && typeof d.detail === 'string' && CODE_TEXT[d.detail]) return CODE_TEXT[d.detail]
+  if (d && typeof d.message === 'string' && d.message) return d.message
+  if (d && typeof d.detail === 'string' && d.detail) return d.detail
+  return fallback
+}
+
+const ago = (iso) => {
+  if (!iso) return 'never'
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+  if (!Number.isFinite(m)) return '—'
+  if (m < 2) return 'just now'
+  if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} h ago`
+  const d = Math.floor(h / 24)
+  return d < 30 ? `${d} d ago` : new Date(iso).toLocaleDateString()
+}
+
+// Export = a zip streamed by GET /accounts/{id}/export. Fetched through axios so the
+// install key in the header works as well as the session cookie.
+export async function downloadExport(account) {
+  const r = await api.get(`/accounts/${account.id}/export`, { responseType: 'blob' })
+  const cd = String(r.headers?.['content-disposition'] || '')
+  const m = /filename="?([^";]+)"?/.exec(cd)
+  const name = m ? m[1] : `jobnavigator-${account.name}.zip`
+  const url = URL.createObjectURL(r.data)
+  const a = document.createElement('a')
+  a.href = url; a.download = name
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 4000)
+}
+
+// ── colour swatches ─────────────────────────────────────────────────────────
+// The five account colours as avatars carrying the account's initials; the
+// chosen one is marked by the radio state, not by a hand-drawn ring.
+export function ColorPicker({ name, value, onPick, taken = [], ariaLabel = 'Colour' }) {
+  return (
+    <div role="radiogroup" aria-label={ariaLabel} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      {ACCOUNT_SWATCHES.map((c, i) => {
+        const on = (value || '').toLowerCase() === c
+        const used = taken.includes(c) && !on
+        return (
+          <span key={c} role="radio" aria-checked={on} aria-label={`Colour ${i + 1}${used ? ' (in use)' : ''}`}
+            onClick={() => onPick(c)} {...kb(() => onPick(c), 'radio')}
+            title={used ? 'Another account uses this colour' : undefined}
+            style={{ display: 'flex', padding: 2, cursor: 'pointer', opacity: used ? 0.5 : 1,
+              borderBottom: `2px solid ${on ? 'var(--accent)' : 'transparent'}` }}>
+            <Avatar name={name || '?'} color={c} size={26} />
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── PIN dialog ──────────────────────────────────────────────────────────────
+// One dialog for every PIN change: steps `current` (own PIN when one is set) →
+// `new` → `confirm`. `mode`: 'set' (new + confirm) or 'remove' (current only).
+// `submit({pin, current_pin})` does the PATCH and throws the axios error.
+export function PinDialog({ title, who, needCurrent, mode = 'set', intro, onSubmit, onClose, onRemove }) {
+  const steps = [...(needCurrent ? ['current'] : []), ...(mode === 'set' ? ['new', 'confirm'] : [])]
+  const [step, setStep] = useState(0)
+  const [vals, setVals] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [cooldown, setCooldown] = useState(0)
+  const [attempt, setAttempt] = useState(0)
+  const name = steps[step]
+  const prompt = name === 'current' ? `Current PIN${who ? ` for ${who}` : ''}`
+    : name === 'new' ? `New PIN${who ? ` for ${who}` : ''}` : 'Same PIN again'
+
+  const finish = async (all) => {
+    setBusy(true); setError('')
+    try {
+      await onSubmit(mode === 'set' ? { pin: all.new, current_pin: all.current } : { pin: null, current_pin: all.current })
+    } catch (err) {
+      const f = authFailure(err)
+      if (f?.kind === 'pin_cooldown') setCooldown(f.retryAfter)
+      setError(errorText(err))
+      // a wrong current PIN sends the dialog back to that step
+      if (f && needCurrent) setStep(0)
+      setAttempt((n) => n + 1)
+      setBusy(false)
+    }
+  }
+  const complete = (pin) => {
+    const all = { ...vals, [name]: pin }
+    setVals(all); setError('')
+    if (name === 'confirm' && pin !== all.new) {
+      setError('The two PINs differ — enter the new PIN again.')
+      setStep(steps.indexOf('new')); setAttempt((n) => n + 1); return
+    }
+    if (step < steps.length - 1) { setStep(step + 1); setAttempt((n) => n + 1); return }
+    finish(all)
+  }
+  return (
+    <ModalPanel width={400} title={title} onClose={busy ? undefined : onClose} zIndex={75}
+      style={{ padding: '22px 24px 18px', gap: 12 }}>
+      <Heading size={19} className="v2-dialogtitle">{title}</Heading>
+      {intro && <Helper style={{ textWrap: 'pretty' }}>{intro}</Helper>}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '6px 0 2px' }}>
+        <Helper>{prompt}</Helper>
+        <PinPad key={name} onComplete={complete} busy={busy} error={error} resetKey={attempt}
+          cooldown={cooldown} onCooldownEnd={() => setCooldown(0)} ariaLabel={prompt} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {onRemove && <Link onClick={onRemove}>Remove PIN instead</Link>}
+        <Button variant="secondary" size="sm" onClick={onClose} disabled={busy} style={{ marginLeft: 'auto' }}>Cancel</Button>
+      </div>
+    </ModalPanel>
+  )
+}
+
+// ── Add account ─────────────────────────────────────────────────────────────
+// Name, colour, optional member PIN, "Start from a copy of…" with the items to
+// copy. While the owner has no PIN (409 owner_pin_required otherwise) the dialog
+// opens on a step that sets it first, entered twice on the PIN pad.
+export function AddAccountModal({ accounts, me, onClose, onCreated }) {
+  const taken = accounts.map((a) => (a.color || '').toLowerCase())
+  const [needOwnerPin, setNeedOwnerPin] = useState(!me?.has_pin)
+  const [name, setName] = useState('')
+  const [color, setColor] = useState(() => ACCOUNT_SWATCHES.find((c) => !taken.includes(c)) || ACCOUNT_SWATCHES[0])
+  const [pin, setPin] = useState('')
+  const [source, setSource] = useState('')
+  const [items, setItems] = useState(['persona', 'resumes', 'companies', 'searches', 'settings', 'voices', 'excludes'])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const pinOk = pin === '' || /^\d{4}$/.test(pin)
+  const ready = name.trim().length > 0 && pinOk && !busy
+  const toggle = (k) => setItems((xs) => (xs.includes(k) ? xs.filter((x) => x !== k) : [...xs, k]))
+
+  const create = async () => {
+    if (!ready) return
+    setBusy(true); setError('')
+    const body = { name: name.trim(), color }
+    if (pin) body.pin = pin
+    if (source && items.length) body.copy_from = { account_id: source, items }
+    try {
+      const { data } = await api.post('/accounts', body)
+      onCreated(data?.account || { name: body.name }, data?.copied || {})
+    } catch (err) {
+      if (err?.response?.data?.detail === 'owner_pin_required') { setNeedOwnerPin(true); setBusy(false); return }
+      setError(errorText(err, 'Could not add the account — try again.'))
+      setBusy(false)
+    }
+  }
+
+  if (needOwnerPin) {
+    return (
+      <PinDialog title="Set your PIN first" who={null} mode="set"
+        intro={`With a second account, the picker asks for a PIN before it opens ${me?.name || 'your account'}. Choose four digits — you can change them later here.`}
+        onSubmit={async (b) => {
+          await api.patch(`/accounts/${me.id}`, { pin: b.pin })
+          setNeedOwnerPin(false)
+          accountsChanged()
+        }}
+        onClose={onClose} />
+    )
+  }
+
+  const sources = [['', 'Nothing — start empty'], ...accounts.map((a) => [a.id, a.role === 'owner' ? `${a.name} (owner)` : a.name])]
+  return (
+    <ModalPanel width={520} title="Add account" onClose={busy ? undefined : onClose} zIndex={70}
+      style={{ padding: '22px 24px 18px', gap: 14, maxHeight: '92vh', overflow: 'auto' }}>
+      <Heading size={19} className="v2-dialogtitle">Add account</Heading>
+      <Helper style={{ marginTop: -8, textWrap: 'pretty' }}>
+        A person on this install with their own jobs, résumés, applications and settings. Scraping stays shared.
+      </Helper>
+      <Field label="Name">
+        <Input value={name} onChange={setName} placeholder="e.g. Alex" ariaLabel="Account name" autoFocus width="100%"
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); create() } }} />
+      </Field>
+      <Field label="Colour"><ColorPicker name={name} value={color} onPick={setColor} taken={taken} /></Field>
+      <Field label="PIN" hint="Optional · 4 digits · your own PIN opens this account too">
+        <Input value={pin} onChange={(v) => setPin(v.replace(/\D/g, '').slice(0, 4))} type="password" inputMode="numeric"
+          autoComplete="new-password" placeholder="none" ariaLabel="PIN for the new account" mono width="120px" invalid={!pinOk} />
+      </Field>
+      <Field label="Start from a copy of…">
+        <Select value={source} options={sources} onPick={setSource} width="100%" ariaLabel="Copy from account" />
+      </Field>
+      {source && (
+        <div role="group" aria-label="Items to copy" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', marginTop: -4 }}>
+          {COPY_ITEMS.map(([k, label, hint]) => (
+            <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+              <Check checked={items.includes(k)} onChange={() => toggle(k)} label={label} />
+              <Helper size="xs" style={{ paddingLeft: 22 }}>{hint}</Helper>
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <Helper style={{ color: 'var(--bad)' }}>{error}</Helper>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+        <Helper size="xs">No jobs, applications or letters are copied.</Helper>
+        <Button variant="secondary" size="sm" onClick={onClose} disabled={busy} style={{ marginLeft: 'auto' }}>Cancel</Button>
+        <Button size="sm" onClick={create} disabled={!ready} busy={busy}>Add account</Button>
+      </div>
+    </ModalPanel>
+  )
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: 12.5, lineHeight: '18px', fontWeight: 500 }}>{label}</span>
+        {hint && <Helper size="xs">{hint}</Helper>}
+      </span>
+      {children}
+    </div>
+  )
+}
+
+// ── Remove account ──────────────────────────────────────────────────────────
+export function RemoveAccountModal({ account, onClose, onRemoved }) {
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState('')
+  const ok = typed === account.name && !busy
+  const remove = async () => {
+    if (!ok) return
+    setBusy(true); setError('')
+    try {
+      const { data } = await api.delete(`/accounts/${account.id}`, { data: { confirm_name: typed } })
+      onRemoved(account, data)
+    } catch (err) {
+      setError(errorText(err, 'Could not remove the account — try again.'))
+      setBusy(false)
+    }
+  }
+  const exp = async () => {
+    setExporting(true)
+    try { await downloadExport(account) } catch (err) { setError(errorText(err, 'The export failed — try again.')) }
+    setExporting(false)
+  }
+  const c = account.counts || {}
+  return (
+    <ModalPanel width={460} title={`Remove ${account.name}?`} onClose={busy ? undefined : onClose} zIndex={70}
+      style={{ padding: '22px 24px 18px', gap: 12 }}>
+      <Heading size={19} className="v2-dialogtitle">Remove {account.name}?</Heading>
+      <span className="v2-dialogtext" style={{ fontSize: 12.5, lineHeight: '18px', color: 'var(--helper-ink)' }}>
+        Everything {account.name} has on this install is deleted. There is no undo.
+      </span>
+      <Surface radius="row" pad="8px 12px" style={{ display: 'flex', flexDirection: 'column', gap: 2 }} aria-label="What is deleted">
+        {COUNT_LABELS.map(([k, one, many]) => (
+          <span key={k} style={{ display: 'flex', fontSize: 12, lineHeight: '18px' }}>
+            <span style={{ flex: 1 }}>{Number(c[k]) === 1 ? one : many}</span>
+            <span style={{ fontFamily: 'var(--mono)' }}>{Number(c[k] || 0).toLocaleString()}</span>
+          </span>
+        ))}
+        <Helper size="xs" style={{ paddingTop: 2 }}>plus their Persona, settings, links and run history</Helper>
+      </Surface>
+      <Helper style={{ textWrap: 'pretty' }}>
+        A full database backup is taken first (kept in <span style={{ fontFamily: 'var(--mono)' }}>backups/</span>).{' '}
+        <Link onClick={exporting ? undefined : exp}>{exporting ? 'Exporting…' : `Export ${account.name}’s data`}</Link> to keep a copy of your own.
+      </Helper>
+      <Field label={`Type “${account.name}” to confirm`}>
+        <Input value={typed} onChange={setTyped} ariaLabel="Type the account name to confirm" autoComplete="off" width="100%"
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); remove() } }} />
+      </Field>
+      {error && <Helper style={{ color: 'var(--bad)' }}>{error}</Helper>}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+        <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button variant="danger" size="sm" onClick={remove} disabled={!ok} busy={busy}>Remove {account.name}</Button>
+      </div>
+    </ModalPanel>
+  )
+}
+
+// ── one-account entry row (System › Advanced) ───────────────────────────────
+export function AddPeopleRow({ onAdd }) {
+  return <Pill onClick={onAdd} ariaLabel="Add an account to this install">Add account…</Pill>
+}
+
+// ── owner: the Accounts table ───────────────────────────────────────────────
+export function AccountsTable({ data, me, onAdd, onChanged, push }) {
+  const accounts = data?.accounts || []
+  const max = data?.max_accounts || 5
+  const [pinFor, setPinFor] = useState(null)      // account whose PIN dialog is up
+  const [removing, setRemoving] = useState(null)
+
+  const pinDialog = pinFor && (() => {
+    const self = pinFor.id === me.id
+    const done = (msg) => { setPinFor(null); push({ kind: 'success', msg }); onChanged() }
+    return (
+      <PinDialog title={self ? (pinFor.has_pin ? 'Change your PIN' : 'Set your PIN') : `Reset ${pinFor.name}’s PIN`}
+        who={self ? null : pinFor.name} mode="set" needCurrent={self && pinFor.has_pin}
+        intro={self ? undefined : `${pinFor.name} uses the new PIN from now on; your own PIN keeps opening their account.`}
+        onSubmit={async (b) => { await api.patch(`/accounts/${pinFor.id}`, b); done(self ? 'PIN changed' : `${pinFor.name}’s PIN reset`) }}
+        onRemove={!self && pinFor.has_pin ? async () => {
+          try { await api.patch(`/accounts/${pinFor.id}`, { pin: null }); done(`${pinFor.name} opens without a PIN now`) } catch (err) { push({ kind: 'error', msg: errorText(err) }) }
+        } : undefined}
+        onClose={() => setPinFor(null)} />
+    )
+  })()
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 10px' }}>
+        <Helper style={{ flex: 1, minWidth: 0, textWrap: 'pretty' }}>
+          Everyone on this install has their own jobs, résumés, applications and settings; scraping is shared. {accounts.length} of {max} accounts.
+        </Helper>
+        <Button size="sm" onClick={onAdd} disabled={accounts.length >= max}
+          title={accounts.length >= max ? `At most ${max} accounts` : undefined}>+ Add account</Button>
+      </div>
+      <div role="table" aria-label="Accounts" style={{ display: 'flex', flexDirection: 'column' }}>
+        {accounts.map((a) => {
+          const self = a.id === me.id
+          const owner = a.role === 'owner'
+          return (
+            <div role="row" key={a.id} data-account-row={a.name}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, minHeight: 52, padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
+              <Avatar name={a.name} color={a.color} size={26} />
+              <div role="cell" style={{ flex: '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, lineHeight: '18px', fontWeight: 500, minWidth: 0 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                  {self && <Helper size="xs">you</Helper>}
+                </span>
+                <Helper size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{countsLine(a.counts)}</Helper>
+              </div>
+              <span role="cell" style={{ flex: '0 0 74px' }}><Tag tone={owner ? 'accent' : 'neutral'}>{owner ? 'Owner' : 'Member'}</Tag></span>
+              <span role="cell" style={{ flex: '0 0 96px' }}><Helper title={a.last_active_at || ''}>{self ? 'now' : ago(a.last_active_at)}</Helper></span>
+              <span role="cell" style={{ flex: '0 0 auto', display: 'flex', gap: 6, justifyContent: 'flex-end', minWidth: 190 }}>
+                <Pill size="sm" onClick={() => setPinFor(a)} ariaLabel={`${self ? 'Change your PIN' : `Reset ${a.name}’s PIN`}`}>
+                  {self ? (a.has_pin ? 'Change PIN' : 'Set PIN') : (a.has_pin ? 'Reset PIN' : 'Set PIN')}
+                </Pill>
+                {!owner && !self && (
+                  <Pill size="sm" hover="v2-hover-bad-bdc" onClick={() => setRemoving(a)} ariaLabel={`Remove ${a.name}`}>Remove</Pill>
+                )}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      {pinDialog}
+      {removing && (
+        <RemoveAccountModal account={removing} onClose={() => setRemoving(null)}
+          onRemoved={(acc, res) => {
+            setRemoving(null)
+            push({ kind: 'success', msg: `Removed ${acc.name}${res?.backup ? ` · backup ${res.backup}` : ''}` })
+            onChanged()
+          }} />
+      )}
+    </div>
+  )
+}
+
+// ── member: Your account ────────────────────────────────────────────────────
+export function YourAccount({ data, me, onChanged, push }) {
+  const accounts = data?.accounts || []
+  const mine = accounts.find((a) => a.id === me.id) || me
+  const [name, setName] = useState(mine.name || '')
+  const [pinMode, setPinMode] = useState(null)   // 'set' | 'remove'
+  const [exporting, setExporting] = useState(false)
+  useEffect(() => { setName(mine.name || '') }, [mine.name])
+  const others = accounts.filter((a) => a.id !== me.id)
+  const owner = accounts.find((a) => a.role === 'owner')
+
+  const patch = async (body, msg) => {
+    try { await api.patch(`/accounts/${me.id}`, body); push({ kind: 'success', msg }); onChanged(); return true } catch (err) { push({ kind: 'error', msg: errorText(err) }); return false }
+  }
+  const rename = () => {
+    const n = name.trim()
+    if (!n || n === mine.name) { setName(mine.name || ''); return }
+    patch({ name: n }, `Renamed to ${n}`).then((ok) => { if (!ok) setName(mine.name || '') })
+  }
+  const exp = async () => {
+    setExporting(true)
+    try { await downloadExport(mine); push({ kind: 'success', msg: 'Export downloaded' }) } catch (err) { push({ kind: 'error', msg: errorText(err, 'The export failed — try again.') }) }
+    setExporting(false)
+  }
+  const row = (label, help, right) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 24, minHeight: 52, padding: '9px 0', borderBottom: '1px solid var(--line-soft)' }}>
+      <div style={{ flex: '0 1 356px', minWidth: 210, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ fontSize: 13, lineHeight: '18px', fontWeight: 500 }}>{label}</span>
+        <Helper style={{ textWrap: 'pretty' }}>{help}</Helper>
+      </div>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>{right}</div>
+    </div>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {row('Name', 'How you appear in the picker and the rail.',
+        <Input value={name} onChange={setName} onBlur={rename} ariaLabel="Your account name" width="260px"
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />)}
+      {row('Colour', 'Your avatar colour — the standing cue for which account is open.',
+        <ColorPicker name={mine.name} value={mine.color} onPick={(c) => c !== mine.color && patch({ color: c }, 'Colour saved')}
+          taken={others.map((a) => (a.color || '').toLowerCase())} ariaLabel="Your colour" />)}
+      {row('PIN', mine.has_pin ? 'Asked when someone opens your account. The owner’s PIN opens it too.' : 'Off — anyone at this browser can open your account with one click.',
+        <>
+          <Pill size="sm" onClick={() => setPinMode('set')}>{mine.has_pin ? 'Change PIN' : 'Set PIN'}</Pill>
+          {mine.has_pin && <Pill size="sm" onClick={() => setPinMode('remove')}>Remove PIN</Pill>}
+        </>)}
+      {row('Export my data', 'A zip of your jobs, applications, résumés, letters, searches, companies, Persona and settings.',
+        <Pill size="sm" onClick={exporting ? undefined : exp} disabled={exporting}>{exporting ? 'Exporting…' : 'Download zip'}</Pill>)}
+      <Helper style={{ padding: '12px 0 0', textWrap: 'pretty' }}>
+        Other accounts: {others.map((a) => (a.role === 'owner' ? `${a.name} (owner)` : a.name)).join(', ') || 'none'}.
+        {' '}Adding or removing people is {owner ? `${owner.name}’s` : 'the owner’s'} job — ask them.
+      </Helper>
+      {pinMode && (
+        <PinDialog title={pinMode === 'remove' ? 'Remove your PIN' : (mine.has_pin ? 'Change your PIN' : 'Set your PIN')}
+          mode={pinMode} needCurrent={!!mine.has_pin}
+          onSubmit={async (b) => {
+            await api.patch(`/accounts/${me.id}`, b)
+            setPinMode(null)
+            push({ kind: 'success', msg: pinMode === 'remove' ? 'PIN removed' : 'PIN saved' })
+            onChanged()
+          }}
+          onClose={() => setPinMode(null)} />
+      )}
+    </div>
+  )
+}

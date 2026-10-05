@@ -5,6 +5,9 @@ import { Button, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, 
 import { useTheme, MODE_OPTIONS, themeOptions } from '../theme'
 import { describeCron, whenShort, CRON_PRESETS } from '../time'
 import api from '../api'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { useToasts, ToastStack } from '../Toast'
+import { AccountsTable, AddAccountModal, AddPeopleRow, YourAccount, accountsChanged } from './SettingsAccounts'
 import '../theme.css'
 
 // ── shared bits ──────────────────────────────────────────────────────────────
@@ -196,6 +199,37 @@ export default function Settings() {
   const askText = useCallback((spec) => new Promise((resolve) => {
     setDialog({ kind: 'prompt', ...spec, onSubmit: (v) => { setDialog(null); resolve(v) }, onCancel: () => { setDialog(null); resolve(null) } })
   }), [])
+  // ── accounts (MT-13) ──
+  // `me` from /auth/me; `acctData` = GET /accounts, fetched only with two or more
+  // accounts. With one account the page is the pre-multi-tenancy page plus one row
+  // at the end of System › Advanced (the owner's way to add the first member).
+  const [me, setMe] = useState(null)              // { id, name, color, role, has_pin }
+  const [acctCount, setAcctCount] = useState(1)
+  const [acctData, setAcctData] = useState(null)  // { accounts, max_accounts, self_id }
+  const [adding, setAdding] = useState(false)
+  const { toasts, push, dismiss } = useToasts()
+  const loc = useLocation()
+  const navigate = useNavigate()
+  const loadAccounts = useCallback(async () => {
+    try {
+      const { data } = await api.get('/auth/me')
+      if (!data?.account) return
+      const n = Number(data.accounts_count) || 1
+      setMe(data.account); setAcctCount(n)
+      if (n >= 2) {
+        const r = await api.get('/accounts')
+        setAcctData(r.data || null)
+        const self = (r.data?.accounts || []).find((a) => a.id === data.account.id)
+        if (self) setMe((m) => ({ ...m, ...self }))
+      } else setAcctData(null)
+    } catch { /* silent: the accounts UI stays hidden, every other row works */ }
+  }, [])
+  useEffect(() => {
+    window.addEventListener('jn:accounts-changed', loadAccounts)
+    return () => window.removeEventListener('jn:accounts-changed', loadAccounts)
+  }, [loadAccounts])
+  const multi = acctCount >= 2 && !!me
+  const isOwner = !me || me.role === 'owner'
   const scrollRef = useRef(null)
   const timers = useRef([])
   const flashTimer = useRef(null)
@@ -252,6 +286,7 @@ export default function Settings() {
     () => api.get('/resumes', { params: { is_base: true } }).then(({ data }) => setResumes(data || [])).catch((e) => { console.error(e); flash('Could not load your résumés — the default-résumé picker is empty', true) }),
     () => api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in that picker */ }),
     () => api.get('/linkedin/session').then(({ data }) => setLi(data)).catch(() => { /* silent: the LinkedIn row reads “unknown” and its own actions report their failures */ }),
+    () => loadAccounts(),
   ])
 
   // One shared timer, not one per flash — otherwise two saves inside 2.2s let the first timer clear the second message early.
@@ -350,7 +385,13 @@ export default function Settings() {
     const curVoice = S.cover_letter_default_voice
     if (curVoice && !voiceOpts.some((o) => o[0] === curVoice)) voiceOpts.push([curVoice, `${curVoice} — not in presets`])
 
+    // MT-13: from two accounts on, the owner's "Accounts" table / a member's "Your account" comes first.
+    // Their bodies are not rows (`block`), so they carry no row list and match the search by title.
+    const people = !multi ? [] : isOwner
+      ? [['accounts', 'People', 'Accounts', '', [], 'accounts']]
+      : [['account', 'You', 'Your account', '', [], 'account']]
     return [
+      ...people,
       // The one group that isn't a DB setting: both rows live in this browser's localStorage (theme.js), so they take no `key` and never PATCH /settings.
       // They sit first because they change what every screen below looks like.
       ['appearance', 'General', 'Display', '', [
@@ -500,13 +541,40 @@ export default function Settings() {
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),
         { kind: 'apikey', label: 'Dashboard API key', help: 'Saving refreshes the session cookie so iframes keep working.' },
         BT('DB backup', 'DB snapshot now, outside the cron.', 'Run backup', () => api.post('/db/backup')),
+        // MT-13: the one row a single-account install gains — the owner's way in to adding the first member.
+        // From two accounts on, the full Accounts section at the top takes over.
+        ...(!multi && isOwner ? [{ kind: 'addpeople', label: 'Accounts', help: 'Add people to this install — each gets their own jobs, résumés and settings.' }] : []),
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li])
+  }, [S, resumes, personaAvailable, trig, li, multi, isOwner])
+
+  // The rail's account menu lands here: `#accounts` (Manage accounts) scrolls to the
+  // Accounts / Your account section, `#add-account` also opens the Add dialog. The hash is
+  // consumed so the same menu item works again on the next click.
+  const hasS = !!S
+  useEffect(() => {
+    const h = loc.hash.replace('#', '')
+    if (!ready || !hasS || (h !== 'accounts' && h !== 'add-account')) return
+    const target = multi ? (isOwner ? 'accounts' : 'account') : 'advanced'
+    setActive(target)
+    requestAnimationFrame(() => {
+      const c = scrollRef.current
+      const el = c && c.querySelector(`[data-sec="sec-${target}"]`)
+      if (c && el) c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 4
+    })
+    if (h === 'add-account' && isOwner) setAdding(true)
+    navigate(loc.pathname + loc.search, { replace: true })
+  }, [loc.hash, ready, hasS, multi, isOwner])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const created = (acc) => {
+    setAdding(false)
+    push({ kind: 'success', msg: `Added ${acc?.name || 'the account'} — switch to it from the rail` })
+    accountsChanged()
+  }
 
   const q = query.trim().toLowerCase()
-  const matches = (sec) => !q || sec[2].toLowerCase().includes(q) ||
+  const matches =(sec) => !q || sec[2].toLowerCase().includes(q) ||
     sec[4].some((r) => `${r.label} ${r.help || ''}`.toLowerCase().includes(q))
   const visible = sections.filter(matches)
 
@@ -580,7 +648,7 @@ export default function Settings() {
         {/* rows */}
         <div ref={attachScroller} className="v2-scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '0 40px 40px', minHeight: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', maxWidth: 980 }}>
-            {visible.map(([id, , title, sub, rows]) => (
+            {visible.map(([id, , title, sub, rows, block]) => (
               <div key={id} style={{ display: 'flex', flexDirection: 'column' }}>
                 {/* alignItems center, not baseline: both children are 26px tall (shared line-height below), so centring matches baseline in the default theme
                     but avoids baseline's font-dependent offset union, which grew the head 56→59px under the alt theme. */}
@@ -592,8 +660,10 @@ export default function Settings() {
                   {/* ui: keep — the 26px line-height is the alignment (see above): Helper's 16px would drop this off the grid */}
                   <span style={{ fontSize: 11.5, lineHeight: '26px', color: 'var(--muted)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</span>
                 </div>
+                {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push} />}
+                {block === 'account' && <YourAccount data={acctData} me={me} onChanged={accountsChanged} push={push} />}
                 {rows.filter((r) => !(r.hide && r.hide())).map((r) => (
-                  <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
+                  <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow, openAdd: () => setAdding(true) }} />
                 ))}
               </div>
             ))}
@@ -627,6 +697,10 @@ export default function Settings() {
       {editFor && <EditModal spec={editFor} S={S} defaults={defaults} onSave={save} onClose={() => setEditFor(null)} />}
       {modelsOpen && <ModelsModal S={S} save={save} onClose={() => setModelsOpen(false)} />}
       {dialog && (dialog.kind === 'prompt' ? <PromptDialog {...dialog} /> : <ConfirmDialog {...dialog} />)}
+      {adding && me && (
+        <AddAccountModal accounts={acctData?.accounts || [me]} me={me} onClose={() => setAdding(false)} onCreated={created} />
+      )}
+      {toasts.length > 0 && <ToastStack toasts={toasts} onClose={dismiss} />}
     </div>
   )
 }
@@ -784,6 +858,8 @@ function Row({ r, ctx }) {
       }
       case 'linkedin':
         return <LinkedInRow li={li} setLi={setLi} flash={flash} />
+      case 'addpeople':
+        return <AddPeopleRow onAdd={ctx.openAdd} />
       default:
         return null
     }

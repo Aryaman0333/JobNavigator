@@ -134,7 +134,7 @@ def list_accounts(db: Session = Depends(get_db)):
 # ── POST /accounts ───────────────────────────────────────────────────────────
 
 @router.post("", status_code=201)
-def create_account(body: dict = Body(...), db: Session = Depends(get_db)):
+def create_account(response: Response, body: dict = Body(...), db: Session = Depends(get_db)):
     """Owner only. Body `{name, color?, pin?, copy_from?: {account_id, items: [persona, qa, resumes, companies, searches, settings, voices, excludes]}}`. The new account is always a member and starts with an empty Persona and the two built-in extension searches; copy-from deep-copies the chosen items (new ids; résumé ids inside companies' `selected_resume_ids` and `default_resume_id` point at the copies, ids not copied are dropped; no jobs, applications or letters). 409 `account_limit` (5 accounts), 409 `owner_pin_required` (set the owner's PIN first), 409 `name_taken`, 422 bad name/colour/PIN/items, 404 unknown copy source."""
     body = body or {}
     accounts = _accounts(db)
@@ -187,6 +187,12 @@ def create_account(body: dict = Body(...), db: Session = Depends(get_db)):
     acc = acct_auth._find(accounts, new.id)
     view = _full_view(acc, db.query(Account).filter(Account.id == new.id).first(),
                       admin.account_counts(db), caller)
+    # MT-13: a browser that has been the owner only because the install had one account
+    # carries no jn_account cookie; with a second account it would land on the picker on
+    # its next request. Pin this browser to the owner it already is.
+    owner_now = acct_auth._find(accounts, caller["id"])
+    if owner_now is not None:
+        acct_auth.set_account_cookie(response, db, owner_now)
     return {"account": view, "copied": copied}
 
 

@@ -24,6 +24,7 @@ import case_modals                                  # noqa: E402,F401
 import case_apps_select                             # noqa: E402,F401
 import case_apps_bulk                               # noqa: E402,F401
 import case_mt_switch                               # noqa: E402,F401
+import case_mt_settings                             # noqa: E402,F401
 import case_flows                                   # noqa: E402,F401
 
 if __name__ == '__main__':

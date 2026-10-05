@@ -176,7 +176,7 @@ function AccountSwitcher({ open }) {
               </MenuItem>
             )
           })}
-          {owner && <MenuItem icon="+" divider onClick={() => go('/settings#accounts')}>Add account…</MenuItem>}
+          {owner && <MenuItem icon="+" divider onClick={() => go('/settings#add-account')}>Add account…</MenuItem>}
           <MenuItem icon="⚙" divider={!owner} hint="Settings" onClick={() => go('/settings#accounts')}>Manage accounts</MenuItem>
         </Menu>
       )}

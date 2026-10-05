@@ -1,0 +1,220 @@
+"""mt-settings — Settings › Accounts (owner) and Your account (member), MT-13; settings by role, MT-14.
+
+SAFE FOR THE LIVE DB, by construction (the mt-switch pattern):
+- SKIPs unless the install has exactly ONE account and the owner has no PIN when it starts;
+- the owner PIN it sets (through the Add account dialog's "Set your PIN first" step) is
+  removed again in `finally`;
+- it creates one member `ZZS Member <n>` with no copy-from, and deletes it in `finally`
+  (through the UI when the flow gets there, else the API; the API takes its own
+  pre-removal pg_dump first);
+- any section policy it flips belongs to that member and goes with it; any install
+  setting it edits is written back to the value it read first;
+- ends asserting exactly one account and no owner PIN.
+Take a manual backup before running it anyway.
+"""
+import json
+import os
+import random
+import time
+import urllib.error
+import urllib.request
+
+from _suite import case
+import _common as C
+import h
+
+OWNER_PIN = '7391'
+SHOTS = '/tmp/v2t/shots/mt13'
+
+
+def _api(method, path, body=None, account=None):
+    data = None if body is None else json.dumps(body).encode()
+    headers = {'X-API-Key': h.KEY, 'Content-Type': 'application/json'}
+    if account:
+        headers['X-Account'] = str(account)
+    req = urllib.request.Request(h.BASE + '/api' + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            txt, st = r.read().decode('utf-8', 'replace'), r.status
+    except urllib.error.HTTPError as e:
+        txt, st = e.read().decode('utf-8', 'replace'), e.code
+    try:
+        return st, (json.loads(txt) if txt else None)
+    except ValueError:
+        return st, txt
+
+
+def _wait_text(pg, text, ms=8000):
+    try:
+        pg.wait_for_function('(t) => (document.body.innerText || "").includes(t)', arg=text, timeout=ms)
+        return True
+    except Exception:
+        return False
+
+
+def _gone_text(pg, text, ms=8000):
+    try:
+        pg.wait_for_function('(t) => !(document.body.innerText || "").includes(t)', arg=text, timeout=ms)
+        return True
+    except Exception:
+        return False
+
+
+def _me(pg):
+    return pg.evaluate("""async () => {
+      const r = await fetch('/api/auth/me', { credentials: 'include' });
+      const d = await r.json().catch(() => null);
+      return { status: r.status, name: d && d.account ? d.account.name : null };
+    }""")
+
+
+def _nav(pg):
+    return pg.evaluate("""() => [...document.querySelectorAll('.v2-anchor')].map((e) => e.textContent.trim())""")
+
+
+def _scroll_to(pg, sec):
+    pg.evaluate("""(s) => { const el = document.querySelector(`[data-sec="sec-${s}"]`); if (el) el.scrollIntoView({ block: 'start' }) }""", sec)
+    pg.wait_for_timeout(300)
+
+
+@case('mt-settings')
+def _mt_settings(c):
+    os.makedirs(SHOTS, exist_ok=True)
+    st, data = _api('GET', '/accounts')
+    if st != 200 or not isinstance(data, dict):
+        c.skip(f'GET /api/accounts answered {st}')
+    if len(data['accounts']) != 1:
+        c.skip(f'needs an install with exactly one account (has {len(data["accounts"])})')
+    owner = data['accounts'][0]
+    owner_id, owner_name = owner['id'], owner['name']
+    if owner['has_pin']:
+        c.skip('the owner already has a PIN this case does not know')
+
+    member_name = f'ZZS Member {random.randint(100, 999)}'
+    member_id = None
+    try:
+        with h.browser() as b:
+            opg = C.seeded_page(b)
+            try:
+                # ── MT-13: one account → only the Advanced row ──
+                C.go(opg, '/settings', settle=1200)
+                c.check('one account: no Accounts section in the nav', 'Accounts' not in _nav(opg), _nav(opg))
+                _scroll_to(opg, 'advanced')
+                add = opg.locator('[aria-label="Add an account to this install"]')
+                c.eq('one account: the Advanced › Accounts row offers "Add account…"', add.count(), 1)
+                add.click()
+                c.check('an owner without a PIN is asked to set one first', _wait_text(opg, 'Set your PIN first'))
+                opg.keyboard.type(OWNER_PIN, delay=60)
+                c.check('… and to repeat it', _wait_text(opg, 'Same PIN again'))
+                opg.keyboard.type(OWNER_PIN, delay=60)
+                c.check('then the Add account form opens', _wait_text(opg, 'Start from a copy of'))
+                st, d = _api('GET', '/accounts')
+                c.check('the owner has a PIN now', st == 200 and d['accounts'][0]['has_pin'], st)
+
+                opg.locator('[aria-label="Account name"]').fill(member_name)
+                opg.locator('[aria-label="Copy from account"]').click()
+                opg.get_by_text(f'{owner_name} (owner)', exact=True).click()
+                c.check('picking a source lists the items to copy', _wait_text(opg, 'Base résumés'))
+                opg.wait_for_timeout(300)
+                opg.screenshot(path=f'{SHOTS}/add-account-modal.png')
+                # this run copies nothing: back to an empty start
+                opg.locator('[aria-label="Copy from account"]').click()
+                opg.get_by_text('Nothing — start empty', exact=True).click()
+                opg.get_by_text('Add account', exact=True).last.click()
+                c.check('adding toasts', _wait_text(opg, f'Added {member_name}', 12000))
+                st, d = _api('GET', '/accounts', account=owner_id)
+                acc = [a for a in (d or {}).get('accounts', []) if a['name'] == member_name]
+                c.check('the member exists', st == 200 and len(acc) == 1, f'{st}')
+                member_id = acc[0]['id'] if acc else None
+                c.eq('the owner browser still acts as the owner (no picker)', _me(opg), {'status': 200, 'name': owner_name})
+                c.check('two accounts: the Accounts section comes first', (_nav(opg) or [''])[0] == 'Accounts', _nav(opg))
+                _scroll_to(opg, 'advanced')
+                c.eq('… and the Advanced row is gone', opg.locator('[aria-label="Add an account to this install"]').count(), 0)
+                _scroll_to(opg, 'accounts')
+                rows = opg.locator('[data-account-row]')
+                c.eq('the table lists both accounts', rows.count(), 2)
+                c.check('the owner row says "you"', 'you' in opg.locator(f'[data-account-row="{owner_name}"]').inner_text())
+                c.check('the member row has Remove', opg.locator(f'[aria-label="Remove {member_name}"]').count() == 1)
+                c.eq('the owner row has no Remove', opg.locator(f'[aria-label="Remove {owner_name}"]').count(), 0)
+                opg.screenshot(path=f'{SHOTS}/owner-accounts.png')
+
+                # the rail's "Manage accounts" lands on the section
+                C.go(opg, '/feed', settle=1000)
+                opg.locator('[data-account-switcher]').click()
+                opg.wait_for_timeout(300)
+                opg.get_by_text('Add account…', exact=True).click()
+                c.check('rail "Add account…" opens the Add dialog in Settings', _wait_text(opg, 'Start from a copy of'))
+                c.check('… on /settings', '/settings' in opg.url, opg.url)
+                opg.keyboard.press('Escape')
+                c.check('Escape closes it', _gone_text(opg, 'Start from a copy of'))
+
+                # ── MT-13: the member's own Settings ──
+                mpg = C.seeded_page(b)
+                try:
+                    C.go(mpg, '/feed', settle=1200)
+                    c.check('a fresh browser gets the picker', _wait_text(mpg, 'job hunting?'))
+                    mpg.locator(f'[aria-label^="{member_name},"]').first.click()
+                    c.check('the member (no PIN) opens in one click', _wait_text(mpg, f'Switched to {member_name}', 12000))
+                    C.go(mpg, '/settings', settle=1500)
+                    nav = _nav(mpg)
+                    c.check('member: "Your account" comes first', (nav or [''])[0] == 'Your account', nav)
+                    c.check('member: no Accounts table', 'Accounts' not in nav)
+                    c.check('member: the footer names the owner', _wait_text(mpg, f'{owner_name} (owner)'))
+                    c.check('member: adding people is the owner’s', C.body_has(mpg, 'Adding or removing people is'))
+                    mpg.locator('[aria-label="Your colour"] [role="radio"]').nth(4).click()
+                    c.check('member: picking a colour saves', _wait_text(mpg, 'Colour saved'))
+                    st, d = _api('GET', '/accounts', account=owner_id)
+                    col = [a['color'] for a in d['accounts'] if a['id'] == member_id]
+                    c.eq('… to the account', col, ['#8a5cd6'])
+                    st, _ = _api('GET', f'/accounts/{member_id}/export', account=member_id)
+                    c.eq('member: Export my data answers', st, 200)
+                    mpg.screenshot(path=f'{SHOTS}/member-your-account.png')
+                    _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name)
+                    errs, perrs = C.console_errors(mpg)
+                    c.check('member: no page errors', not perrs, '; '.join(perrs[:2]))
+                finally:
+                    mpg.context.close()
+
+                # ── MT-13: remove through the UI ──
+                C.go(opg, '/settings#accounts', settle=1200)
+                opg.locator(f'[aria-label="Remove {member_name}"]').click()
+                c.check('Remove asks for the typed name', _wait_text(opg, f'Type “{member_name}” to confirm'))
+                c.check('… itemises the counts', C.body_has(opg, 'applications') or C.body_has(opg, 'application'))
+                c.check('… mentions the backup', C.body_has(opg, 'A full database backup is taken first'))
+                opg.locator('[aria-label="Type the account name to confirm"]').fill(member_name.lower())
+                c.eq('a wrong-case name keeps Remove disabled',
+                     opg.get_by_text(f'Remove {member_name}', exact=True).last.get_attribute('aria-disabled'), 'true')
+                opg.locator('[aria-label="Type the account name to confirm"]').fill(member_name)
+                opg.get_by_text(f'Remove {member_name}', exact=True).last.click()
+                c.check('removing toasts', _wait_text(opg, f'Removed {member_name}', 60000))
+                st, d = _api('GET', '/accounts', account=owner_id)
+                if st == 200 and len(d['accounts']) == 1:
+                    member_id = None
+                c.check('back to one account: the Advanced row returns',
+                         opg.locator('[aria-label="Add an account to this install"]').count() == 1 or _wait_text(opg, 'Add people to this install'))
+                errs, perrs = C.console_errors(opg)
+                c.check('owner: no page errors', not perrs, '; '.join(perrs[:2]))
+            finally:
+                opg.context.close()
+    finally:
+        if member_id:
+            for _ in range(24):
+                st, d = _api('DELETE', f'/accounts/{member_id}', {'confirm_name': member_name}, account=owner_id)
+                if not (st == 409 and isinstance(d, dict) and d.get('detail') == 'account_busy'):
+                    break
+                time.sleep(5)
+            c.check('the member is removed (cleanup)', st == 200, f'{st} {d}')
+        st, d = _api('GET', '/accounts')
+        if st == 200 and len(d['accounts']) == 1 and d['accounts'][0]['has_pin']:
+            st, d = _api('PATCH', f'/accounts/{owner_id}', {'pin': None, 'current_pin': OWNER_PIN})
+            c.check("the owner's PIN is removed again", st == 200 and not d['account']['has_pin'], f'{st} {d}')
+        st, d = _api('GET', '/accounts')
+        n = len(d['accounts']) if st == 200 and isinstance(d, dict) else None
+        c.eq('the install is back to exactly one account', n, 1)
+        if n == 1:
+            c.eq('… with no owner PIN', d['accounts'][0]['has_pin'], False)
+
+
+def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
+    """MT-14 flows; filled in by that batch."""
+    return None
