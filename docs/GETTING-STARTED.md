@@ -127,6 +127,20 @@ If you change the extension's files later, remove and re-add it; a plain reload 
 
 **H-1B**: Settings › Pipeline holds the global exclude phrases scanned in every description and the cron that refreshes the sponsorship dataset. Ignore it if visa sponsorship is not your concern.
 
+## Accounts
+
+One install can hold up to five accounts, for a household or a couple of friends. Skip this section if it is only you; with one account the account switcher and the Accounts settings stay out of sight.
+
+- **Adding people.** Settings › System › Advanced › Accounts › **Add account…** (with two or more accounts it becomes its own section, Settings › Accounts). Give a name and a colour. The first time, the owner is asked to choose a 4-digit PIN: it is what stops a member from opening the owner's account. A member's own PIN is optional, and the owner's PIN opens any account.
+- **Copy from.** The Add dialog can start the new account from a copy of an existing one: Persona (or just the Q&A bank), base résumés, companies, searches, settings, cover-letter voices and global excludes. Pick what you want; jobs, applications and letters are never copied. Copied companies and searches are due at once. Later, **Copy from…** on Companies and Searches copies one row from another account.
+- **Switching.** The rail footer shows who is signed in; click it, or press Ctrl+Shift+1 to 5 (Cmd on a Mac), to switch. A PIN account asks for its PIN. A fresh browser opens the picker first. Each browser remembers its own account.
+- **Shared and own.** Scraping is shared: the same careers page or search is fetched once for everyone who watches it, and each account then filters, de-duplicates and scores for itself. Everything the person works with (jobs, applications, résumés, letters, Persona, searches, companies, Stats, activity) is separate and invisible to the others. Settings are tagged per section: the owner chooses **Inherit** (the member sees the owner's values) or **Own** (the member keeps theirs). Install-wide items (Advanced, backups, scraper limits) stay with the owner; a member can unlock them for 15 minutes by entering the owner's PIN.
+- **Telegram.** Each account either uses the household bot or its own bot. Under Settings › Notifications › **Link Telegram** shows a one-time code; send `/start <code>` to the bot and that chat belongs to the account. Alerts, the digest and the inline buttons then go to, and act on, that account only.
+- **Gmail.** Each account connects its own mailbox under Settings › Email classification › Gmail › **Connect Gmail** (the OAuth client in `.env` is shared, see step 8).
+- **Extension.** With two or more accounts the popup's settings gain a **Saves to** row. Choose the account (a PIN account asks for its PIN); every save, LinkedIn capture and autofill then goes to that account.
+- **Logins by subscription.** A member whose Models section is set to Own can use their own Claude, Codex or Antigravity login: `docker compose exec backend python -m backend.scripts.cli_login <codex|agy|claude> "<account name>"` prints the exact command to run.
+- **Export and removal.** Any account can download its data (Settings › Your account › Export my data, a zip). The owner removes an account under Settings › Accounts by typing its name; a full database backup is taken first.
+
 ## 9. Scheduling, backups, upkeep
 
 Settings › Pipeline › Scheduler holds every interval and cron: scraping, email polling, backups, cleanup of old unsaved jobs, auto-reject of stale applications. Each cron field explains itself and offers presets.

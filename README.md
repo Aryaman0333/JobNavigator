@@ -114,6 +114,8 @@ Scrape career pages and aggregators, score jobs against your résumés with an L
 
 > The posting preview is an `iframe`; sites that refuse framing show blank unless the extension (which strips the frame-blocking headers) is installed. "Open" always works, and applied jobs keep a cached snapshot.
 
+**Accounts.** One install can serve a household: the first account is the owner, and up to four members can be added under Settings. Each account has its own jobs, applications, résumés, cover letters, Persona, searches and companies, optionally behind a 4-digit PIN (the owner's PIN opens any account). Scraping is shared: two accounts watching the same careers page cost one fetch, and each account filters and scores the results itself. Settings are inherited from the owner or kept per account, section by section, and Telegram, Gmail, LinkedIn and the extension are connected per account. With a single account none of this shows.
+
 ## Quick Start
 
 **1. Run it**
