@@ -80,7 +80,7 @@ That's it. Don't worry about perfect code — I'll review and we can iterate.
 ## Stack reminder
 
 - Backend: Python 3.12 / FastAPI / SQLAlchemy / PostgreSQL / Playwright
-- Frontend: React 18 / Tailwind / Vite
+- Frontend: React 18 / Vite
 - Extension: Chrome MV3, vanilla JS
 - Docker Compose for everything
 

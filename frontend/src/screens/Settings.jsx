@@ -456,7 +456,6 @@ export default function Settings() {
       ['appearance', 'General', 'Display', '', [
         { kind: 'appearance', label: 'Appearance', help: 'Light, dark, or follow your OS. Saved in this browser.' },
         { kind: 'theme', label: 'Theme', help: 'The app’s look: colours, fonts and shapes. Saved in this browser.' },
-        BT('Classic dashboard', 'Open the previous (v1) interface.', 'Open classic UI', null, { href: '/classic' }),
       ]],
       ['feed', '', 'Feed', '', [
         SW('Zoom control on postings', 'The small + / − floater top-right of a posting.', 'Hidden — postings open at last selected zoom level.', 'feed_zoom_floater',
@@ -1000,11 +999,7 @@ function Row({ r, ctx }) {
                   <Helper mono style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.preview}</Helper>
                 </span>
               : <Helper size="xs" mono style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.preview}</Helper>)}
-            {/* A row that just navigates (Classic dashboard) carries an `href` instead of an
-                `act` — a real <a> via Button, not the running/done ActionBtn pill. */}
-            {r.href
-              ? <Pill onClick={() => { window.location.assign(r.href) }} ariaLabel={`${r.label} — ${r.btnLabel}`}>{r.btnLabel}</Pill>
-              : <ActionBtn label={r.btnLabel} state={trig[r.label] || ''} onClick={() => runAction(r.label, r.act)} ariaLabel={`${r.label} — ${r.btnLabel}`} />}
+            <ActionBtn label={r.btnLabel} state={trig[r.label] || ''} onClick={() => runAction(r.label, r.act)} ariaLabel={`${r.label} — ${r.btnLabel}`} />
           </>
         )
       case 'apikey':

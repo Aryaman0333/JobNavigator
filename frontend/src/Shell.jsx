@@ -212,8 +212,8 @@ export default function Shell() {
     rafRef.current = [requestAnimationFrame(() => { rafRef.current = [requestAnimationFrame(() => setFade(false))] })]
   }, [])
   useEffect(() => () => { rafRef.current.forEach((id) => cancelAnimationFrame(id)) }, [])
-  // theme.js is the one store for both axes: rail, global overlays and classic
-  // shell all read it, so a click here moves every one without a reload.
+  // theme.js is the one store for both axes: rail and global overlays
+  // all read it, so a click here moves every one without a reload.
   const look = useTheme()
   const appearanceTip = appearanceTitle(look.mode)
   const toggleRail = () => setOpen((v) => { const n = !v; try { localStorage.setItem('jobnavigator_v2_rail', n ? 'expanded' : 'collapsed') } catch {} return n })

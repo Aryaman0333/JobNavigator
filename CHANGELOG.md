@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [3.0.0] — unreleased
+
+Draft; the date and tag are set at release. JobNavigator becomes a household install: one server, up to five accounts, each with its own data. Upgrade: `git pull`, `docker compose up --build -d`; reload the extension. An existing install keeps everything it has: the data becomes the owner's account, and with one account the dashboard looks and behaves as before.
+
+### Added
+- **Household accounts:** one owner plus up to four members. The install password still opens the install; with two or more accounts a picker follows, and an account can carry a 4-digit PIN (the owner's PIN opens any member; five wrong tries wait 30 s). The choice is remembered per browser (`Ctrl/⌘ + Shift + 1–5` switches). With one account nothing new appears; the owner adds people under Settings › System › Advanced.
+- **Separate data per account:** jobs, searches, companies, applications, interviews, résumés, cover letters, Persona, tracer links, activity and LLM logs, runs and scrape logs. Every query is scoped centrally, background work (digest, auto-reject, cleanup, e-mail check, scoring) runs once per account, and a two-account leak test walks every API route.
+- **Shared scraping:** two accounts that watch the same company page or run the same keyword search cause one fetch. Each account then ingests the postings through its own filters, excludes, dedup, H-1B and salary checks and auto-scoring. The shortest interval wins; results and age limits are trimmed per account.
+- **Settings inherit or own, per section:** the owner decides for each member whether a section (models, notifications, filters, …) follows the owner's values or is the member's own. Settings shows a scope tag on each section, the member's nav groups yours and shared sections, and owner-only sections sit behind a lock card with an inline owner-PIN unlock (15 minutes).
+- **Per-account credentials and logins:** provider API keys follow the section policy; Claude Code (token), Codex (`CODEX_HOME`) and Antigravity (state dir) get a login per account (`backend/scripts/cli_login.py` prints the command); LinkedIn, Jobright and Levels sessions and cookie files are per account.
+- **Telegram per account:** the household bot routes by chat (link with a 6-digit code and `/start <code>`), or a member brings their own bot with its own webhook. Inline buttons act only on the chat's account; system alerts go to the owner.
+- **Gmail per account:** connect from Settings with Google's consent screen instead of `.env` tokens (the OAuth client stays in `.env`; add `http://localhost/api/gmail/callback` as an authorized redirect URI). An existing `GMAIL_REFRESH_TOKEN` keeps working for the owner.
+- **Extension "Saves to":** with two or more accounts the popup picks which account captures go to (PIN to change); every request carries `X-Account`, and autofill reads that account's Persona. Extension 3.0.0.
+- **Copy from… and clone:** a new account can start from a copy of the owner's (or another account's) Persona and Q&A bank, base résumés, companies, searches, settings, voices and excludes; Companies and Searches get a "Copy from…" picker for single rows. Never jobs or applications.
+- **Manage accounts:** rename, colour, PIN set/reset, remove (typed name, itemised counts, an automatic database dump first) and "Export my data" (zip of JSON). Stats are per account; the owner can switch the LLM cost panel to all accounts.
+
+### Changed
+- **Unique per account:** company names, job ids and the Persona are unique within an account, not across the install.
+- **Settings values** may now live per account (`settings.account_id`; empty = the install value). The `dashboard_api_key` and the other install secrets stay install-wide.
+
+### Removed
+- **The classic dashboard.** `/classic` and `/classic/…` redirect to the same path without the prefix (`/classic/applications` opens `/applications`), so old bookmarks keep working. The Settings › Display "Classic dashboard" row, the classic upgrade banner and the Tailwind setup that only the v1 screens used are gone; the page reset the redesign relies on is now plain CSS in `frontend/src/base.css`.
+
 ## [2.2.0] — 2026-10-04
 
 Upgrade: `git pull && docker compose pull && docker compose up -d` (or `--build`); reload the extension. The backend image now pins Claude Code 2.1.281 and Codex 0.156.1.
@@ -190,3 +213,5 @@ replies, and manage it all from a React dashboard.
 [2.0.0]: https://github.com/vesaias/JobNavigator/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/vesaias/JobNavigator/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/vesaias/JobNavigator/releases/tag/v1.0.0
+<!-- At the 3.0.0 tag: point [Unreleased] at compare/v3.0.0...HEAD and add
+[3.0.0]: https://github.com/vesaias/JobNavigator/compare/v2.2.0...v3.0.0 -->

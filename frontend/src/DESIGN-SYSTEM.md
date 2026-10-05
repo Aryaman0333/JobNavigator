@@ -1,8 +1,8 @@
 # Design system
 
-The shell (`Shell.jsx`) plus the primitive layer (`ui.jsx`), the token sheet (`theme.css` + `theme.js`) and `screens/` are the app at `/`. The old interface lives one level down, unbroken, at `/classic/*` (`frontend/src/classic/`), sharing one backend. `/v2` and `/v2/*` redirect to the same path without the prefix, query and hash intact.
+The shell (`Shell.jsx`) plus the primitive layer (`ui.jsx`), the token sheet (`theme.css` + `theme.js`) and `screens/` are the app at `/`. `/v2` and `/v2/*`, and the removed v1 dashboard's `/classic` and `/classic/*`, redirect to the same path without the prefix, query and hash intact.
 
-**Layout.** `frontend/src/` holds `App.jsx` (routes), `Shell.jsx` (rail, counts, health dot, theme), `ui.jsx`, `theme.css`, `theme.js`, `hooks.js`, `time.js`, `Toast.jsx`, `ConfirmDialog.jsx`, the three overlays (`LoginModal`, `WelcomeModal`, `NewUiModal`) and this file; one screen per file under `screens/`; Vitest specs under `__tests__/`; the v1 interface under `classic/`; the git-ignored lab pages under `design-base/`.
+**Layout.** `frontend/src/` holds `App.jsx` (routes), `Shell.jsx` (rail, counts, health dot, theme), `ui.jsx`, `theme.css`, `theme.js`, `hooks.js`, `time.js`, `Toast.jsx`, `ConfirmDialog.jsx`, the three overlays (`LoginModal`, `WelcomeModal`, `NewUiModal`) and this file; one screen per file under `screens/`; Vitest specs under `__tests__/`; `base.css` (the page reset, plain CSS); the git-ignored lab pages under `design-base/`.
 
 **Historical prefix.** The CSS root class is still `.jn-v2` and the hover hooks are still `v2-bd`, `v2-row`, `v2-card`, … — the redesign's staging names. They are load-bearing selectors in `theme.css`, matched by `ui.jsx` and by the style tooling, and renaming them is a paint risk for no gain, so they stay. Read `v2-` as "the design system", not "a second UI".
 
@@ -76,7 +76,7 @@ Light and Full depth are **not** distinguished visually anywhere.
 
 ## Routes
 
-`/` is the app shell (`Shell.jsx` + `screens/`); `/classic/*` is the untouched v1 interface (`classic/`). `/v2` and `/v2/*` redirect to the same path with the prefix stripped. `/ui` (primitive gallery) and `/toasts` (toast taxonomy lab) live in the git-ignored `frontend/src/design-base/` (`UiGallery.jsx`, `ToastLab.jsx`); `App.jsx` registers both routes only when the folder exists, via `import.meta.glob('./design-base/*.jsx')` behind `React.lazy`/`Suspense` — a missing folder costs the two routes and nothing else.
+`/` is the app shell (`Shell.jsx` + `screens/`); `/v2`, `/v2/*`, `/classic` and `/classic/*` redirect to the same path with the prefix stripped. `/ui` (primitive gallery) and `/toasts` (toast taxonomy lab) live in the git-ignored `frontend/src/design-base/` (`UiGallery.jsx`, `ToastLab.jsx`); `App.jsx` registers both routes only when the folder exists, via `import.meta.glob('./design-base/*.jsx')` behind `React.lazy`/`Suspense` — a missing folder costs the two routes and nothing else.
 
 ## Testing
 

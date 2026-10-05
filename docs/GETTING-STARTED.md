@@ -21,8 +21,6 @@ That pulls the release images from GHCR (about 2 GB, Playwright's Chromium is th
 
 **Sign in.** The first login asks for an API key. Leave it blank and continue: with no key set, the dashboard is open. Set one right away under **Settings › System › Advanced** (dashboard API key), then sign in again with it. That key is what the Chrome extension will also use.
 
-The old interface is still at `http://localhost/classic`.
-
 ## 1. Settings › AI: pick a provider
 
 Everything that scores, tailors or writes needs a language model. Choose one primary provider under **Settings › AI › Models**:

@@ -23,7 +23,6 @@ const POINTS = [
   'The extension, redesigned: AI-assisted answers to application questions and structured autofill of ATS forms from your Persona.',
   'Pick a look in Settings › Display: Paper, Green Paper, Stone, V1 Style or Windows 98, light or dark.',
   'OpenRouter and live model search, the freehire.me source, Persona import from a résumé or PDF, a cron helper for schedules.',
-  'The classic dashboard is still at /classic (Settings › Display) for one more release.',
 ]
 
 export default function NewUiModal({ onClose }) {

@@ -21,7 +21,7 @@ import api from './api'
 //   company_filter_tiers        Companies tier filter
 //   session: jobnavigator_v2_searchtest   a search test preview still in flight
 //   session: jobnavigator_v2_flash        a toast queued for the next screen
-//   session: jn:health_dismissed          the classic health banner's dismissal
+//   session: jn:health_dismissed          the old (v1) health banner's dismissal, cleared for good measure
 // Kept, because they belong to the device or the person at it rather than to the
 // account's data: the API key, appearance + theme, rail collapsed, the welcome /
 // what's-new marks, posting zoom, sort orders, open/closed panels and sections,
