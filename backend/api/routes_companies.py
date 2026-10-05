@@ -225,6 +225,26 @@ def create_company(data: CompanyCreate, background_tasks: BackgroundTasks, db: S
     return _company_to_dict(company)
 
 
+@router.get("/clone-sources")
+def company_clone_sources(db: Session = Depends(get_db)):
+    """Other accounts' companies for the "Copy from…" picker: `{accounts: [{id, name, color, role, items: [{id, name, tier, active, scrape_urls, exists}]}]}`. Empty `accounts` with a single account; never the caller's own rows, notes or jobs."""
+    from backend.accounts import admin
+    return admin.company_clone_sources(db)
+
+
+@router.post("/clone")
+def clone_company(body: dict, db: Session = Depends(get_db)):
+    """Copy one company of another account (`{source_id}`) into this account: settings only, no jobs or notes, résumé choices dropped, due at once. 409 `needs_two_accounts`, 409 `name_taken` when this account already has that name, 404 `source_not_found` for an own or unknown id."""
+    from fastapi.responses import JSONResponse
+    from backend.accounts import admin
+    try:
+        new_id = admin.clone_company(db, (body or {}).get("source_id"))
+    except admin.CloneError as e:
+        return JSONResponse(status_code=e.status, content={"detail": e.code, "message": e.message})
+    company = db.query(Company).filter(Company.id == new_id).first()
+    return _company_to_dict(company)
+
+
 @router.patch("/{company_id}")
 def update_company(company_id: str, updates: dict, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()

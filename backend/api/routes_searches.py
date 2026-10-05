@@ -131,6 +131,25 @@ def create_search(data: SearchCreate, db: Session = Depends(get_db)):
     return _search_to_dict(search)
 
 
+@router.get("/clone-sources")
+def search_clone_sources(db: Session = Depends(get_db)):
+    """Other accounts' searches for the "Copy from…" picker: `{accounts: [{id, name, color, role, items: [{id, name, search_mode, search_term, direct_url, location, country, active}]}]}`. Empty `accounts` with a single account; never the caller's own rows; built-in extension searches left out."""
+    from backend.accounts import admin
+    return admin.search_clone_sources(db)
+
+
+@router.post("/clone")
+def clone_search(body: dict, db: Session = Depends(get_db)):
+    """Copy one search of another account (`{source_id}`) into this account, due at once. A name clash becomes "<name> (copy)" / "(copy 2)". 409 `needs_two_accounts` / `builtin_search`, 404 `source_not_found` for an own or unknown id."""
+    from backend.accounts import admin
+    try:
+        new_id = admin.clone_search(db, (body or {}).get("source_id"))
+    except admin.CloneError as e:
+        return JSONResponse(status_code=e.status, content={"detail": e.code, "message": e.message})
+    search = db.query(Search).filter(Search.id == new_id).first()
+    return _search_to_dict(search)
+
+
 @router.patch("/{search_id}")
 def update_search(search_id: str, updates: dict, db: Session = Depends(get_db)):
     search = db.query(Search).filter(Search.id == search_id).first()

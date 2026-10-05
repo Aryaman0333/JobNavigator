@@ -4,6 +4,7 @@ import api from '../api'
 import { useToasts, ToastStack } from '../Toast'
 // shared dialog also serves résumé and cover-letter deletes, so it lives in its own file.
 import ConfirmDialog from '../ConfirmDialog'
+import CopyFrom from '../CopyFrom'
 import { useSettled, useWarm, NBSP, DASH } from '../hooks'
 import { Button, DashedAdd, Dot, Drawer as UiDrawer, FlaskGlyph, FooterRow, HeaderRow, Heading, Helper, IconButton, Input, Label, Link, Menu, MenuItem, ModalPanel, Mono, Notice, PageTitle, Pill, Row, Rule, SearchInput, Segmented, ShowMore, Spinner, TableHead, TableRow, Tag } from '../ui'
 import '../theme.css'
@@ -396,6 +397,11 @@ export default function Companies() {
           <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--muted)', ...warmStyle }}>{countLine}</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <CopyFrom kind="companies" pushToast={pushToast} onCloned={async (row) => {
+            await fetchCompanies()
+            window.dispatchEvent(new CustomEvent('jn:counts-changed'))
+            openDrawer(row)
+          }} />
           <Button onClick={() => setAddOpen(true)}>+ Add company</Button>
         </div>
       </HeaderRow>

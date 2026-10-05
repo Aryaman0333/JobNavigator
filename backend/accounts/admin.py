@@ -85,6 +85,148 @@ def _clone(row, model, account_id, skip=(), **overrides):
     return model(account_id=account_id, **data)
 
 
+def _company_copy(c, model, account_id, selected_resume_ids, **overrides):
+    """One company row for `account_id`. last_scraped_at cleared (MT-12 decision): the copy
+    is due at once, so the next scheduled pass scrapes it, and a due target's one shared
+    fetch (MT-8) feeds every subscriber, the source company included."""
+    return _clone(c, model, account_id, skip=("warning_acknowledged_at",),
+                  selected_resume_ids=selected_resume_ids, last_scraped_at=None, **overrides)
+
+
+def _search_copy(s, model, account_id, **overrides):
+    """One search row for `account_id`, due at once (last_run_at cleared)."""
+    return _clone(s, model, account_id, skip=("created_at", "warning_acknowledged_at"),
+                  last_run_at=None, **overrides)
+
+
+# ── Clone one company / search from another account (MT-20) ──────────────────
+
+class CloneError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def caller_account_id(db):
+    """The account the request acts for (the owner when no context is set)."""
+    from backend.accounts import auth as acct_auth
+    from backend.accounts.context import current_account
+    accounts = acct_auth.load_accounts(db)
+    acc = acct_auth._find(accounts, current_account.get()) or acct_auth._owner_of(accounts)
+    return (acc["id"] if acc else None), accounts
+
+
+def _other_accounts(db) -> tuple:
+    """(caller id, [other accounts as dicts]) — empty list unless there are >= 2 accounts."""
+    caller, accounts = caller_account_id(db)
+    if caller is None or len(accounts) < 2:
+        return caller, []
+    return caller, [a for a in accounts if a["id"] != caller]
+
+
+def _require_two(db):
+    caller, others = _other_accounts(db)
+    if not others:
+        raise CloneError(409, "needs_two_accounts", "Copying needs a second account.")
+    return caller
+
+
+def company_clone_sources(db) -> dict:
+    """Other accounts' companies, only the fields a picker needs (no notes, no jobs, no
+    counts). `exists` = the caller already has a company of that name (a clone would 409)."""
+    from backend.models.db import Company
+    caller, others = _other_accounts(db)
+    out = []
+    with unscoped():
+        mine = {(n or "").strip().lower() for (n,) in db.query(Company.name).filter(Company.account_id == caller)}
+        for acc in others:
+            rows = (db.query(Company).filter(Company.account_id == acc["id"])
+                    .order_by(Company.tier.asc().nullslast(), Company.name).all())
+            out.append({"id": str(acc["id"]), "name": acc["name"], "color": acc["color"],
+                        "role": acc["role"],
+                        "items": [{"id": str(c.id), "name": c.name, "tier": c.tier, "active": bool(c.active),
+                                   "scrape_urls": list(c.scrape_urls or []),
+                                   "exists": (c.name or "").strip().lower() in mine} for c in rows]})
+    return {"accounts": out}
+
+
+def search_clone_sources(db) -> dict:
+    """Other accounts' searches (built-in extension searches left out), picker fields only."""
+    from backend.models.db import Search
+    from backend.seed import EXTENSION_SEARCH_MODES
+    _caller, others = _other_accounts(db)
+    out = []
+    with unscoped():
+        for acc in others:
+            rows = (db.query(Search).filter(Search.account_id == acc["id"],
+                                            Search.search_mode.notin_(EXTENSION_SEARCH_MODES))
+                    .order_by(Search.created_at).all())
+            out.append({"id": str(acc["id"]), "name": acc["name"], "color": acc["color"],
+                        "role": acc["role"],
+                        "items": [{"id": str(s.id), "name": s.name, "search_mode": s.search_mode,
+                                   "search_term": s.search_term, "direct_url": s.direct_url,
+                                   "location": s.location, "country": s.country,
+                                   "active": bool(s.active)} for s in rows]})
+    return {"accounts": out}
+
+
+def _source_row(db, model, source_id, caller):
+    try:
+        sid = source_id if isinstance(source_id, uuid.UUID) else uuid.UUID(str(source_id))
+    except (ValueError, TypeError, AttributeError):
+        sid = None
+    row = None
+    if sid is not None:
+        with unscoped():
+            row = db.query(model).filter(model.id == sid, model.account_id != caller).first()
+    if row is None:
+        raise CloneError(404, "source_not_found", "That item is not in another account.")
+    return row
+
+
+def clone_company(db, source_id):
+    """Copy one company of another account into the caller's (settings only: no jobs, no
+    notes; résumé choices dropped, the cloner picks later; due now). Name clash with the
+    caller's own company -> 409 `name_taken` (a company is matched to jobs by its name, so
+    a renamed twin would never match anything). Adds + commits; returns the new row."""
+    from backend.models.db import Company
+    caller = _require_two(db)
+    src = _source_row(db, Company, source_id, caller)
+    with unscoped():
+        clash = (db.query(Company.id).filter(Company.account_id == caller,
+                                             func.lower(Company.name) == (src.name or "").strip().lower()).first())
+        if clash is not None:
+            raise CloneError(409, "name_taken", f"You already have a company named {src.name}.")
+        new = _company_copy(src, Company, caller, [], notes=None)
+        db.add(new)
+        db.commit()
+        new_id = new.id
+    return new_id
+
+
+def clone_search(db, source_id):
+    """Copy one search of another account into the caller's (due now). Name clash ->
+    " (copy)", " (copy 2)", ... (search names are free labels, so renaming beats refusing).
+    Built-in extension searches -> 409 `builtin_search`. Adds + commits; returns the new id."""
+    from backend.models.db import Search
+    from backend.seed import EXTENSION_SEARCH_MODES
+    caller = _require_two(db)
+    src = _source_row(db, Search, source_id, caller)
+    if src.search_mode in EXTENSION_SEARCH_MODES:
+        raise CloneError(409, "builtin_search", "Built-in extension searches exist in every account.")
+    with unscoped():
+        taken = {(n or "").strip().lower() for (n,) in db.query(Search.name).filter(Search.account_id == caller)}
+        name, n = src.name, 1
+        while name.strip().lower() in taken:
+            n += 1
+            name = f"{src.name} (copy)" if n == 2 else f"{src.name} (copy {n - 1})"
+        new = _search_copy(src, Search, caller, name=name)
+        db.add(new)
+        db.commit()
+        new_id = new.id
+    return new_id
+
+
 def seed_new_account(db, account_id) -> None:
     """The rows every account starts with: an empty Persona and the two built-in
     extension searches. No commit."""
@@ -189,11 +331,7 @@ def copy_from(db, source_id, new_id, items: Iterable[str], owner_id) -> dict:
                         selected.append("persona")
                     elif str(rid) in resume_map:
                         selected.append(resume_map[str(rid)])
-                # last_scraped_at cleared (MT-12 decision): the copy is due at once, so the
-                # next scheduled pass scrapes it, and a due target's one shared fetch
-                # (MT-8) feeds every subscriber — the source company included.
-                db.add(_clone(c, Company, new_id, skip=("warning_acknowledged_at",),
-                              selected_resume_ids=selected, last_scraped_at=None))
+                db.add(_company_copy(c, Company, new_id, selected))
                 n += 1
             done["companies"] = n
 
@@ -202,8 +340,7 @@ def copy_from(db, source_id, new_id, items: Iterable[str], owner_id) -> dict:
             for s in (db.query(Search).filter(Search.account_id == source_id,
                                               Search.search_mode.notin_(EXTENSION_SEARCH_MODES))
                       .order_by(Search.created_at).all()):
-                db.add(_clone(s, Search, new_id, skip=("created_at", "warning_acknowledged_at"),
-                              last_run_at=None))   # due at once, like the companies above
+                db.add(_search_copy(s, Search, new_id))   # due at once, like the companies above
                 n += 1
             done["searches"] = n
 

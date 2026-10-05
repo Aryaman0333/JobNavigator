@@ -1702,10 +1702,12 @@ def get_stats_sankey():
 
 # ── LLM cost stats ───────────────────────────────────────────────────────────
 
-def _llm_costs_stats(days: int = 7) -> dict:
-    """Aggregate llm_call_log rows within the last `days` days."""
+def _llm_costs_stats(days: int = 7, all_accounts: bool = False) -> dict:
+    """Aggregate llm_call_log rows within the last `days` days. `all_accounts` (owner only,
+    checked by the route) sums every account's rows and adds a per-account breakdown."""
     from datetime import datetime, timedelta, timezone
-    from backend.models.db import LlmCallLog
+    from backend.accounts.context import unscoped
+    from backend.models.db import Account, LlmCallLog
 
     db = SessionLocal()
     try:
@@ -1713,7 +1715,12 @@ def _llm_costs_stats(days: int = 7) -> dict:
         if days and days > 0:  # days <= 0 → all time (no date filter)
             since = datetime.now(timezone.utc) - timedelta(days=days)
             q = q.filter(LlmCallLog.created_at >= since)
-        rows = q.all()
+        if all_accounts:
+            with unscoped():
+                rows = q.all()
+                names = {a.id: a.name for a in db.query(Account).all()}
+        else:
+            rows = q.all()
 
         total_cost = sum(r.cost_usd or 0 for r in rows)
         total_calls = len(rows)
@@ -1753,20 +1760,43 @@ def _llm_costs_stats(days: int = 7) -> dict:
             )
             by_purpose.append(g)
 
-        return {
+        out = {
             "window_days": days,
             "total_calls": total_calls,
             "total_cost_usd": round(total_cost, 6),
             "by_purpose": sorted(by_purpose, key=lambda x: -x["cost_usd"]),
         }
+        if all_accounts:
+            per: dict = {}
+            for r in rows:
+                g = per.setdefault(r.account_id, {"account_id": str(r.account_id) if r.account_id else None,
+                                                  "name": names.get(r.account_id, "Unknown"),
+                                                  "calls": 0, "cost_usd": 0.0})
+                g["calls"] += 1
+                g["cost_usd"] += r.cost_usd or 0
+            by_account = sorted(per.values(), key=lambda x: -x["cost_usd"])
+            for g in by_account:
+                g["cost_usd"] = round(g["cost_usd"], 6)
+            out["all_accounts"] = True
+            out["by_account"] = by_account
+        return out
     finally:
         db.close()
 
 
 @app.get("/api/stats/llm-costs", tags=["stats"], summary="LLM cost + cache hit stats")
-async def llm_costs(days: int = 7):
-    """Returns spend and cache hit rate aggregated by (purpose, model) for the last N days."""
-    return _llm_costs_stats(days=days)
+async def llm_costs(days: int = 7, all_accounts: bool = False):
+    """Returns spend and cache hit rate aggregated by (purpose, provider, model) for the last N days, for the calling account. `all_accounts=1` (owner only, 403 for members) sums every account and adds `by_account`."""
+    if all_accounts:
+        from backend.accounts.settings import acts_as_owner
+        db = SessionLocal()
+        try:
+            allowed = acts_as_owner(db)
+        finally:
+            db.close()
+        if not allowed:
+            raise HTTPException(status_code=403, detail="owner_only")
+    return _llm_costs_stats(days=days, all_accounts=all_accounts)
 
 
 @app.get("/api/stats", tags=["stats"], summary="Dashboard statistics")

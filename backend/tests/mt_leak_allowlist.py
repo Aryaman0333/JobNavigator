@@ -28,6 +28,11 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("DELETE", "/api/accounts/{account_id}"): "owner removes a member by design (typed name, backup first); member 403 in test_mt_accounts_api.py",
     ("GET", "/api/accounts/{account_id}/export"): "owner exports any account by design; member->other 403 in test_mt_accounts_api.py",
 
+    # MT-20 "Copy from…": the pickers intentionally list OTHER accounts' company/search rows
+    # (picker fields only: no notes, jobs or counts). test_mt_clone.py covers the visibility rules.
+    ("GET", "/api/companies/clone-sources"): "lists other accounts' company names/URLs by design (copy-from picker); test_mt_clone.py",
+    ("GET", "/api/searches/clone-sources"): "lists other accounts' search names/terms by design (copy-from picker); test_mt_clone.py",
+
     # Settings (MT-9): A is the owner, whose view IS the install values; members' own rows
     # are not AccountScoped (Setting is read explicitly), so the harness seeds none.
     # test_mt_settings.py covers member reads/writes and that the owner never sees a
