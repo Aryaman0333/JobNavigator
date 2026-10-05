@@ -76,9 +76,12 @@ _SECTIONS = [
     ("exclude", "Global exclude", POLICY, OWN, ["exclude"], [
         "body_exclusion_phrases", "title_exclude_global", "company_exclude_global"]),
     ("dedup", "Dedup tracking params", OWNER_ONLY, INHERIT, ["dedup"], ["dedup_tracking_params"]),
+    # MT-17: telegram_bot_mode / telegram_bot_token pick a member's own bot (the owner always
+    # uses the household bot); telegram_own_webhook_secret signs that bot's webhook (never served).
     ("notifications", "Notifications", OWN_ALWAYS, OWN, ["notifications"], [
-        "telegram_enabled", "telegram_chat_id", "fit_score_threshold"]),
-    # The bot's webhook secret is one per bot, and the bot is the install's (MT-17).
+        "telegram_enabled", "telegram_chat_id", "fit_score_threshold",
+        "telegram_bot_mode", "telegram_bot_token", "telegram_own_webhook_secret"]),
+    # The household bot's webhook secret: one per bot, the bot is the install's (owner's).
     ("telegram_bot", "Telegram bot", OWNER_ONLY, INHERIT, ["notifications"], ["telegram_webhook_secret"]),
     ("tracer", "Tracked links", OWNER_ONLY, INHERIT, ["tracer"], [
         "tracer_links_enabled", "tracer_links_base_url", "tracer_links_url_style"]),

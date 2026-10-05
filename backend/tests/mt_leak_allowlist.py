@@ -46,10 +46,12 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("GET", "/api/linkedin/session"): "the caller's own LinkedIn cookie jar (MT-16; owner = today's path)",
     ("POST", "/api/linkedin/session/refresh"): "acts on the caller's own session files (MT-16)",
     ("POST", "/api/linkedin/session/pin"): "acts on the caller's own session files (MT-16)",
-    ("POST", "/api/telegram/webhook"): "public bot webhook; chat id -> account routing is MT-17",
-    ("POST", "/api/telegram/register-webhook"): "install bot until MT-17",
-    ("POST", "/api/telegram/rotate-webhook-secret"): "install bot until MT-17",
-    ("POST", "/api/telegram/test"): "install bot until MT-17",
+    # Telegram (MT-17): routing and per-account sends covered by test_mt_telegram.py.
+    ("POST", "/api/telegram/webhook"): "public household-bot webhook; chat id -> account routing in test_mt_telegram.py",
+    ("POST", "/api/telegram/webhook/{bot_account_id}"): "public webhook of a member's own bot (its own secret); test_mt_telegram.py",
+    ("POST", "/api/telegram/register-webhook"): "household bot = owner only, a member's own bot = its own; test_mt_telegram.py",
+    ("POST", "/api/telegram/rotate-webhook-secret"): "household bot secret, owner only (member 403 in test_mt_telegram.py)",
+    ("POST", "/api/telegram/test"): "sends to the caller's own chat on its own bot (Telegram, not the DB); test_mt_telegram.py",
 
     # Install-level system work (stays install-level per MT-7)
     ("GET", "/api/scheduler/jobs"): "the one process-wide APScheduler",

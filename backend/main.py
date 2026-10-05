@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.models.db import create_tables, SessionLocal, JobRun
-from backend.accounts.settings import get_install_setting, install_row
+from backend.accounts.settings import get_install_setting, install_row, put_setting
 from backend.seed import run_seeds
 from backend.config import INITIAL_API_KEY, TELEGRAM_BOT_TOKEN
 from backend.job_monitor import launch_background, JobAlreadyRunningError, get_all_running, is_running, _get_running_by_job_type, cleanup_stale_runs, sanitize_run_error
@@ -998,7 +998,8 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
 
 @app.post("/api/telegram/webhook", tags=["telegram"], summary="Telegram webhook")
 async def telegram_webhook(update: dict, request: Request):
-    """Handle a Telegram webhook update (callback queries from inline buttons); validates X-Telegram-Bot-Api-Secret-Token against the telegram_webhook_secret setting."""
+    """Handle a Telegram webhook update of the household bot (callback queries from inline buttons, link codes); validates X-Telegram-Bot-Api-Secret-Token against the telegram_webhook_secret setting.
+    The chat names the account (MT-17): buttons act only on that account's jobs, an unlinked chat acts on nothing."""
     import hmac as _hmac
     db = SessionLocal()
     try:
@@ -1015,36 +1016,127 @@ async def telegram_webhook(update: dict, request: Request):
         logger.warning("telegram_webhook rejected: invalid secret token")
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
-    from backend.notifier.telegram import handle_callback
+    import backend.notifier.telegram as tg
+    await _telegram_update(update, tg.household_chat_account, TELEGRAM_BOT_TOKEN)
+    return {"ok": True}
 
+
+async def _telegram_update(update: dict, chat_account, answer_token: str, bot_account=None):
+    """One webhook update (MT-17). Inline buttons act only for the account the chat is
+    linked to (`chat_account(chat_id)`, NOT_LINKED = none); text messages carry link codes.
+    `bot_account` = the member whose own bot posted (None = the household bot)."""
+    import backend.notifier.telegram as tg
+    if not isinstance(update, dict):
+        return
     callback_query = update.get("callback_query")
-    if callback_query:
+    if callback_query and isinstance(callback_query, dict):
         data = callback_query.get("data", "")
-        message_id = callback_query.get("message", {}).get("message_id")
-        result = await handle_callback(data, message_id)
+        message = callback_query.get("message")
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        with tg.acting_for_chat(chat_account(tg.update_chat_id(callback_query))):
+            result = await tg.handle_callback(data, message_id)
 
         # Answer callback to remove loading state
         callback_id = callback_query.get("id")
-        if callback_id and TELEGRAM_BOT_TOKEN:
+        if callback_id and answer_token:
             import httpx
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                    f"https://api.telegram.org/bot{answer_token}/answerCallbackQuery",
                     json={"callback_query_id": callback_id, "text": result},
                 )
+    message = update.get("message")
+    if isinstance(message, dict):
+        own_token = answer_token if bot_account is not None else None
+        await tg.handle_message(message, bot_account=bot_account, token=own_token)
 
+
+@app.post("/api/telegram/webhook/{bot_account_id}", tags=["telegram"], summary="Telegram webhook (a member's own bot)")
+async def telegram_member_webhook(bot_account_id: str, update: dict, request: Request):
+    """Webhook of a member's own bot (MT-17): validates X-Telegram-Bot-Api-Secret-Token
+    against that member's own webhook secret; buttons act only when pressed in the
+    member's own chat, on the member's jobs; text messages carry link codes."""
+    import hmac as _hmac
+    import uuid as _uuid
+    import backend.notifier.telegram as tg
+    try:
+        acc = _uuid.UUID(bot_account_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown bot")
+    db = SessionLocal()
+    try:
+        own = tg.member_own_bot(db, acc)
+    finally:
+        db.close()
+    if own is None:
+        raise HTTPException(status_code=404, detail="Unknown bot")
+    token, expected = own
+    if not expected:
+        raise HTTPException(status_code=503, detail="Telegram webhook secret not configured")
+    received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not received or not _hmac.compare_digest(received, expected):
+        logger.warning("telegram_member_webhook rejected: invalid secret token")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    await _telegram_update(update, lambda chat: tg.own_bot_chat_account(acc, chat), token, bot_account=acc)
     return {"ok": True}
+
+
+@app.post("/api/telegram/link-code", tags=["telegram"], summary="Code to link a Telegram chat")
+def telegram_link_code():
+    """A 6-digit code (10 minutes) for the caller's account. Sending `/start <code>` (or
+    just the code) to the bot links that chat as the account's chat id (MT-17)."""
+    from backend.accounts.context import current_account
+    from backend.models.db import Account, get_owner_id
+    import backend.notifier.telegram as tg
+    db = SessionLocal()
+    try:
+        acc_id = current_account.get() or get_owner_id(db)
+        acc = db.query(Account).filter(Account.id == acc_id).first() if acc_id else None
+        if acc is None:
+            raise HTTPException(status_code=409, detail="No account to link")
+        own = tg.member_own_bot(db, acc.id) is not None
+        name = acc.name
+    finally:
+        db.close()
+    out = tg.create_link_code(acc_id)
+    out.update({"account": name, "bot": "own" if own else "household"})
+    return out
+
+
+def _telegram_owner_check(db):
+    from backend.accounts.settings import acts_as_owner
+    if not acts_as_owner(db):
+        raise HTTPException(status_code=403, detail="owner_only")
 
 
 @app.post("/api/telegram/register-webhook", tags=["telegram"], summary="Register Telegram webhook")
 async def telegram_register_webhook(body: dict):
-    """Register {public_url}/api/telegram/webhook with Telegram, signed with telegram_webhook_secret; public_url must be HTTPS."""
-    from backend.notifier.telegram import register_webhook
+    """Register {public_url}/api/telegram/webhook with Telegram, signed with telegram_webhook_secret; public_url must be HTTPS.
+    A member on its own bot registers that bot at {public_url}/api/telegram/webhook/<account id> with a fresh
+    secret of its own; the household bot is the owner's (403 for a member)."""
+    import secrets as _secrets
+    import backend.notifier.telegram as tg
+    from backend.accounts.settings import member_account
     public_url = (body.get("public_url") or "").strip().rstrip("/")
     if not public_url.startswith("https://"):
         raise HTTPException(status_code=400, detail="public_url must start with https://")
+    db = SessionLocal()
+    try:
+        member = member_account(db)
+        own = tg.member_own_bot(db, member) if member is not None else None
+        if own is not None:
+            secret = _secrets.token_urlsafe(32)
+            put_setting(db, tg.OWN_WEBHOOK_SECRET_KEY, secret, account_id=member,
+                        description="Secret of this account's own Telegram bot webhook.")
+            db.commit()
+        else:
+            _telegram_owner_check(db)
+    finally:
+        db.close()
+    if own is not None:
+        return await tg.register_webhook(f"{public_url}/api/telegram/webhook/{member}", token=own[0], secret=secret)
     full_url = f"{public_url}/api/telegram/webhook"
-    result = await register_webhook(full_url)
+    result = await tg.register_webhook(full_url)
     return result
 
 
@@ -1052,9 +1144,15 @@ async def telegram_register_webhook(body: dict):
 async def telegram_rotate_webhook_secret():
     """Regenerate `telegram_webhook_secret` and return the new value. After
     rotating, call POST /api/telegram/register-webhook to re-register with
-    Telegram so the next callback carries the new header value.
+    Telegram so the next callback carries the new header value. The household bot is the
+    owner's: a member gets 403 (its own bot gets a fresh secret on every registration).
     """
     from backend.notifier.telegram import rotate_webhook_secret
+    db = SessionLocal()
+    try:
+        _telegram_owner_check(db)
+    finally:
+        db.close()
     new_value = rotate_webhook_secret()
     return {"ok": True, "webhook_secret": new_value}
 

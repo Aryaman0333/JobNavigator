@@ -251,8 +251,9 @@ async def _email_check_for_account():
 
 
 async def send_daily_digest():
-    """Per account: each account's digest counts only its own jobs and applications.
-    Until MT-17 every digest goes to the install's Telegram chat."""
+    """Per account: each account's digest counts only its own jobs and applications and
+    goes to that account's own chat, on its own bot or the household bot (MT-17); an
+    account without a chat id is skipped."""
     await for_each_account("daily_digest", _digest_for_account)
 
 
@@ -388,12 +389,10 @@ async def check_scrape_health(since=None):
 
         if alerts:
             try:
-                from backend.notifier.telegram import _send_message, _is_enabled, _get_chat_id
-                if _is_enabled():
-                    chat_id = _get_chat_id()
-                    if chat_id:
-                        msg = "\u26a0\ufe0f Scrape health alert:\n" + "\n".join(f"\u2022 {s}: 3 consecutive failures/empty results" for s in alerts)
-                        await _send_message(chat_id, msg)
+                # System alert: the owner's chat on the household bot only (MT-17).
+                from backend.notifier.telegram import send_system_alert
+                msg = "\u26a0\ufe0f Scrape health alert:\n" + "\n".join(f"\u2022 {s}: 3 consecutive failures/empty results" for s in alerts)
+                await send_system_alert(msg)
             except Exception as e:
                 logger.error(f"Failed to send scrape health alert: {e}")
     finally:

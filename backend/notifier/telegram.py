@@ -1,6 +1,26 @@
-"""Telegram bot — alerts, inline buttons, daily digest, email response alerts."""
+"""Telegram bot — alerts, inline buttons, daily digest, email response alerts.
+
+Per account (MT-17):
+- Sending: the chat is always the current account's own `telegram_chat_id` (own_always);
+  the bot is the account's own (`telegram_bot_mode` = own + `telegram_bot_token`, members
+  only) or else the household bot (TELEGRAM_BOT_TOKEN, the owner's). No chat id = skipped.
+- System alerts (scrape health) go to the owner's chat on the household bot only
+  (`send_system_alert`).
+- Linking: Settings asks for a 6-digit code (`create_link_code`, in memory, 10 min); the
+  user sends `/start <code>` (or the bare code) to the bot and the webhook stores that chat
+  as the account's chat id.
+- Webhook: the household bot posts to /api/telegram/webhook; the chat id names the account
+  (`household_chat_account`) and inline buttons act only on that account's jobs. A member's
+  own bot posts to /api/telegram/webhook/<account_id> with its own secret.
+"""
 import json
 import logging
+import re
+import secrets
+import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -12,6 +32,16 @@ from backend.accounts.settings import get_install_setting, get_setting, put_sett
 logger = logging.getLogger("jobnavigator.telegram")
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+OWN_BOT = "own"
+OWN_WEBHOOK_SECRET_KEY = "telegram_own_webhook_secret"
+NOT_LINKED_TEXT = ("This chat is not linked to a JobNavigator account. "
+                   "Open Settings › Notifications, press Link Telegram and send the code here.")
+
+
+def _api(token=None) -> str:
+    """Bot API base URL: the household bot (BASE_URL) unless an own-bot token is given."""
+    return f"https://api.telegram.org/bot{token}" if token else BASE_URL
 
 
 # Highest numeric value in jobs.cv_scores, compared against :threshold.
@@ -42,9 +72,57 @@ def _is_enabled() -> bool:
         db.close()
 
 
-async def _send_message(chat_id: str, text: str, reply_markup: dict = None, parse_mode: str = "HTML") -> bool:
-    """Send a Telegram message; returns True on HTTP 200, False on any failure (missing config, network error, non-200)."""
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
+def _own_bot_token():
+    """The current account's own bot token, or None = the household bot. Only a member
+    with `telegram_bot_mode` = own and a token has one; the owner always uses the
+    household bot (TELEGRAM_BOT_TOKEN from .env)."""
+    from backend.accounts.settings import member_account
+    db = SessionLocal()
+    try:
+        if member_account(db) is None:
+            return None
+        if (get_setting(db, "telegram_bot_mode") or "").strip().lower() != OWN_BOT:
+            return None
+        return (get_setting(db, "telegram_bot_token") or "").strip() or None
+    finally:
+        db.close()
+
+
+def resolve_target():
+    """(chat_id, bot token or None = household) for the current account; chat_id "" =
+    nothing to send to."""
+    chat_id = _get_chat_id()
+    if not chat_id:
+        logger.debug("Telegram: no chat id for this account; message skipped")
+        return "", None
+    return chat_id, _own_bot_token()
+
+
+def _bot(token) -> dict:
+    """kwargs for _send_message: nothing for the household bot (callers and tests that
+    stub _send_message(chat_id, text) keep working), else the own bot's token."""
+    return {"token": token} if token else {}
+
+
+async def send_system_alert(text: str) -> bool:
+    """Install-level alert (scrape health): the owner's chat on the household bot only,
+    whoever is running. Install values = the owner's switch and chat."""
+    from backend.accounts.context import unscoped
+    with unscoped():
+        if not _is_enabled():
+            return False
+        chat_id = _get_chat_id()
+    if not chat_id:
+        logger.debug("Telegram: no owner chat id; system alert skipped")
+        return False
+    return await _send_message(chat_id, text)
+
+
+async def _send_message(chat_id: str, text: str, reply_markup: dict = None, parse_mode: str = "HTML",
+                        token: str = None) -> bool:
+    """Send a Telegram message; returns True on HTTP 200, False on any failure (missing config, network error, non-200).
+    `token` = an own bot's token; None = the household bot."""
+    if not (token or TELEGRAM_BOT_TOKEN) or not chat_id:
         logger.warning("Telegram not configured (missing token or chat_id)")
         return False
 
@@ -58,7 +136,7 @@ async def _send_message(chat_id: str, text: str, reply_markup: dict = None, pars
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{BASE_URL}/sendMessage", json=payload)
+            resp = await client.post(f"{_api(token)}/sendMessage", json=payload)
             if resp.status_code != 200:
                 logger.error(f"Telegram send failed: {resp.text}")
                 return False
@@ -77,14 +155,16 @@ def _get_webhook_secret() -> str:
         db.close()
 
 
-async def register_webhook(public_url: str) -> dict:
+async def register_webhook(public_url: str, token: str = None, secret: str = None) -> dict:
     """Register the Telegram webhook; `public_url` must be the externally reachable https URL
-    ending at `/api/telegram/webhook` (Telegram refuses http). Returns the Telegram API response."""
-    if not TELEGRAM_BOT_TOKEN:
-        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not set"}
-    secret = _get_webhook_secret()
-    if not secret:
-        return {"ok": False, "error": "telegram_webhook_secret not configured"}
+    ending at `/api/telegram/webhook` (Telegram refuses http). Returns the Telegram API response.
+    With `token` + `secret`: a member's own bot (URL ends at /api/telegram/webhook/<account>)."""
+    if token is None:
+        if not TELEGRAM_BOT_TOKEN:
+            return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not set"}
+        secret = _get_webhook_secret()
+        if not secret:
+            return {"ok": False, "error": "telegram_webhook_secret not configured"}
     payload = {
         "url": public_url,
         "secret_token": secret,
@@ -92,7 +172,7 @@ async def register_webhook(public_url: str) -> dict:
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{BASE_URL}/setWebhook", json=payload)
+            resp = await client.post(f"{_api(token)}/setWebhook", json=payload)
             return resp.json()
     except Exception as e:
         logger.error(f"setWebhook failed: {e}")
@@ -145,7 +225,7 @@ async def send_job_alert(data: dict):
     if not _is_enabled():
         return
 
-    chat_id = _get_chat_id()
+    chat_id, token = resolve_target()
     if not chat_id:
         return
 
@@ -194,7 +274,7 @@ async def send_job_alert(data: dict):
         ]
     }
 
-    await _send_message(chat_id, text, reply_markup)
+    await _send_message(chat_id, text, reply_markup, **_bot(token))
 
 
 async def send_email_alert(data: dict):
@@ -202,7 +282,7 @@ async def send_email_alert(data: dict):
     if not _is_enabled():
         return
 
-    chat_id = _get_chat_id()
+    chat_id, token = resolve_target()
     if not chat_id:
         return
 
@@ -225,7 +305,7 @@ async def send_email_alert(data: dict):
         f"<i>'{snippet[:200]}'</i>\n"
     )
 
-    await _send_message(chat_id, text)
+    await _send_message(chat_id, text, **_bot(token))
 
 
 async def send_digest():
@@ -233,7 +313,7 @@ async def send_digest():
     if not _is_enabled():
         return
 
-    chat_id = _get_chat_id()
+    chat_id, token = resolve_target()
     if not chat_id:
         return
 
@@ -271,7 +351,7 @@ async def send_digest():
             f"📬 Responses: {responses}  |  📋 Active apps: {active_apps}\n"
         )
 
-        await _send_message(chat_id, text)
+        await _send_message(chat_id, text, **_bot(token))
 
         from backend.activity import log_activity
         log_activity("telegram", f"Daily digest sent: {new_jobs} new jobs, {strong} strong matches", db=db)
@@ -283,12 +363,12 @@ async def send_digest():
 
 async def send_test_message():
     """Send a test Telegram message."""
-    chat_id = _get_chat_id()
+    chat_id, token = resolve_target()
     if not chat_id:
         return {"error": "No chat_id configured"}
 
     text = "🧪 <b>JobNavigator Test</b>\nTelegram integration is working!"
-    await _send_message(chat_id, text)
+    await _send_message(chat_id, text, **_bot(token))
 
     from backend.activity import log_activity
     log_activity("telegram", "Test message sent")
@@ -296,18 +376,244 @@ async def send_test_message():
     return {"message": "Test sent"}
 
 
+# ── Linking a chat to an account (MT-17) ─────────────────────────────────────
+
+LINK_CODE_TTL = 600            # seconds a code stays valid
+LINK_MAX_FAILURES = 5          # wrong codes per chat ...
+LINK_FAILURE_WINDOW = 600      # ... within this many seconds, then the chat is ignored
+_CODE_RE = re.compile(r"^(?:/start(?:@\w+)?\s+)?(\d{6})$")
+# code -> (account id, expires at epoch seconds); one live code per account. In memory:
+# a restart forgets pending codes (the user asks for a new one).
+_link_codes: dict = {}
+_link_failures: dict = {}      # chat id -> [epoch seconds of wrong codes]
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _purge_codes(now: float) -> None:
+    for code in [c for c, (_a, exp) in _link_codes.items() if exp <= now]:
+        _link_codes.pop(code, None)
+
+
+def create_link_code(account_id) -> dict:
+    """A fresh 6-digit code for `account_id` (replaces its previous one)."""
+    now = _now()
+    _purge_codes(now)
+    for code in [c for c, (a, _e) in _link_codes.items() if a == account_id]:
+        _link_codes.pop(code, None)
+    while True:
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        if code not in _link_codes:
+            break
+    expires = now + LINK_CODE_TTL
+    _link_codes[code] = (account_id, expires)
+    return {"code": code, "ttl_seconds": LINK_CODE_TTL,
+            "expires_at": datetime.fromtimestamp(expires, timezone.utc).isoformat()}
+
+
+def consume_link_code(code: str, account_id=None):
+    """The account a valid code belongs to (the code is used up), else None. With
+    `account_id` (a member's own bot) only that account's code is accepted."""
+    now = _now()
+    _purge_codes(now)
+    entry = _link_codes.get(code)
+    if entry is None or (account_id is not None and entry[0] != account_id):
+        return None
+    _link_codes.pop(code, None)
+    return entry[0]
+
+
+def _locked_out(chat_id: str) -> bool:
+    now = _now()
+    recent = [t for t in _link_failures.get(chat_id, []) if now - t < LINK_FAILURE_WINDOW]
+    _link_failures[chat_id] = recent
+    return len(recent) >= LINK_MAX_FAILURES
+
+
+def _record_failure(chat_id: str) -> None:
+    _link_failures.setdefault(chat_id, []).append(_now())
+
+
+# ── Which account a chat belongs to ──────────────────────────────────────────
+
+def _account_value(db, account_id, key: str) -> str:
+    """A member's own stored value for `key` ("" when it has none)."""
+    from backend.models.db import Setting
+    row = (db.query(Setting.value)
+           .filter(Setting.key == key, Setting.account_id == account_id).first())
+    return (row[0] or "").strip() if row else ""
+
+
+def member_own_bot(db, account_id):
+    """(token, webhook secret) of a member that sends through its own bot, else None."""
+    from backend.models.db import Account
+    acc = db.query(Account.role).filter(Account.id == account_id).first()
+    if acc is None or acc[0] == "owner":
+        return None
+    if _account_value(db, account_id, "telegram_bot_mode").lower() != OWN_BOT:
+        return None
+    token = _account_value(db, account_id, "telegram_bot_token")
+    if not token:
+        return None
+    return token, _account_value(db, account_id, OWN_WEBHOOK_SECRET_KEY)
+
+
+def household_chat_accounts(db, chat_id) -> list:
+    """Accounts whose chat id is `chat_id` and that use the household bot. The owner's chat
+    is the install row; members' are their own rows. Members on their own bot are left out
+    (their bot has its own webhook)."""
+    from backend.models.db import Setting, get_owner_id
+    if chat_id in (None, ""):
+        return []
+    owner = get_owner_id(db)
+    rows = (db.query(Setting.account_id)
+            .filter(Setting.key == "telegram_chat_id", Setting.value == str(chat_id)).all())
+    out = []
+    for (acc,) in rows:
+        acc = acc or owner
+        if acc is None or acc in out:
+            continue
+        if acc != owner and member_own_bot(db, acc) is not None:
+            continue
+        out.append(acc)
+    return out
+
+
+NOT_LINKED = object()          # a chat no account has linked
+
+
+def household_chat_account(chat_id):
+    """The one account a chat on the household bot belongs to, or NOT_LINKED (none, or
+    the same chat linked to two accounts: ambiguous, so nothing is acted on)."""
+    db = SessionLocal()
+    try:
+        found = household_chat_accounts(db, chat_id)
+    finally:
+        db.close()
+    if len(found) > 1:
+        logger.warning("Telegram chat %s is linked to %d accounts; ignored", chat_id, len(found))
+    return found[0] if len(found) == 1 else NOT_LINKED
+
+
+def own_bot_chat_account(account_id, chat_id):
+    """`account_id` when `chat_id` is that member's own chat (its own bot), else NOT_LINKED."""
+    db = SessionLocal()
+    try:
+        mine = _account_value(db, account_id, "telegram_chat_id")
+    finally:
+        db.close()
+    return account_id if chat_id not in (None, "") and mine == str(chat_id) else NOT_LINKED
+
+
+def link_chat(account_id, chat_id) -> tuple:
+    """Store `chat_id` as the account's chat. (True, account name) or (False, reason).
+    A chat already linked to another account on the household bot is refused (routing
+    must stay unambiguous). A member with no notification switch of its own gets it on."""
+    from backend.models.db import Account, get_owner_id
+    db = SessionLocal()
+    try:
+        acc = db.query(Account).filter(Account.id == account_id).first()
+        if acc is None:
+            return False, "That code belongs to an account that no longer exists."
+        owner = get_owner_id(db)
+        is_owner = acc.id == owner
+        if is_owner or member_own_bot(db, acc.id) is None:
+            others = [a for a in household_chat_accounts(db, chat_id) if a != acc.id]
+            if others:
+                other = db.query(Account.name).filter(Account.id == others[0]).first()
+                return False, (f"This chat is already linked to {other[0] if other else 'another account'}. "
+                               "Clear its Chat ID in Settings first.")
+        target = None if is_owner else acc.id
+        put_setting(db, "telegram_chat_id", str(chat_id), account_id=target)
+        if not is_owner and not _account_value(db, acc.id, "telegram_enabled"):
+            put_setting(db, "telegram_enabled", "true", account_id=acc.id)
+        db.commit()
+        logger.info("Telegram chat linked to account %s", acc.id)
+        return True, acc.name
+    finally:
+        db.close()
+
+
+async def handle_message(message: dict, bot_account=None, token: str = None) -> str:
+    """A text message to a bot: a link code links the chat, anything else from a chat no
+    account has linked gets the "not linked" reply. `bot_account` = the member whose own bot
+    received it (None = the household bot). Returns what was replied ("" = nothing)."""
+    chat = message.get("chat") if isinstance(message, dict) else None
+    chat_id = chat.get("id") if isinstance(chat, dict) else None
+    if chat_id in (None, ""):
+        return ""
+    chat_id = str(chat_id)
+    text = message.get("text")
+    text = text.strip() if isinstance(text, str) else ""
+    m = _CODE_RE.match(text)
+    if m:
+        if _locked_out(chat_id):
+            reply = "Too many wrong codes. Wait ten minutes, then get a new code in Settings."
+        else:
+            account = consume_link_code(m.group(1), bot_account)
+            if account is None:
+                _record_failure(chat_id)
+                reply = ("That code is not valid or has expired. "
+                         "Get a new one in Settings › Notifications › Link Telegram.")
+            else:
+                ok, detail = link_chat(account, chat_id)
+                reply = f"Linked to {detail}." if ok else detail
+    else:
+        linked = (household_chat_account(chat_id) if bot_account is None
+                  else own_bot_chat_account(bot_account, chat_id))
+        if linked is not NOT_LINKED:
+            return ""
+        reply = NOT_LINKED_TEXT
+    await _send_message(chat_id, reply, None, "HTML", **_bot(token))
+    return reply
+
+
+def update_chat_id(update_part: dict):
+    """The chat a callback query came from (its message's chat, else the sender)."""
+    if not isinstance(update_part, dict):
+        return None
+    msg = update_part.get("message")
+    if isinstance(msg, dict) and isinstance(msg.get("chat"), dict):
+        cid = msg["chat"].get("id")
+        if cid not in (None, ""):
+            return str(cid)
+    sender = update_part.get("from")
+    if isinstance(sender, dict) and sender.get("id") not in (None, ""):
+        return str(sender["id"])
+    return None
+
+
+# ── Inline buttons ───────────────────────────────────────────────────────────
+
 _MALFORMED = object()
+_JOB_ACTIONS = ("save_", "skip_", "applied_")
+_NO_CHAT = object()
+# The account the webhook resolved from the chat a button was pressed in (MT-17); set only
+# by the webhook (`acting_for_chat`). Direct callers (tests, MT-6) leave it unset.
+_chat_account: ContextVar = ContextVar("jn_telegram_chat_account", default=_NO_CHAT)
+
+
+@contextmanager
+def acting_for_chat(account):
+    """Inline buttons pressed inside this block may act only on `account`'s jobs
+    (NOT_LINKED = on none)."""
+    tok = _chat_account.set(account)
+    try:
+        yield
+    finally:
+        _chat_account.reset(tok)
 
 
 def _callback_account(callback_data: str):
     """The account that owns the job a button names (MT-6). The webhook is public (no
-    session, only the install's webhook secret), so the job is looked up across accounts
-    and the action then runs as its owner; chat id -> account checks arrive with MT-17."""
-    import uuid as _uuid
-    for prefix in ("save_", "skip_", "applied_"):
+    session, only the bot's webhook secret), so the job is looked up across accounts; the
+    webhook then checks it against the chat's account (MT-17)."""
+    for prefix in _JOB_ACTIONS:
         if callback_data.startswith(prefix):
             try:
-                job_id = _uuid.UUID(callback_data[len(prefix):])
+                job_id = uuid.UUID(callback_data[len(prefix):])
             except ValueError:
                 return _MALFORMED
             db = SessionLocal()
@@ -321,12 +627,21 @@ def _callback_account(callback_data: str):
 
 
 async def handle_callback(callback_data: str, message_id: int = None):
-    """Handle inline button callbacks from Telegram, acting for the account that owns the job."""
+    """Handle inline button callbacks from Telegram, acting for the account that owns the
+    job. From the webhook the job must also belong to the chat's account."""
     from contextlib import nullcontext
     from backend.accounts.context import use_account
-    account = _callback_account(callback_data or "")
+    callback_data = callback_data if isinstance(callback_data, str) else ""
+    account = _callback_account(callback_data)
     if account is _MALFORMED:
         return "Unknown action"     # a job id that is not a UUID names no job
+    chat_account = _chat_account.get()
+    if chat_account is not _NO_CHAT and callback_data.startswith(_JOB_ACTIONS):
+        if chat_account is NOT_LINKED:
+            return "This chat is not linked to a JobNavigator account."
+        if account is None or account != chat_account:
+            logger.warning("Telegram button refused: job not in the chat's account")
+            return "That job is not in this chat's account."
     with (use_account(account) if account is not None else nullcontext()):
         return await _handle_callback(callback_data, message_id)
 

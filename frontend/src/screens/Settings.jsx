@@ -547,6 +547,24 @@ export default function Settings() {
       ]],
       ['notifications', 'Integrations', 'Notifications', '', [
         SW('Telegram', 'New high-scoring jobs and the daily digest are sent to your chat. The digest schedule is under Scheduler.', 'Off — no push notifications.', 'telegram_enabled'),
+        // MT-17: a member sends through the household (owner's) bot or a bot of its own; the owner always uses the household bot.
+        SEL('Bot', 'Which Telegram bot sends your alerts and digest.', 'telegram_bot_mode',
+          [['household', 'Use the household bot'], ['own', 'Use my own bot']], { w: '260px', dflt: 'household', hide: () => !member,
+            info: 'The household bot is the one the owner set up. Your own bot comes from @BotFather; its token stays in your account. System alerts (scrape health) always go to the owner.' }),
+        B('Bot token', 'Your bot’s token from @BotFather.', 'telegram_bot_token',
+          { secret: true, mono: true, w: '340px', hide: () => !member || val('telegram_bot_mode', 'household') !== 'own' }),
+        // From two accounts on: link the chat with a one-time code instead of looking up the chat id by hand.
+        { kind: 'button', lockKey: 'telegram_chat_id', label: 'Link Telegram', help: 'Links your Telegram chat to this account with a one-time code.',
+          btnLabel: val('telegram_chat_id') ? 'Relink…' : 'Link…', previewBox: '260px', hide: () => !multi,
+          preview: val('telegram_chat_id') ? `Linked · chat ${val('telegram_chat_id')}` : 'Not linked',
+          act: async () => {
+            const { data } = await api.post('/telegram/link-code')
+            const bot = data.bot === 'own' ? 'your own bot' : 'the household bot'
+            await askText({ title: 'Link Telegram',
+              body: `Send this to ${bot} in Telegram within 10 minutes (the number alone works too). The bot answers “Linked to ${data.account}”.`,
+              value: `/start ${data.code}`, readOnly: true, mono: true, label: 'Done' })
+            load()
+          } },
         B('Chat ID', 'Your Telegram chat — get it by messaging @userinfobot.', 'telegram_chat_id', { mono: true, w: '135px' }),
         B('Score threshold', 'Only jobs scoring at or above this trigger an instant alert.', 'fit_score_threshold', { mono: true, int: true, w: '135px' }),
         BT('Test', 'Confirms the bot token and chat ID work end to end.', 'Send test message', () => api.post('/telegram/test'), { lockKey: 'telegram_chat_id' }),
@@ -561,14 +579,16 @@ export default function Settings() {
             await askText({ title: 'New webhook secret', body: 'Copy it now — it is not shown again.', value: data.webhook_secret || '', readOnly: true, mono: true, label: 'Done' })
             load()
           } },
-        BT('Register webhook', 'Points Telegram at your public URL so inbound bot commands reach the backend.', 'Register…', async () => {
+        BT('Register webhook', member && val('telegram_bot_mode', 'household') === 'own'
+          ? 'Points your own bot at the public URL so its buttons and link codes reach the backend.'
+          : 'Points Telegram at your public URL so inbound bot commands reach the backend.', 'Register…', async () => {
           const url = await askText({ title: 'Register the Telegram webhook', body: 'The public base URL Telegram should post updates to.', placeholder: 'https://your-domain.example', mono: true, label: 'Register' })
           if (!url || !url.trim()) return false
           const { data } = await api.post('/telegram/register-webhook', { public_url: url.trim() })
           // local failures carry `error`, Telegram's own carry `description`
           const failed = data?.ok === false
           flash(failed ? (data.description || data.error || 'Registration failed') : 'Webhook registered', failed)
-        }, { lockKey: 'telegram_webhook_secret' }),
+        }, { lockKey: member && val('telegram_bot_mode', 'household') === 'own' ? 'telegram_bot_token' : 'telegram_webhook_secret' }),
       ]],
       ['tracer', '', 'Tracked links', '', [
         SW('Rewrite links', 'Résumé and letter links become short links on your domain that record when a recruiter opens them.', 'Off — documents keep their original links.', 'tracer_links_enabled',

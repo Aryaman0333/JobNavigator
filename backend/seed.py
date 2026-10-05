@@ -18,6 +18,10 @@ DEFAULT_SETTINGS = {
     "digest_cron": ("0 8 * * *", "Daily digest cron (min hour day month dow). Empty = disabled"),
     "telegram_chat_id": ("", "Your Telegram chat ID"),
     "telegram_webhook_secret": ("", "Auto-generated secret token validated on every /api/telegram/webhook call. Rotate from the Telegram settings tab."),
+    # MT-17: a member sends through the household bot (TELEGRAM_BOT_TOKEN) or its own bot.
+    # The owner always uses the household bot; these two are read for members only.
+    "telegram_bot_mode": ("household", "Telegram bot for this account: household (the owner's bot) or own"),
+    "telegram_bot_token": ("", "This account's own Telegram bot token (used when telegram_bot_mode = own)"),
     "body_exclusion_phrases": (json.dumps([]), "JD phrases that flag exclusion (H-1B, language, etc.). Add phrases to auto-skip jobs containing them."),
     # weekday NAME, not a digit: APScheduler numbers 0 = Monday (vixie cron 0 = Sunday), so "0" fired Monday
     "h1b_cron": ("0 2 * * sun", "H-1B refresh cron (min hour day month dow). Empty = disabled"),
@@ -427,6 +431,7 @@ ENUM_SETTING_VALUES = {
     "on_save_action": {"off"} | _DEPTHS,
     "tailor_auto_quick_score": {"off", "false", "no", "0", "true", "yes", "1", ""} | _DEPTHS,
     "tracer_links_url_style": {"path", "param", "path_jobid", "param_jobid"},
+    "telegram_bot_mode": {"household", "own"},
 }
 
 
