@@ -3,6 +3,8 @@ import asyncio
 import logging
 import os
 import re
+from contextvars import ContextVar
+from typing import Optional
 from backend.models.db import SessionLocal
 from backend.accounts.settings import get_setting
 
@@ -396,6 +398,11 @@ async def _call_claude_code(prompt: str, system: str, model: str, max_tokens: in
     # Build env: pass CLAUDE_CODE_OAUTH_TOKEN, explicitly EXCLUDE ANTHROPIC_API_KEY
     # so it uses subscription billing, not API credits
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    # MT-15: the account's token (a member's own, else the owner's install setting); none set
+    # keeps the process env, i.e. the owner's token from .env exactly as before.
+    token = _claude_code_token()
+    if token:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
     rc, stdout, stderr = await _run_cli(cmd, full_prompt.encode(), env=env)
 
@@ -456,6 +463,33 @@ _AGY_STATE = "~/.gemini/antigravity-cli"
 # The deny list the image ships. It lives outside the state directory because agy rewrites
 # settings.json on every start, and a read-only copy there only makes that write fail.
 _AGY_SETTINGS_SOURCE = "/opt/antigravity-settings.json"
+# MT-15: the state dir of the agy call in flight when it is not the default (a member with its
+# own logins runs agy with HOME=~/.gemini/accounts/<id>). The helpers below read it, so the
+# deny list goes into, and the transcript is cleared from, the directory that agy uses.
+_agy_state_override: ContextVar[Optional[str]] = ContextVar("jn_agy_state", default=None)
+
+
+def _own_login_account():
+    """The member whose own CLI logins apply (models section 'own'), else None = defaults."""
+    from backend.accounts.credentials import own_login_account
+    db = SessionLocal()
+    try:
+        return own_login_account(db)
+    finally:
+        db.close()
+
+
+def _claude_code_token() -> str:
+    from backend.accounts.credentials import claude_code_token
+    db = SessionLocal()
+    try:
+        return claude_code_token(db)
+    finally:
+        db.close()
+
+
+def _agy_state() -> str:
+    return _agy_state_override.get() or os.path.expanduser(_AGY_STATE)
 
 
 async def _run_cli(cmd: list[str], stdin: bytes, env: dict | None = None, timeout: float = CLI_TIMEOUT,
@@ -491,12 +525,22 @@ async def _call_codex_cli(prompt: str, system: str, model: str, max_tokens: int,
 
     # like ANTHROPIC_API_KEY for claude_code: the plan pays, never an API key that happens to be set
     env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
+    login_hint = _CODEX_LOGIN_HINT
+    # MT-15: a member with its own models section logs in under its own CODEX_HOME; owner and
+    # 'inherit' keep the default home (~/.codex), exactly as before.
+    account = _own_login_account()
+    if account is not None:
+        from backend.accounts.credentials import codex_home
+        home = codex_home(account)
+        os.makedirs(home, exist_ok=True)
+        env["CODEX_HOME"] = home
+        login_hint = f"run `docker compose exec -it -e CODEX_HOME={home} backend codex login --device-auth`"
     async with _codex_gate:
         # `codex exec` without a login retries for ~15 s and then prints a 401 storm; the status
         # check answers in milliseconds and names the fix
         rc, _, _ = await _run_cli(["codex", "login", "status"], b"", env=env, timeout=30)
         if rc != 0:
-            raise NonRetryableLLMError(f"Codex CLI is not logged in — {_CODEX_LOGIN_HINT}")
+            raise NonRetryableLLMError(f"Codex CLI is not logged in — {login_hint}")
 
         full_prompt = f"{system}\n\n{prompt}"
         with tempfile.TemporaryDirectory(prefix="jobnavigator-codex-") as workdir:
@@ -547,7 +591,7 @@ async def _call_codex_cli(prompt: str, system: str, model: str, max_tokens: int,
         err_lines = stderr.decode(errors="replace").strip().splitlines()
         reason = failed or last_error or (err_lines[-1] if err_lines else "no output")
         if "401" in reason or "Unauthorized" in reason:
-            raise NonRetryableLLMError(f"Codex CLI is not logged in — {_CODEX_LOGIN_HINT} ({reason})")
+            raise NonRetryableLLMError(f"Codex CLI is not logged in — {login_hint} ({reason})")
         if _QUOTA_RE.search(reason):
             raise NonRetryableLLMError(f"Codex usage limit reached: {reason}")
         raise RuntimeError(f"codex exec failed (rc={rc}): {reason}")
@@ -583,7 +627,7 @@ def _agy_install_settings() -> list[str]:
     import json as _json
     import shutil
     import os
-    target = os.path.join(os.path.expanduser(_AGY_STATE), "settings.json")
+    target = os.path.join(_agy_state(), "settings.json")
     try:
         with open(_AGY_SETTINGS_SOURCE, encoding="utf-8") as fh:
             source = fh.read()
@@ -631,7 +675,7 @@ def _agy_discard(conversation_id: str) -> None:
     import glob
     import os
     import shutil
-    home = os.path.expanduser(_AGY_STATE)
+    home = _agy_state()
     for path in (*glob.glob(f"{home}/conversations/{conversation_id}.db*"),
                  f"{home}/presence/{conversation_id}.lock",
                  f"{home}/annotations/{conversation_id}.pbtxt",
@@ -648,14 +692,34 @@ async def _call_antigravity_cli(prompt: str, system: str, model: str, max_tokens
     exposes no output cap. Tool use is blocked by a deny list installed before each call and
     confirmed from agy's own log afterwards — `--sandbox` restricts the terminal only, never
     the file tools."""
-    import json as _json
-    import os
-    import tempfile
-
     # like ANTHROPIC_API_KEY for claude_code: the plan pays, never a key that happens to be set
     env = {k: v for k, v in os.environ.items()
            if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY",
                         "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ADC_AUTH")}
+    login_hint = _AGY_LOGIN_HINT
+    # MT-15: a member with its own models section runs agy with its own HOME, so the login and
+    # the state dir (deny list, transcripts) are its own; owner and 'inherit' keep HOME.
+    account = _own_login_account()
+    state_token = None
+    if account is not None:
+        from backend.accounts.credentials import agy_home, agy_state_dir
+        home = agy_home(account)
+        os.makedirs(home, exist_ok=True)
+        env["HOME"] = home
+        state_token = _agy_state_override.set(agy_state_dir(account))
+        login_hint = f"run `docker compose exec -it -e HOME={home} backend agy` and sign in"
+    try:
+        return await _agy_run(prompt, system, model, env, login_hint)
+    finally:
+        if state_token is not None:
+            _agy_state_override.reset(state_token)
+
+
+async def _agy_run(prompt: str, system: str, model: str, env: dict, login_hint: str) -> dict:
+    """One agy call with `env` (see _call_antigravity_cli); the state dir is `_agy_state()`."""
+    import json as _json
+    import tempfile
+
     message = _json.dumps({"event": "user",
                            "message": {"role": "user", "content": f"{system}\n\n{prompt}"}})
 
@@ -695,7 +759,7 @@ async def _call_antigravity_cli(prompt: str, system: str, model: str, max_tokens
         err_lines = stderr.decode(errors="replace").strip().splitlines()
         reason = str(result.get("error") or "") or (err_lines[-1] if err_lines else "no output")
         if _AGY_AUTH_RE.search(reason):
-            raise NonRetryableLLMError(f"Antigravity CLI is not logged in — {_AGY_LOGIN_HINT} ({reason})")
+            raise NonRetryableLLMError(f"Antigravity CLI is not logged in — {login_hint} ({reason})")
         if _QUOTA_RE.search(reason):
             raise NonRetryableLLMError(f"Antigravity usage limit reached: {reason}")
         raise RuntimeError(f"agy failed (rc={rc}): {reason}")

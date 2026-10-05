@@ -1,4 +1,5 @@
 """LLM helper endpoints — live model catalogs for the Settings model picker; OpenRouter's is public, OpenAI/Anthropic require a resolved API key, and results are cached ~1h per provider."""
+import hashlib
 import os
 import re
 import time
@@ -94,14 +95,11 @@ async def list_efforts():
 async def list_models(provider: str = "openrouter"):
     """Live model catalog for a provider, cached ~1h; openrouter needs no key, openai/claude_api use a configured key or env fallback (400 if none, 502 if the provider rejects it)."""
     now = time.time()
-    hit = _cache.get(provider)
-    if hit and (now - hit["at"]) < _CACHE_TTL:
-        return {"models": hit["models"], "cached": True}
-
     db = SessionLocal()
+    key = ""
     try:
         if provider == "openrouter":
-            fetch = _fetch_openrouter()
+            pass
         elif provider in ("openai", "claude_api", "claude_code"):
             # Claude Code (subscription) serves the same models as Claude API, so it
             # shares the Anthropic catalog — resolved via any configured Anthropic key.
@@ -110,11 +108,21 @@ async def list_models(provider: str = "openrouter"):
             if not key:
                 label = "OpenAI" if provider == "openai" else "Anthropic"
                 raise HTTPException(400, f"No {label} API key configured — set one in Settings first.")
-            fetch = _fetch_openai(key) if provider == "openai" else _fetch_anthropic(key)
         else:
             raise HTTPException(400, f"Live model search is not supported for provider '{provider}'.")
     finally:
         db.close()
+
+    # MT-15: a keyed catalog is cached per key, so an account with its own key never gets the
+    # list another account's key fetched (an OpenAI org's catalog can differ).
+    cache_key = f"{provider}:{hashlib.sha256(key.encode()).hexdigest()[:16]}" if key else provider
+    hit = _cache.get(cache_key)
+    if hit and (now - hit["at"]) < _CACHE_TTL:
+        return {"models": hit["models"], "cached": True}
+    if provider == "openrouter":
+        fetch = _fetch_openrouter()
+    else:
+        fetch = _fetch_openai(key) if provider == "openai" else _fetch_anthropic(key)
 
     try:
         models = await fetch
@@ -135,5 +143,5 @@ async def list_models(provider: str = "openrouter"):
 
     models = [m for m in models if m.get("id")]
     models.sort(key=lambda m: m["id"])
-    _cache[provider] = {"at": now, "models": models}
+    _cache[cache_key] = {"at": now, "models": models}
     return {"models": models, "cached": False}

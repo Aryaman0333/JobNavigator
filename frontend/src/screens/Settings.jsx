@@ -29,6 +29,9 @@ const PROVIDER_LABEL = Object.fromEntries(PROVIDERS)
 const SEARCHABLE = ['openrouter', 'openai', 'claude_api', 'claude_code']
 // providers that need no key
 const KEYLESS = ['claude_code', 'codex_cli', 'antigravity_cli', 'ollama', 'lmstudio', '']
+// Provider settings whose value 'claude_code' makes the Claude Code token row relevant.
+const CLAUDE_CODE_SLOTS = ['llm_provider', 'scoring_llm_provider', 'llm_fallback_provider', 'cv_tailor_llm_provider',
+  'cover_letter_llm_provider', 'autofill_llm_provider', 'email_llm_provider']
 
 // The value rows' fields are `Input` now (adornment slot and all), so the box
 // lives in ui.jsx with every other field. What is left here is the type these
@@ -462,6 +465,10 @@ export default function Settings() {
           pKey: 'llm_provider', mKey: 'llm_model', eKey: 'llm_effort',
           info: "Providers: Claude API, Claude Code, Codex CLI (your ChatGPT subscription), OpenAI, Ollama (local), LM Studio (local), OpenRouter. The model list shows that provider's models, including any you added under Model catalog. OpenRouter covers every vendor with one key but has no prompt-cache discount. The two subscription CLIs are meant for attended use and have plan limits; a limit hit fails over to the fallback without retrying. Reasoning effort sets how much the model thinks before it answers: higher is slower and costs more. 'default effort' keeps the model's own default. Not every model takes every level; Claude Code steps down to the nearest level, the APIs return an error. Antigravity CLI sets effort in the model name, and Ollama and LM Studio have no effort setting." },
         B('API key', 'API key for the primary provider.', 'llm_api_key', { secret: true, mono: true, w: '340px', hide: () => KEYLESS.includes(val('llm_provider', 'claude_api')) }),
+        // MT-15: the Claude Code login per account. Shown while some slot uses Claude Code, to the owner and to a member whose Models section is its own.
+        B('Claude Code token', member ? 'Your own Claude subscription: paste the token from claude setup-token. Empty uses the owner’s.' : 'Token from claude setup-token. Empty uses CLAUDE_CODE_OAUTH_TOKEN from .env.',
+          'claude_code_oauth_token', { secret: true, mono: true, w: '340px',
+            hide: () => !CLAUDE_CODE_SLOTS.some((k) => val(k, k === 'llm_provider' ? 'claude_api' : '') === 'claude_code') || (member && sidx?.byId?.models?.mode !== 'own') }),
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
           { info: 'Used only when the scoring call fails or is rate-limited. One retry, then the job stays unscored until the next run. Choose a cheap model from a different provider than the primary.' }),
@@ -601,7 +608,7 @@ export default function Settings() {
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li, multi, isOwner])
+  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, sidx])
 
   // The rail's account menu lands here: `#accounts` (Manage accounts) scrolls to the
   // Accounts / Your account section, `#add-account` also opens the Add dialog. The hash is

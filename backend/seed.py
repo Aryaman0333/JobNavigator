@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
     "llm_model": ("claude-sonnet-5", "LLM model name"),
     "llm_api_key": ("", "API key for API-backed providers (not needed for subscription CLIs or Ollama)"),
     "llm_effort": ("", "Reasoning effort for the Primary model (empty = the model's default; values depend on the provider)"),
+    "claude_code_oauth_token": ("", "Claude Code subscription token from `claude setup-token` (empty = CLAUDE_CODE_OAUTH_TOKEN from .env; a member with its own Models section can set its own)"),
     "llm_fallback_provider": ("", "Fallback LLM provider (empty = no fallback)"),
     "llm_fallback_model": ("", "Fallback model name"),
     "llm_fallback_api_key": ("", "API key for fallback provider (OpenAI)"),

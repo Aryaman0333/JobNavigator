@@ -47,7 +47,8 @@ def _llm_keys() -> list:
 # (id, label, scope, default mode, Settings-screen sections it appears in, keys)
 _SECTIONS = [
     ("feed", "Feed", POLICY, OWN, ["feed"], ["feed_zoom_floater"]),
-    ("models", "Models", POLICY, INHERIT, ["models"], _llm_keys() + ["llm_models_list"]),
+    # claude_code_oauth_token: the Claude Code subscription login per account (MT-15).
+    ("models", "Models", POLICY, INHERIT, ["models"], _llm_keys() + ["llm_models_list", "claude_code_oauth_token"]),
     ("scoring", "Scoring behavior", POLICY, INHERIT, ["scoring"], [
         "scoring_default_depth", "on_save_action", "prompt_caching_enabled",
         "scoring_rubric", "scoring_output_light", "scoring_output_full"]),

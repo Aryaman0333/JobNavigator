@@ -250,10 +250,11 @@ def copy_from(db, source_id, new_id, items: Iterable[str], owner_id) -> dict:
 # ── Remove ───────────────────────────────────────────────────────────────────
 
 def account_dirs(account_id) -> list:
-    """Per-account directories on disk to remove with the account. None exist yet: MT-15
-    (CODEX_HOME / agy state / Claude token per account) and MT-16 (LinkedIn, Jobright,
-    Levels sessions under …/accounts/<id>/) add their roots here."""
-    roots: list = []
+    """Per-account directories on disk to remove with the account: MT-15's CLI homes
+    (CODEX_HOME, agy HOME; the Claude Code token is a setting row) and, from MT-16, the
+    LinkedIn / Jobright / Levels sessions under …/accounts/<id>/. Never exported."""
+    from backend.accounts.credentials import account_roots
+    roots: list = list(account_roots())
     return [os.path.join(r, str(account_id)) for r in roots]
 
 
@@ -395,6 +396,8 @@ def build_export(db, account_id, owner_id) -> "tempfile.SpooledTemporaryFile":
                 "rendered on demand and never stored, so there are no PDF files to include.",
                 "Secret settings (API keys, passwords, tokens) are redacted as in the Settings "
                 "screen; the owner's settings are the install values.",
+                "CLI logins (Codex and Antigravity homes) are not included; the Claude Code "
+                "token is a secret setting and is redacted.",
             ],
         }
         zf.writestr("manifest.json", json.dumps(manifest, indent=1, ensure_ascii=False))
