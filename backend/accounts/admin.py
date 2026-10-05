@@ -8,7 +8,7 @@ MT-2 listener in this file.
 Storage note: résumé and cover-letter PDFs are rendered on demand (Playwright) and
 streamed, never written to disk, so there are no per-account files to delete or export
 today. `account_dirs()` is the hook for per-account directories that later batches add
-(MT-15 CLI logins, MT-16 scraper sessions).
+(MT-15 CLI logins, MT-16 LinkedIn sessions).
 """
 import copy
 import io

@@ -590,7 +590,7 @@ export default function Settings() {
       ['linkedin', '', 'LinkedIn', '', [
         B('Personal email', 'Used by LinkedIn Personal collections.', 'linkedin_email', { w: '260px' }),
         B('Personal password', 'Stored locally.', 'linkedin_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', ownerOnly: true, label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
+        { kind: 'linkedin', label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
         SW('Use a mock account', 'The session signs in with the mock account below.', 'Off — the session signs in with the personal account above.', 'linkedin_use_mock_account',
           { dflt: !!val('linkedin_mock_email'), info: 'Optional. The extension captures jobs while you browse LinkedIn collections. A separate account keeps rate limits, CAPTCHAs or bans off your real profile.' }),
         ...(isOn('linkedin_use_mock_account', !!val('linkedin_mock_email')) ? [

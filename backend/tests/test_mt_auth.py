@@ -328,13 +328,14 @@ def test_x_account_needs_the_header_key_not_just_the_session_cookie(client, test
 
 # ── member restrictions ──────────────────────────────────────────────────────
 
-INSTALL_JOBS = [("POST", "/api/db/backup", None), ("POST", "/api/h1b/refresh", None),
-                ("POST", "/api/linkedin/session/refresh", None),
+INSTALL_JOBS = [("POST", "/api/db/backup", None), ("POST", "/api/h1b/refresh", None)]
+# MT-16: the LinkedIn session refresh and its PIN drop act on the caller's own session files
+ACCOUNT_JOBS = [("POST", "/api/linkedin/session/refresh", None),
                 ("POST", "/api/linkedin/session/pin", {"pin": "123456"})]
 
 
 @pytest.fixture
-def no_launch(monkeypatch):
+def no_launch(monkeypatch, tmp_path):
     calls = []
 
     def _launch(job_type, *a, **k):
@@ -342,9 +343,10 @@ def no_launch(monkeypatch):
         return "run-1"
     import backend.main as main_mod
     from backend.api import routes_linkedin
+    from backend.accounts import credentials
     monkeypatch.setattr(main_mod, "launch_background", _launch)
     monkeypatch.setattr(routes_linkedin, "launch_background", _launch)
-    monkeypatch.setattr(routes_linkedin, "PIN_FILE", "/tmp/jn-test-li-pin.txt")
+    monkeypatch.setattr(credentials, "LI_PIN_OWNER", str(tmp_path / "li_pin.txt"))
     return calls
 
 
@@ -360,10 +362,18 @@ def test_member_cannot_start_install_level_jobs(browser, test_db, no_launch, met
     assert no_launch == []
 
 
-@pytest.mark.parametrize("method,path,body", INSTALL_JOBS)
+@pytest.mark.parametrize("method,path,body", INSTALL_JOBS + ACCOUNT_JOBS)
 def test_owner_can_start_install_level_jobs(client, test_db, no_launch, method, path, body):
     _member(test_db)
     r = client.request(method, path, json=body)
+    assert r.status_code in (200, 202), r.text
+
+
+@pytest.mark.parametrize("method,path,body", ACCOUNT_JOBS)
+def test_member_can_start_its_own_session_jobs(browser, test_db, no_launch, method, path, body):
+    m = _member(test_db)
+    _switch(browser, m.id)
+    r = browser.request(method, path, json=body)
     assert r.status_code in (200, 202), r.text
 
 

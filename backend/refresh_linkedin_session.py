@@ -7,18 +7,33 @@ import json
 import os
 import sys
 
-from backend.scraper.sources.linkedin_extension import _SESSION_PATH
-
-PIN_FILE = "/tmp/li_pin.txt"
+from backend.accounts import credentials as _cred
+from backend.scraper.sources.linkedin_extension import _session_path
 
 # Phase of the current refresh (idle | running | awaiting_pin | ok | failed), read by
-# GET /api/linkedin/session so the Settings row can prompt for the PIN.
+# GET /api/linkedin/session so the Settings row can prompt for the PIN. STATE is the
+# owner's; a member's lives in _MEMBER_STATES (MT-16: sessions, PIN drops and phases are
+# per account, so two accounts can refresh at once).
 STATE = {"phase": "idle", "detail": ""}
+_MEMBER_STATES: dict = {}
+
+
+def state() -> dict:
+    """The phase dict of the current account's refresh."""
+    member = _cred.session_member()
+    if member is None:
+        return STATE
+    return _MEMBER_STATES.setdefault(member, {"phase": "idle", "detail": ""})
+
+
+def pin_file() -> str:
+    return _cred.linkedin_pin_file()
 
 
 def _phase(phase: str, detail: str = "") -> None:
-    STATE["phase"] = phase
-    STATE["detail"] = detail
+    st = state()
+    st["phase"] = phase
+    st["detail"] = detail
 
 
 def _creds():
@@ -78,10 +93,11 @@ async def _login_and_save(email, password, fresh=False) -> int:
 
         cookies = await context.cookies()
         cookies = [c for c in cookies if "linkedin" in c.get("domain", "")]
-        os.makedirs(os.path.dirname(_SESSION_PATH), exist_ok=True)
-        with open(_SESSION_PATH, "w") as f:
+        path = _session_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             json.dump(cookies, f)
-        print(f"Session OK (voyager /me=200). Saved {len(cookies)} cookies -> {_SESSION_PATH}")
+        print(f"Session OK (voyager /me=200). Saved {len(cookies)} cookies -> {path}")
         return 0
     finally:
         try:
@@ -94,13 +110,14 @@ async def _login_and_save(email, password, fresh=False) -> int:
 
 
 async def _solve_pin(page) -> bool:
-    """Handle the email-PIN checkpoint by polling PIN_FILE (up to 300s)."""
+    """Handle the email-PIN checkpoint by polling the account's PIN file (up to 300s)."""
     pin_box = page.locator("#input__email_verification_pin")
     try:
         await pin_box.wait_for(timeout=8000)
     except Exception:
         print(f"Checkpoint is not an email-PIN type (url={page.url}).")
         return False
+    PIN_FILE = pin_file()
     if os.path.exists(PIN_FILE):
         os.remove(PIN_FILE)
     print(f"CHECKPOINT: LinkedIn emailed a PIN to the account. Drop the 6 "

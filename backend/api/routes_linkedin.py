@@ -5,12 +5,11 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.accounts.auth import require_owner
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.scraper.sources.linkedin_extension import _SESSION_PATH
+from backend.scraper.sources.linkedin_extension import _session_path
 
 logger = logging.getLogger("jobnavigator.linkedin")
 
@@ -19,7 +18,6 @@ router = APIRouter(prefix="/linkedin", tags=["linkedin"])
 # LinkedIn's li_at cookie runs about a year, but the practical session lifetime
 # is far shorter; treat a jar older than this as due for a refresh.
 _STALE_AFTER_DAYS = 21
-PIN_FILE = "/tmp/li_pin.txt"
 
 
 class PinIn(BaseModel):
@@ -31,11 +29,13 @@ def session_status():
     """Cookie-jar age plus the phase of any refresh currently running."""
     from backend import refresh_linkedin_session as rls
 
-    exists = os.path.exists(_SESSION_PATH)
+    path = _session_path()   # the caller's own cookie jar (MT-16)
+    state = rls.state()
+    exists = os.path.exists(path)
     age_days = None
     refreshed_at = None
     if exists:
-        mtime = os.path.getmtime(_SESSION_PATH)
+        mtime = os.path.getmtime(path)
         refreshed_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
         age_days = round((time.time() - mtime) / 86400, 1)
 
@@ -52,18 +52,19 @@ def session_status():
         "refreshed_at": refreshed_at,
         "status": status,
         "summary": summary,
-        "phase": rls.STATE.get("phase", "idle"),
-        "detail": rls.STATE.get("detail", ""),
+        "phase": state.get("phase", "idle"),
+        "detail": state.get("detail", ""),
     }
 
 
-@router.post("/session/refresh", status_code=202, dependencies=[Depends(require_owner)])
+@router.post("/session/refresh", status_code=202)
 async def session_refresh():
-    """Start the interactive login. Poll /session until phase leaves 'running'. Install-level until MT-16: 403 for a member."""
+    """Start the interactive login. Poll /session until phase leaves 'running'. Signs in and saves the caller's own session (MT-16)."""
     from backend import refresh_linkedin_session as rls
 
-    if rls.STATE.get("phase") in ("running", "awaiting_pin"):
-        return {"run_id": None, "status": rls.STATE["phase"]}
+    state = rls.state()
+    if state.get("phase") in ("running", "awaiting_pin"):
+        return {"run_id": None, "status": state["phase"]}
     try:
         run_id = launch_background("linkedin_session_refresh", rls.run_refresh,
                                    trigger="manual", scope_key="linkedin")
@@ -72,12 +73,14 @@ async def session_refresh():
     return {"run_id": run_id, "status": "running"}
 
 
-@router.post("/session/pin", dependencies=[Depends(require_owner)])
+@router.post("/session/pin")
 def session_pin(body: PinIn):
-    """Hand the emailed PIN to the waiting login (it polls PIN_FILE). Install-level until MT-16: 403 for a member."""
+    """Hand the emailed PIN to the waiting login (it polls the account's PIN file)."""
+    from backend import refresh_linkedin_session as rls
+
     digits = "".join(c for c in (body.pin or "") if c.isdigit())
     if not digits:
         return {"ok": False, "detail": "Enter the digits from LinkedIn's email."}
-    with open(PIN_FILE, "w") as f:
+    with open(rls.pin_file(), "w") as f:
         f.write(digits)
     return {"ok": True}

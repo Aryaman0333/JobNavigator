@@ -23,7 +23,11 @@ _linkedin_import_progress: dict = {}
 
 # Persisted (mounted) Playwright session cookies — written by
 # backend/refresh_linkedin_session.py. Survives container restarts.
-_SESSION_PATH = "/root/.linkedin_api/li_cookies.json"
+def _session_path() -> str:
+    """The current account's cookie jar (MT-16): the owner's is today's
+    /root/.linkedin_api/li_cookies.json, a member's lives under accounts/<id>/."""
+    from backend.accounts.credentials import linkedin_extension_cookies
+    return linkedin_extension_cookies()
 
 # The exact Voyager endpoint + decoration the linkedin-api library used; returns plain JSON
 # with top-level title/companyDetails/description/formattedLocation/applyMethod.
@@ -77,7 +81,7 @@ def _voyager_arrangement(job_data: dict) -> str | None:
 def _load_session_cookies():
     """Load persisted Playwright cookies, or None if the session file is absent."""
     try:
-        with open(_SESSION_PATH) as f:
+        with open(_session_path()) as f:
             cookies = json.load(f)
         return cookies or None
     except (OSError, ValueError):
@@ -135,7 +139,7 @@ async def enrich(linkedin_ids: list[str], db=None):
         session_cookies = _load_session_cookies()
         if not session_cookies:
             logger.error("LinkedIn import: no session cookies at %s — run "
-                         "`python -m backend.refresh_linkedin_session` first", _SESSION_PATH)
+                         "`python -m backend.refresh_linkedin_session` first", _session_path())
             _linkedin_import_progress["status"] = "error"
             _linkedin_import_progress["error_details"] = [{"stage": "session",
                 "error": "no LinkedIn session — run refresh_linkedin_session"}]

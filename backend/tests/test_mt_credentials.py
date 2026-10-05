@@ -295,6 +295,7 @@ def test_new_account_settings_copy_never_carries_the_token(test_db, accounts):
 def cli_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "CODEX_ACCOUNTS_ROOT", str(tmp_path / "codex" / "accounts"))
     monkeypatch.setattr(C, "AGY_ACCOUNTS_ROOT", str(tmp_path / "gemini" / "accounts"))
+    monkeypatch.setattr(C, "LI_ACCOUNTS_ROOT", str(tmp_path / "li" / "accounts"))
     return tmp_path
 
 
@@ -427,11 +428,12 @@ async def test_agy_member_not_logged_in_names_its_own_home(test_db, accounts, cl
 
 # ── Removal deletes the CLI homes ────────────────────────────────────────────
 
-def test_account_dirs_lists_both_cli_homes(cli_roots, accounts):
+def test_account_dirs_lists_the_cli_homes_and_the_session_dir(cli_roots, accounts):
     from backend.accounts.admin import account_dirs
     a, b = accounts
     assert account_dirs(b) == [str(cli_roots / "codex" / "accounts" / str(b)),
-                               str(cli_roots / "gemini" / "accounts" / str(b))]
+                               str(cli_roots / "gemini" / "accounts" / str(b)),
+                               str(cli_roots / "li" / "accounts" / str(b))]
 
 
 def test_removing_an_account_deletes_its_cli_homes_only(test_db, accounts, cli_roots):

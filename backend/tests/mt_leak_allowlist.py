@@ -43,9 +43,9 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("GET", "/api/searches/countries"): "static country list",
 
     # Install-level sessions and bots (per-account in MT-16 / MT-17)
-    ("GET", "/api/linkedin/session"): "install LinkedIn cookie file until MT-16",
-    ("POST", "/api/linkedin/session/refresh"): "writes the install LinkedIn cookie dir (MT-16)",
-    ("POST", "/api/linkedin/session/pin"): "writes the install LinkedIn cookie dir (MT-16)",
+    ("GET", "/api/linkedin/session"): "the caller's own LinkedIn cookie jar (MT-16; owner = today's path)",
+    ("POST", "/api/linkedin/session/refresh"): "acts on the caller's own session files (MT-16)",
+    ("POST", "/api/linkedin/session/pin"): "acts on the caller's own session files (MT-16)",
     ("POST", "/api/telegram/webhook"): "public bot webhook; chat id -> account routing is MT-17",
     ("POST", "/api/telegram/register-webhook"): "install bot until MT-17",
     ("POST", "/api/telegram/rotate-webhook-secret"): "install bot until MT-17",

@@ -162,7 +162,7 @@ _running: dict[str, RunningJob] = {}
 
 # Runs that act on the whole install: one at a time for everyone, keyed and shown as
 # the owner's. Everything else is per account.
-INSTALL_WIDE_JOB_TYPES = frozenset({"db_backup", "h1b_refresh", "linkedin_session_refresh"})
+INSTALL_WIDE_JOB_TYPES = frozenset({"db_backup", "h1b_refresh"})   # LinkedIn session refresh is per account since MT-16
 
 
 def _owner_id() -> Optional[uuid.UUID]:

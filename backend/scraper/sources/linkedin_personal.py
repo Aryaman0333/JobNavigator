@@ -16,7 +16,13 @@ from backend.scraper._shared.dedup import make_external_id, make_content_hash
 
 logger = logging.getLogger("jobnavigator.linkedin")
 
-COOKIE_PATH = "/tmp/linkedin_cookies.json"
+
+def cookie_path() -> str:
+    """The current account's LinkedIn Personal cookie jar (MT-16): the owner keeps
+    /tmp/linkedin_cookies.json, a member's is under ~/.linkedin_api/accounts/<id>/."""
+    from backend.accounts.credentials import linkedin_personal_cookies
+    return linkedin_personal_cookies()
+
 
 # Delay ranges (seconds) — tuned to avoid 429s
 DELAY_BETWEEN_CARDS = (1.5, 3.0)       # after clicking each card
@@ -87,9 +93,10 @@ async def _get_linkedin_browser():
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
 
-    if os.path.exists(COOKIE_PATH):
+    path = cookie_path()
+    if os.path.exists(path):
         try:
-            with open(COOKIE_PATH, "r") as f:
+            with open(path, "r") as f:
                 cookies = json.load(f)
             if cookies:
                 await context.add_cookies(cookies)
@@ -190,7 +197,9 @@ async def _save_cookies(context):
     """Persist browser cookies to disk for session reuse."""
     try:
         cookies = await context.cookies()
-        with open(COOKIE_PATH, "w") as f:
+        path = cookie_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             json.dump(cookies, f)
     except Exception as e:
         logger.warning(f"Failed to save LinkedIn cookies: {e}")
