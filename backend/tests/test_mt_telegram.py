@@ -210,7 +210,7 @@ def test_test_message_endpoint_sends_to_the_callers_chat(client, test_db, accoun
     a, b = accounts
     set_setting(test_db, "telegram_chat_id", "111")
     _own(test_db, b, "telegram_chat_id", "222")
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.post("/api/telegram/test").status_code == 202
     for _ in range(100):
         if calls:
@@ -223,7 +223,7 @@ def test_test_message_endpoint_sends_to_the_callers_chat(client, test_db, accoun
 
 def test_link_code_endpoint_issues_a_code_for_the_caller(client, test_db, accounts):
     a, b = accounts
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     r = client.post("/api/telegram/link-code")
     assert r.status_code == 200
     body = r.json()
@@ -237,7 +237,7 @@ def test_link_code_endpoint_issues_a_code_for_the_caller(client, test_db, accoun
 def test_link_code_reports_the_own_bot(client, test_db, accounts):
     a, b = accounts
     _own_bot(test_db, b)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.post("/api/telegram/link-code").json()["bot"] == "own"
 
 
@@ -472,7 +472,7 @@ def test_own_bot_links_only_its_own_accounts_code(client, test_db, accounts, cal
 def test_member_registers_its_own_bot(client, test_db, accounts, calls):
     a, b = accounts
     _own_bot(test_db, b, secret=None)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     r = client.post("/api/telegram/register-webhook", json={"public_url": "https://x.example"})
     assert r.status_code == 200
     url, body = calls[-1]
@@ -488,7 +488,7 @@ def test_member_registers_its_own_bot(client, test_db, accounts, calls):
 def test_member_cannot_register_or_rotate_the_household_bot(client, test_db, accounts, calls):
     a, b = accounts
     set_setting(test_db, "telegram_webhook_secret", SECRET)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.post("/api/telegram/register-webhook",
                        json={"public_url": "https://x.example"}).status_code == 403
     assert client.post("/api/telegram/rotate-webhook-secret").status_code == 403
@@ -511,7 +511,7 @@ def test_owner_registers_the_household_bot_as_before(client, test_db, accounts, 
 def test_own_webhook_secret_and_bot_token_are_never_served(client, test_db, accounts):
     a, b = accounts
     _own_bot(test_db, b)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     body = client.get("/api/settings").json()
     assert tg.OWN_WEBHOOK_SECRET_KEY not in body
     assert body["telegram_bot_token"] != "member-token" and body["telegram_bot_mode"] == "own"

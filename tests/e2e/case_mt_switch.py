@@ -34,11 +34,12 @@ SHOTS = '/tmp/v2t/shots/mt12'
 
 
 def _api(method, path, body=None, account=None):
-    """h.api plus an optional X-Account header (with two accounts the API needs one)."""
+    """h.api plus an optional account (with two accounts the API needs one): a signed
+    X-Account-Token from verify-pin (the owner's PIN opens both accounts here)."""
     data = None if body is None else json.dumps(body).encode()
     headers = {'X-API-Key': h.KEY, 'Content-Type': 'application/json'}
     if account:
-        headers['X-Account'] = str(account)
+        headers['X-Account-Token'] = C.account_token(account, OWNER_PIN)
     req = urllib.request.Request(h.BASE + '/api' + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -101,7 +102,18 @@ def _mt_switch(c):
         member_id = d['account']['id']
 
         st, d = _api('GET', '/auth/me')
-        c.eq('the API without X-Account now needs an account', (st, (d or {}).get('detail')), (401, 'account_required'))
+        c.eq('the API without a token now needs an account', (st, (d or {}).get('detail')), (401, 'account_required'))
+        # QA F1 (R2-01): a bare X-Account id selects nothing, even with the install key
+        req = urllib.request.Request(h.BASE + '/api/auth/me', method='GET',
+                                     headers={'X-API-Key': h.KEY, 'X-Account': str(owner_id)})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                bare = r.status
+        except urllib.error.HTTPError as e:
+            bare = e.code
+        c.eq('a bare X-Account header is ignored', bare, 401)
+        st, d = _api('GET', '/auth/me', account=member_id)
+        c.eq('a token from verify-pin acts as that account', (st, (d or {}).get('account', {}).get('id')), (200, member_id))
 
         with h.browser() as b:
             pg = C.seeded_page(b)

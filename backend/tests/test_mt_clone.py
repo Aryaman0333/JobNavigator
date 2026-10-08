@@ -1,6 +1,6 @@
 """MT-20 · Clone companies/searches across accounts, LLM cost for all accounts.
 
-`client` (r4_support) acts as the owner via X-API-Key + X-Account; a member call swaps the header.
+`client` (r4_support) acts as the owner via X-API-Key + X-Account-Token (r4_support.ACT_AS); a member call swaps the header.
 """
 import uuid
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ def _member(db, name="Partner"):
 
 def _as(c, account_id):
     c.cookies.clear()
-    c.headers["X-Account"] = str(account_id)
+    c.headers["X-Test-Act-As"] = str(account_id)
     return c
 
 

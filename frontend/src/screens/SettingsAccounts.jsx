@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import api, { authFailure } from '../api'
+import { PromptDialog } from '../ConfirmDialog'
 import {
   ACCOUNT_SWATCHES, Avatar, Button, Check, Heading, Helper, Input, Link, ModalPanel, Pill,
   PinPad, Segmented, Select, Surface, Tag, kb,
@@ -333,6 +334,30 @@ export function RemoveAccountModal({ account, onClose, onRemoved }) {
   )
 }
 
+// ── API token for scripts (QA F1) ───────────────────────────────────────────
+// POST /accounts/{id}/api-token mints a signed token for the caller's own account
+// only; scripts send it as `X-Account-Token` with the install key. The dashboard
+// itself never sends it (the jn_account cookie picks its account).
+export function ApiTokenButton({ account, push, size = 'sm' }) {
+  const [token, setToken] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const mint = async () => {
+    setBusy(true)
+    try { const r = await api.post(`/accounts/${account.id}/api-token`); setToken(r.data.token) } catch (err) { push({ kind: 'error', msg: errorText(err) }) }
+    setBusy(false)
+  }
+  return (
+    <>
+      <Pill size={size} onClick={busy ? undefined : mint} disabled={busy} ariaLabel="Create an API token for scripts">{busy ? 'Creating…' : 'API token'}</Pill>
+      {token && (
+        <PromptDialog title="API token" readOnly mono value={token} label="Done"
+          body={`Send it as the X-Account-Token header, with the install key as X-API-Key, to act as ${account.name}. Valid for a year; a PIN change ends it.`}
+          onSubmit={() => setToken(null)} onCancel={() => setToken(null)} />
+      )}
+    </>
+  )
+}
+
 // ── one-account entry row (System › Advanced) ───────────────────────────────
 export function AddPeopleRow({ onAdd }) {
   return <Pill onClick={onAdd} ariaLabel="Add an account to this install">Add account…</Pill>
@@ -390,6 +415,7 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
                 <Pill size="sm" onClick={() => setPinFor(a)} ariaLabel={`${self ? 'Change your PIN' : `Reset ${a.name}’s PIN`}`}>
                   {self ? (a.has_pin ? 'Change PIN' : 'Set PIN') : (a.has_pin ? 'Reset PIN' : 'Set PIN')}
                 </Pill>
+                {self && <ApiTokenButton account={a} push={push} />}
                 {!owner && !self && (
                   <Pill size="sm" hover="v2-hover-bad-bdc" onClick={() => setRemoving(a)} ariaLabel={`Remove ${a.name}`}>Remove</Pill>
                 )}
@@ -459,6 +485,8 @@ export function YourAccount({ data, me, onChanged, push }) {
         </>)}
       {row('Export my data', 'A zip of your jobs, applications, résumés, letters, searches, companies, Persona and settings.',
         <Pill size="sm" onClick={exporting ? undefined : exp} disabled={exporting}>{exporting ? 'Exporting…' : 'Download zip'}</Pill>)}
+      {row('API token', 'For scripts and API clients: send it as X-Account-Token with the install key to act as you. A PIN change ends it.',
+        <ApiTokenButton account={mine} push={push} />)}
       <Helper style={{ padding: '12px 0 0', textWrap: 'pretty' }}>
         Other accounts: {others.map((a) => (a.role === 'owner' ? `${a.name} (owner)` : a.name)).join(', ') || 'none'}.
         {' '}Adding or removing people is {owner ? `${owner.name}’s` : 'the owner’s'} job — ask them.

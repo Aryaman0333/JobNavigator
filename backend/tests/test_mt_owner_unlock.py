@@ -34,8 +34,8 @@ def member(test_db):
 
 @pytest.fixture
 def browser(client, owner, member):
-    """The member's browser: install key, no X-Account, the member's cookie."""
-    client.headers.pop("X-Account", None)
+    """The member's browser: install key, no account token, the member's cookie."""
+    client.headers.pop("X-Test-Act-As", None)
     client.cookies.clear()
     r = client.post("/api/auth/switch", json={"account_id": str(member.id)})
     assert r.status_code == 200

@@ -104,7 +104,7 @@ def _put(db, key, value, account_id=None):
 
 def _connect(client, account=None, headers=None):
     if account is not None:
-        client.headers["X-Account"] = str(account)
+        client.headers["X-Test-Act-As"] = str(account)
     r = client.get("/api/gmail/connect", headers=headers or {})
     assert r.status_code == 200, r.text
     url = r.json()["url"]
@@ -113,7 +113,7 @@ def _connect(client, account=None, headers=None):
 
 def _callback(client, **params):
     client.headers.pop("X-API-Key", None)          # Google's redirect carries no key
-    client.headers.pop("X-Account", None)
+    client.headers.pop("X-Test-Act-As", None)
     return client.get("/api/gmail/callback", params=params, follow_redirects=False)
 
 
@@ -253,14 +253,14 @@ def test_status_per_account(client, test_db, accounts):
     a, b = accounts
     assert client.get("/api/gmail/status").json() == {"status": "none", "source": None, "configured": True}
     _put(test_db, "gmail_refresh_token", "tok-b", b)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.get("/api/gmail/status").json() == {"status": "connected", "source": "account", "configured": True}
     _put(test_db, ga.STATUS_KEY, f"expired:{ga.fingerprint('tok-b')}", b)
     assert client.get("/api/gmail/status").json()["status"] == "expired"
     # the marker belongs to that token only: a new token is connected again
     _put(test_db, "gmail_refresh_token", "tok-b2", b)
     assert client.get("/api/gmail/status").json()["status"] == "connected"
-    client.headers["X-Account"] = str(a)
+    client.headers["X-Test-Act-As"] = str(a)
     assert client.get("/api/gmail/status").json()["status"] == "none"
 
 
@@ -272,7 +272,7 @@ def test_owner_falls_back_to_the_env_token_members_never_do(client, test_db, acc
         assert ga.resolve_token(test_db) == ("env-tok", "env")
     with use_account(b):
         assert ga.resolve_token(test_db) == ("", None)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.get("/api/gmail/status").json()["status"] == "none"
     # a stored owner token wins over .env
     _put(test_db, "gmail_refresh_token", "owner-tok")
@@ -284,7 +284,7 @@ def test_disconnect_clears_only_the_callers_token(client, test_db, accounts):
     a, b = accounts
     _put(test_db, "gmail_refresh_token", "owner-tok")
     _put(test_db, "gmail_refresh_token", "tok-b", b)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     r = client.post("/api/gmail/disconnect")
     assert r.status_code == 200 and r.json()["status"] == "none"
     assert _row(test_db, "gmail_refresh_token", b).value == ""

@@ -14,7 +14,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     # MT-10 account selection: covered by test_mt_auth.py
     ("GET", "/api/auth/accounts"): "the picker lists every account (id, name, colour, role, has_pin) by design",
     ("POST", "/api/auth/switch"): "switches this browser's own cookie; PIN rules in test_mt_auth.py",
-    ("POST", "/api/auth/verify-pin"): "checks a PIN, sets no cookie, changes nothing (MT-18); test_mt_extension.py",
+    ("POST", "/api/auth/verify-pin"): "checks a PIN, sets no cookie, changes nothing, returns that account's API token (MT-18, QA F1); test_mt_extension.py",
     ("GET", "/api/auth/me"): "the caller's own account; test_mt_auth.py",
     ("POST", "/api/auth/verify-owner-pin"): "re-signs the caller's own cookie; test_mt_auth.py",
     ("GET", "/health"): "liveness probe, no user data",
@@ -27,6 +27,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("PATCH", "/api/accounts/{account_id}"): "owner renames / resets PINs of other accounts by design; member->other 403 in test_mt_accounts_api.py",
     ("DELETE", "/api/accounts/{account_id}"): "owner removes a member by design (typed name, backup first); member 403 in test_mt_accounts_api.py",
     ("GET", "/api/accounts/{account_id}/export"): "owner exports any account by design; member->other 403 in test_mt_accounts_api.py",
+    ("POST", "/api/accounts/{account_id}/api-token"): "the caller's own account only (owner->member and member->owner 403); test_mt_auth.py, test_qa_r2_01.py",
 
     # MT-20 "Copy from…": the pickers intentionally list OTHER accounts' company/search rows
     # (picker fields only: no notes, jobs or counts). test_mt_clone.py covers the visibility rules.

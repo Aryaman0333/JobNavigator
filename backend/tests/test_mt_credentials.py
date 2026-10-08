@@ -192,7 +192,7 @@ def test_streaming_route_over_http_runs_as_the_member(client, test_db, two_confi
         yield "drafted"
 
     monkeypatch.setattr(L, "_stream_claude", fake_stream)
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     r = client.post("/api/autofill/answer/stream", json={"question": "Why us?", "company": "Acme"})
     assert r.status_code == 200, r.text
     assert "drafted" in r.text
@@ -519,7 +519,7 @@ def test_model_catalog_cache_is_keyed_by_the_api_key(client, test_db, accounts, 
 
     monkeypatch.setattr(rl, "_fetch_openai", fake_fetch)
     assert client.get("/api/llm/models?provider=openai").json()["models"] == [{"id": "gpt-sk-owner"}]
-    client.headers["X-Account"] = str(b)
+    client.headers["X-Test-Act-As"] = str(b)
     assert client.get("/api/llm/models?provider=openai").json()["models"] == [{"id": "gpt-sk-member"}]
     assert client.get("/api/llm/models?provider=openai").json()["cached"] is True
     assert fetched == ["sk-owner", "sk-member"]

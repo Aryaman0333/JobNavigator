@@ -10,6 +10,8 @@ Roles: one owner, up to four members (MAX_ACCOUNTS = 5 in total).
 - DELETE /accounts/{account_id}    owner only; never the owner or the caller; typed name;
                                    pg_dump first (abort when it fails); itemised counts.
 - GET    /accounts/{account_id}/export   owner: any account; member: itself. Zip of JSON.
+- POST   /accounts/{account_id}/api-token   the caller's own account only (QA F1): a signed
+                                   `X-Account-Token` for scripts.
 
 PIN (body key `pin`: 4 digits = set/change, null or "" = remove):
 - on oneself, `current_pin` is required when a PIN is set (wrong -> 401 `wrong_pin`, with
@@ -314,6 +316,20 @@ def delete_account(account_id: str, body: dict = Body(None), db: Session = Depen
     logger.warning("account removed: %s (%s) after backup %s: %s",
                    target["id"], target["name"], backup, deleted)
     return {"deleted": deleted, "backup": backup, "account": {"id": str(target["id"]), "name": target["name"]}}
+
+
+# ── POST /accounts/{id}/api-token ────────────────────────────────────────────
+
+@router.post("/{account_id}/api-token")
+def issue_api_token(account_id: str, db: Session = Depends(get_db)):
+    """The caller's own account only (403 `own_account_only` for any other, the owner included: to get another account's token, switch to it first). Returns `{token, account, expires_in}`: a signed API token for scripts, sent as the `X-Account-Token` header together with the install key. Valid for a year; setting, changing or removing the account's PIN, or removing the account, invalidates it."""
+    accounts = _accounts(db)
+    caller = _caller(accounts)
+    target = _target_or_404(accounts, account_id)
+    if caller is None or target["id"] != caller["id"]:
+        raise HTTPException(status_code=403, detail="own_account_only")
+    return {"token": acct_auth.make_api_token(db, target), "account": acct_auth.public_account(target),
+            "expires_in": acct_auth.TOKEN_MAX_AGE}
 
 
 # ── GET /accounts/{id}/export ────────────────────────────────────────────────

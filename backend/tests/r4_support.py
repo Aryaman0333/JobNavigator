@@ -29,6 +29,35 @@ LEAK_MARKERS = (
 
 API_KEY = "r4-test-key"
 
+# Test-only header: the `client` hook swaps it for a freshly minted X-Account-Token of
+# that account before the request leaves (never reaches the server). An explicit
+# X-Account-Token on the request wins; an unknown account id sends no token.
+ACT_AS = "X-Test-Act-As"
+
+
+def account_token(account_id) -> str:
+    """A valid API token for `account_id` as of now (its current PIN fingerprint)."""
+    import backend.models.db as db_mod
+    from backend.accounts import auth as A
+    s = db_mod.SessionLocal()
+    try:
+        acc = A._find(A.load_accounts(s), account_id)
+        if acc is None:
+            raise LookupError(f"no account {account_id}")
+        return A.make_api_token(s, acc)
+    finally:
+        s.close()
+
+
+def _act_as_hook(request):
+    target = request.headers.pop(ACT_AS, None)
+    if not target or request.headers.get("X-Account-Token"):
+        return
+    try:
+        request.headers["X-Account-Token"] = account_token(target)
+    except LookupError:
+        pass
+
 
 @pytest.fixture
 def client(test_db, monkeypatch):
@@ -76,11 +105,18 @@ def client(test_db, monkeypatch):
         with TestClient(app, raise_server_exceptions=False) as c:
             c.headers.update({"X-API-Key": API_KEY})
             # MT-10: a test that adds a second account would otherwise get 401
-            # account_required; act as the owner through the API path (X-Account).
+            # account_required; act as the owner through the API path. QA F1: the API
+            # path is the signed X-Account-Token; `ACT_AS` names the account and the
+            # request hook mints a fresh token for it on every request (so a test that
+            # sets a PIN afterwards keeps working). Pop ACT_AS for the browser path.
             from backend.models.db import Account
             owner = test_db.query(Account.id).filter(Account.role == "owner").first()
             if owner is not None:
-                c.headers.update({"X-Account": str(owner[0])})
+                c.headers.update({ACT_AS: str(owner[0])})
+                # create + cache the signing secret now, so a test that later breaks
+                # Session.commit does not break the hook's first mint
+                account_token(owner[0])
+            c.event_hooks = {"request": [_act_as_hook], "response": []}
             yield c
     finally:
         app.dependency_overrides.pop(get_db, None)

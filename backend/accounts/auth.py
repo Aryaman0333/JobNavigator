@@ -5,11 +5,17 @@ Three layers, checked by the HTTP middleware in `backend.main` in this order:
 1. Install password: `dashboard_api_key`, sent as the `X-API-Key` header or the
    `jn_session` cookie (unchanged since before multi-tenancy).
 2. Account: which account the request acts for.
-   * `X-Account: <account uuid>` header, honoured only together with the `X-API-Key`
-     header (API clients, the extension). No PIN, per spec. Unknown id -> 401
-     `{"detail": "invalid_account"}`.
+   * `X-Account-Token: <signed API token>` header (API clients, the extension, scripts).
+     The token is issued once the account is chosen, after its PIN when it has one:
+     `POST /api/auth/verify-pin` (the extension) or `POST /api/accounts/{id}/api-token`
+     (Settings › Your account, the caller's own account only). A present token that is
+     tampered, expired, of the wrong kind, for a removed account or issued before the
+     account's PIN changed -> 401 `{"detail": "invalid_account_token"}` (the extension
+     then forgets it). QA F1 / R2-01: a bare `X-Account: <id>` header is ignored; an
+     account id is public (the picker lists it), so it never selects an account.
    * else the signed `jn_account` cookie, issued by `POST /api/auth/switch`. Each
-     browser holds its own; the server keeps no "current account".
+     browser holds its own; the server keeps no "current account". The dashboard
+     uses only this cookie, never an account header.
    * else, with exactly one account, the owner (a single-user install never sees a picker).
    * else 401 `{"detail": "account_required"}` (plus header `X-JN-Auth: account`), which
      the UI turns into the account picker. A tampered, expired or stale cookie counts as
@@ -25,7 +31,15 @@ section 'system' = owner only, never returned by GET /api/settings, not writable
 PATCH). "p" is the first 16 hex chars of sha256(pin_hash) (empty without a PIN), so
 setting, changing or removing an account's PIN invalidates every cookie issued for it.
 "u" is set by `POST /api/auth/verify-owner-pin` (15 minutes); the middleware exposes it
-as `request.state.owner_unlocked_until` for the owner-PIN unlock of MT-14.
+as `request.state.owner_unlocked_until` for the owner-PIN unlock of MT-14. New cookies
+also carry "k": "cookie" (cookies issued before QA F1 have no "k" and still count as
+cookies).
+
+API token (`X-Account-Token`) = the same `<payload>.<sig>` shape signed with the same
+secret: payload = {"k": "api", "a": account id, "p": PIN fingerprint, "i": issued at,
+"e": expiry = i + 1 year}. "k" keeps the two apart: a cookie value is never accepted as
+a token and a token never as a cookie. A token carries no owner unlock. Like the cookie,
+setting, changing or removing the account's PIN invalidates every token issued for it.
 
 PIN hashes: `scrypt$<n>$<r>$<p>$<salt hex>$<hash hex>` (hashlib.scrypt, 16-byte random
 salt per hash; no bcrypt/argon2 in requirements.txt).
@@ -51,11 +65,16 @@ COOKIE_MAX_AGE = 60 * 60 * 24 * 30          # same lifetime as jn_session
 SECRET_KEY = "account_cookie_secret"
 OWNER_UNLOCK_SECONDS = 15 * 60
 
+TOKEN_HEADER = "X-Account-Token"
+TOKEN_MAX_AGE = 60 * 60 * 24 * 365           # API token: one year
+KIND_COOKIE = "cookie"
+KIND_API = "api"
+
 PIN_MAX_FAILURES = 5
 PIN_COOLDOWN_SECONDS = 30.0
 
 ACCOUNT_REQUIRED = "account_required"
-INVALID_ACCOUNT = "invalid_account"
+INVALID_ACCOUNT_TOKEN = "invalid_account_token"
 AUTH_HEADER = "X-JN-Auth"                    # value "account" on an account_required 401
 
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
@@ -195,7 +214,7 @@ def sign_cookie(secret: bytes, payload: dict) -> str:
 
 def read_cookie(secret: bytes, value: Optional[str]) -> Optional[dict]:
     """The payload of a well-signed, unexpired cookie, else None."""
-    if not value or not isinstance(value, str) or value.count(".") != 1:
+    if not value or not isinstance(value, str) or value.count(".") != 1 or not value.isascii():
         return None
     body, sig = value.split(".")
     expected = _b64(hmac.new(secret, body.encode(), hashlib.sha256).digest())
@@ -213,7 +232,7 @@ def read_cookie(secret: bytes, value: Optional[str]) -> Optional[dict]:
 
 
 def make_cookie_value(db, account: dict, unlocked_until: float = 0) -> str:
-    payload = {"a": str(account["id"]), "p": pin_fingerprint(account["pin_hash"]),
+    payload = {"k": KIND_COOKIE, "a": str(account["id"]), "p": pin_fingerprint(account["pin_hash"]),
                "e": int(_now() + COOKIE_MAX_AGE), "u": int(unlocked_until or 0)}
     return sign_cookie(cookie_secret(db), payload)
 
@@ -241,12 +260,39 @@ def account_from_cookie(db, accounts: list, value: Optional[str]):
     if not value:
         return None, None
     payload = read_cookie(cookie_secret(db), value)
-    if payload is None:
+    if payload is None or payload.get("k", KIND_COOKIE) != KIND_COOKIE:
         return None, None
     acc = _find(accounts, payload.get("a"))
     if acc is None or payload.get("p", "") != pin_fingerprint(acc["pin_hash"]):
         return None, None
     return acc, payload
+
+
+# ── API token (X-Account-Token) ──────────────────────────────────────────────
+
+def make_api_token(db, account: dict) -> str:
+    """A signed per-account API token (module docstring). Issue it only after the
+    caller has proven the account: its PIN when it has one, or an existing session
+    for that same account."""
+    now = int(_now())
+    payload = {"k": KIND_API, "a": str(account["id"]), "p": pin_fingerprint(account["pin_hash"]),
+               "i": now, "e": now + TOKEN_MAX_AGE}
+    return sign_cookie(cookie_secret(db), payload)
+
+
+def account_from_token(db, accounts: list, value: Optional[str]) -> Optional[dict]:
+    """The account of a well-signed, unexpired API token whose account still exists and
+    whose PIN has not changed since it was issued, else None. A cookie value is not a
+    token."""
+    if not value:
+        return None
+    payload = read_cookie(cookie_secret(db), value.strip())
+    if payload is None or payload.get("k") != KIND_API:
+        return None
+    acc = _find(accounts, payload.get("a"))
+    if acc is None or payload.get("p", "") != pin_fingerprint(acc["pin_hash"]):
+        return None
+    return acc
 
 
 # ── Request resolution ───────────────────────────────────────────────────────
@@ -258,21 +304,22 @@ class Resolution:
         self.account = account
         self.error = error
         self.unlocked_until = unlocked_until
-        self.via = via   # 'header' | 'cookie' | 'single' | None
+        self.via = via   # 'token' | 'cookie' | 'single' | None
 
 
-def resolve_request(db, x_account: Optional[str], header_key_ok: bool, cookie: Optional[str]) -> Resolution:
-    """Which account a request acts for (module docstring, layer 2).
+def resolve_request(db, token: Optional[str], cookie: Optional[str]) -> Resolution:
+    """Which account a request acts for (module docstring, layer 2). Runs after the
+    install password has been checked (header or jn_session cookie).
 
-    `header_key_ok`: the install key arrived in the X-API-Key header (or no key is
-    configured). X-Account without it is ignored, so a browser holding only the
-    jn_session cookie cannot pick an account without the PIN step."""
+    A present `X-Account-Token` decides alone: valid -> its account, anything else ->
+    `invalid_account_token` (never a fallback to the cookie or the owner). A bare
+    `X-Account` header is not read at all."""
     accounts = load_accounts(db)
-    if x_account and header_key_ok:
-        acc = _find(accounts, x_account.strip())
+    if token:
+        acc = account_from_token(db, accounts, token)
         if acc is None:
-            return Resolution(error=INVALID_ACCOUNT)
-        return Resolution(account=acc, via="header")
+            return Resolution(error=INVALID_ACCOUNT_TOKEN)
+        return Resolution(account=acc, via="token")
     acc, payload = account_from_cookie(db, accounts, cookie)
     if acc is not None:
         return Resolution(account=acc, unlocked_until=float(payload.get("u") or 0), via="cookie")

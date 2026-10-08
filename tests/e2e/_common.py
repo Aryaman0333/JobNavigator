@@ -304,3 +304,22 @@ def stray_zze():
 
 def api_ok(st):
     return 200 <= st < 300
+
+
+def account_token(account, pin=None):
+    """QA F1: the API path acts for an account only through a signed X-Account-Token,
+    issued by POST /api/auth/verify-pin (the extension's call). `pin` may be the account's
+    PIN or, for a member, the owner's; an account without a PIN ignores it. A fresh token
+    per call, so a PIN change in the middle of a case never leaves a stale one behind."""
+    import urllib.error
+    import urllib.request
+    body = {'account_id': str(account)}
+    if pin:
+        body['pin'] = pin
+    req = urllib.request.Request(BASE + '/api/auth/verify-pin', data=json.dumps(body).encode(), method='POST',
+                                 headers={'X-API-Key': KEY, 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())['token']
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f'verify-pin for {account}: {e.code} {e.read()[:200]!r}')

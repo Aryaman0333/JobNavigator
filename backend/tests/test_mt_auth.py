@@ -1,7 +1,8 @@
 """MT-10 · Install password -> account -> PIN; the per-browser `jn_account` cookie.
 
-`client` (r4_support) sends the install key as X-API-Key and, by default, X-Account for
-the owner; the browser-path tests drop X-Account and go through POST /api/auth/switch.
+`client` (r4_support) sends the install key as X-API-Key and, by default, a signed
+X-Account-Token for the owner (r4_support.ACT_AS); the browser-path tests drop it and go
+through POST /api/auth/switch. QA F1 (R2-01): the token tests and the bare-X-Account tests.
 """
 import base64
 import json
@@ -36,8 +37,8 @@ def _set_pin(db, acc, pin):
 
 @pytest.fixture
 def browser(client):
-    """The browser path: install key, no X-Account header."""
-    client.headers.pop("X-Account", None)
+    """The browser path: install key, no account token."""
+    client.headers.pop("X-Test-Act-As", None)
     client.cookies.clear()
     return client
 
@@ -93,7 +94,7 @@ def test_single_account_ignores_a_bad_cookie(browser, owner):
 
 
 def test_jn_session_cookie_alone_still_works_with_one_account(client, owner):
-    client.headers.pop("X-Account", None)
+    client.headers.pop("X-Test-Act-As", None)
     client.headers.pop("X-API-Key", None)
     assert client.get("/api/jobs").status_code == 401                 # no key at all
     client.cookies.set("jn_session", API_KEY)
@@ -262,10 +263,10 @@ def test_cookie_is_signed_with_the_install_secret(browser, test_db, owner):
     browser.cookies.set("jn_account", forged)
     assert browser.get("/api/jobs").status_code == 401
     # never served, not writable
-    settings = browser.get("/api/settings", headers={"X-Account": str(owner.id)}).json()
+    settings = browser.get("/api/settings", headers={"X-Test-Act-As": str(owner.id)}).json()
     assert "account_cookie_secret" not in settings
     r = browser.patch("/api/settings", json={"account_cookie_secret": "x"},
-                      headers={"X-Account": str(owner.id)})
+                      headers={"X-Test-Act-As": str(owner.id)})
     assert r.status_code == 400
 
 
@@ -290,40 +291,190 @@ def test_cookie_dies_with_a_pin_change_or_the_account(browser, test_db):
     assert browser.get("/api/jobs").json() == {"detail": "account_required"}
 
 
-# ── the API path: X-Account ──────────────────────────────────────────────────
+# ── the API path: X-Account-Token (QA F1 / R2-01) ────────────────────────────
 
-def test_x_account_header_selects_the_account_without_pin(client, test_db, owner):
+TOKEN = "X-Account-Token"
+
+
+def _token(c, account_id, pin=None):
+    """The extension's way to a token: POST /api/auth/verify-pin."""
+    body = {"account_id": str(account_id)}
+    if pin is not None:
+        body["pin"] = pin
+    r = c.post("/api/auth/verify-pin", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def _me_with(c, token):
+    return c.get("/api/auth/me", headers={TOKEN: token})
+
+
+def test_token_selects_the_account(browser, test_db, owner):
     m = _member(test_db, pin="4321")
-    client.headers["X-Account"] = str(m.id)
-    assert _me(client).json()["account"]["id"] == str(m.id)
-    client.headers["X-Account"] = str(owner.id)
-    assert _me(client).json()["account"]["id"] == str(owner.id)
-    # the header wins over a cookie
-    client.headers.pop("X-Account")
-    _switch(client, owner.id)
-    assert _me(client).json()["account"]["role"] == "owner"
-    assert client.get("/api/auth/me", headers={"X-Account": str(m.id)}).json()["account"]["id"] == str(m.id)
+    tm, to = _token(browser, m.id, "4321"), _token(browser, owner.id)
+    assert _me_with(browser, tm).json()["account"]["id"] == str(m.id)
+    assert _me_with(browser, to).json()["account"]["id"] == str(owner.id)
+    # a present token decides even when the browser holds a cookie for another account
+    _switch(browser, owner.id)
+    assert _me(browser).json()["account"]["role"] == "owner"
+    assert _me_with(browser, tm).json()["account"]["id"] == str(m.id)
+    # a token carries no owner unlock
+    assert _me_with(browser, tm).json()["owner_unlocked_until"] is None
 
 
-@pytest.mark.parametrize("value", ["not-a-uuid", str(uuid.uuid4())])
-def test_invalid_x_account_is_401(client, test_db, value):
-    _member(test_db)
-    client.headers["X-Account"] = value
-    r = client.get("/api/jobs")
-    assert (r.status_code, r.json()) == (401, {"detail": "invalid_account"})
-    # even with one account
-    test_db.query(Account).filter(Account.role == "member").delete()
-    test_db.commit()
-    assert client.get("/api/jobs").status_code == 401
-
-
-def test_x_account_needs_the_header_key_not_just_the_session_cookie(client, test_db):
+def test_token_payload_kind_issued_and_one_year_expiry(browser, test_db):
     m = _member(test_db)
+    before = int(time.time())
+    tok = _token(browser, m.id)
+    secret = test_db.query(Setting).filter(Setting.key == "account_cookie_secret",
+                                           Setting.account_id.is_(None)).one().value
+    p = A.read_cookie(secret.encode(), tok)
+    assert p["k"] == "api" and p["a"] == str(m.id) and p["p"] == ""
+    assert before <= p["i"] <= int(time.time())
+    assert p["e"] == p["i"] + A.TOKEN_MAX_AGE == p["i"] + 365 * 24 * 3600
+    assert "u" not in p
+
+
+def test_bare_x_account_is_ignored(browser, test_db, owner):
+    """A bare account id never selects an account: it acts as if it were absent."""
+    m = _member(test_db, pin="4321")
+    _set_pin(test_db, owner, "9999")
+    # no cookie: the picker, never the named account
+    r = browser.get("/api/auth/me", headers={"X-Account": str(owner.id)})
+    assert (r.status_code, r.json()) == (401, {"detail": "account_required"})
+    # with the member's cookie: still the member
+    assert _switch(browser, m.id, "4321").status_code == 200
+    me = browser.get("/api/auth/me", headers={"X-Account": str(owner.id)}).json()
+    assert me["account"]["id"] == str(m.id)
+    # a junk id is no longer a 401 either: it is simply not read
+    assert browser.get("/api/jobs", headers={"X-Account": "not-a-uuid"}).status_code == 200
+
+
+def test_bare_x_account_with_one_account_is_the_owner_path(browser, test_db, owner):
+    r = browser.get("/api/auth/me", headers={"X-Account": str(uuid.uuid4())})
+    assert r.status_code == 200 and r.json()["account"]["id"] == str(owner.id)
+
+
+def test_invalid_token_is_401_and_never_falls_back(browser, test_db, owner, monkeypatch):
+    m = _member(test_db)
+    good = _token(browser, m.id)
+    secret = test_db.query(Setting).filter(Setting.key == "account_cookie_secret",
+                                           Setting.account_id.is_(None)).one().value
+    payload = A.read_cookie(secret.encode(), good)
+    bad = {
+        "garbage": "garbage",
+        "no_signature": good.split(".")[0],
+        "signature_changed": good[:-2] + ("AA" if not good.endswith("AA") else "BB"),
+        "other_secret": A.sign_cookie(b"other-key", payload),
+        "unknown_account": A.sign_cookie(secret.encode(), {**payload, "a": str(uuid.uuid4())}),
+        "expired": A.sign_cookie(secret.encode(), {**payload, "e": int(time.time()) - 1}),
+        "non_ascii": b"a.\xe9\xe9",                       # latin-1 bytes on the wire
+    }
+    _switch(browser, owner.id)                               # a valid cookie is present too
+    for name, value in bad.items():
+        r = browser.get("/api/jobs", headers={TOKEN: value})
+        assert (r.status_code, r.json()) == (401, {"detail": "invalid_account_token"}), name
+    assert browser.get("/api/jobs", headers={TOKEN: good}).status_code == 200
+    # the one-account owner fallback does not apply to a bad token either
+    test_db.delete(m)
+    test_db.commit()
+    r = browser.get("/api/jobs", headers={TOKEN: good})
+    assert (r.status_code, r.json()) == (401, {"detail": "invalid_account_token"})
+
+
+def test_token_for_a_cannot_act_as_b(browser, test_db, owner):
+    a = _member(test_db, name="A")
+    b = _member(test_db, name="B", pin="5555")
+    ta = _token(browser, a.id)
+    for target in (b.id, owner.id):
+        r = _me_with(browser, _forge(ta, a=str(target)))
+        assert (r.status_code, r.json()) == (401, {"detail": "invalid_account_token"})
+    assert _me_with(browser, ta).json()["account"]["id"] == str(a.id)
+
+
+def test_pin_change_invalidates_the_token(browser, test_db, owner):
+    m = _member(test_db)
+    t0 = _token(browser, m.id)                               # issued without a PIN
+    _set_pin(test_db, m, "1234")                             # PIN set
+    assert _me_with(browser, t0).status_code == 401
+    t1 = _token(browser, m.id, "1234")
+    _set_pin(test_db, m, "4321")                             # PIN changed
+    assert _me_with(browser, t1).json() == {"detail": "invalid_account_token"}
+    t2 = _token(browser, m.id, "4321")
+    _set_pin(test_db, m, None)                               # PIN removed
+    assert _me_with(browser, t2).status_code == 401
+    assert _me_with(browser, _token(browser, m.id)).status_code == 200
+
+
+def test_owner_pin_reset_through_the_api_invalidates_the_members_token(browser, test_db, owner):
+    m = _member(test_db, pin="4321")
+    tm = _token(browser, m.id, "4321")
+    browser.headers["X-Test-Act-As"] = str(owner.id)
+    assert browser.patch(f"/api/accounts/{m.id}", json={"pin": "1111"}).status_code == 200
+    browser.headers.pop("X-Test-Act-As")
+    assert _me_with(browser, tm).json() == {"detail": "invalid_account_token"}
+
+
+def test_cookie_value_is_not_a_token_and_a_token_is_not_a_cookie(browser, test_db, owner):
+    m = _member(test_db)
+    assert _switch(browser, m.id).status_code == 200
+    cookie = browser.cookies.get("jn_account")
+    browser.cookies.clear()
+    r = _me_with(browser, cookie)
+    assert (r.status_code, r.json()) == (401, {"detail": "invalid_account_token"})
+    token = _token(browser, m.id)
+    browser.cookies.set("jn_account", token)
+    assert _me(browser).json() == {"detail": "account_required"}
+    # a cookie issued before QA F1 (no "k") still works as a cookie, never as a token
+    secret = test_db.query(Setting).filter(Setting.key == "account_cookie_secret",
+                                           Setting.account_id.is_(None)).one().value
+    legacy = A.sign_cookie(secret.encode(), {"a": str(m.id), "p": "", "e": int(time.time()) + 60, "u": 0})
+    browser.cookies.clear()
+    browser.cookies.set("jn_account", legacy)
+    assert _me(browser).json()["account"]["id"] == str(m.id)
+    browser.cookies.clear()
+    assert _me_with(browser, legacy).status_code == 401
+
+
+def test_token_works_with_the_session_cookie_as_install_password(client, test_db):
+    m = _member(test_db)
+    tok = _token(client, m.id)
     client.headers.pop("X-API-Key")
-    client.headers["X-Account"] = str(m.id)
+    client.headers.pop("X-Test-Act-As", None)
     client.cookies.set("jn_session", API_KEY)
-    # a browser holding only jn_session cannot skip the picker/PIN with a header
-    assert client.get("/api/jobs").json() == {"detail": "account_required"}
+    assert _me_with(client, tok).json()["account"]["id"] == str(m.id)
+    # the install password still comes first
+    client.cookies.clear()
+    assert _me_with(client, tok).json() == {"detail": "API key required"}
+
+
+def test_api_token_endpoint_own_account_only(browser, test_db, owner):
+    m = _member(test_db, pin="4321")
+    _switch(browser, m.id, "4321")
+    r = browser.post(f"/api/accounts/{m.id}/api-token")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["account"]["id"] == str(m.id) and body["expires_in"] == A.TOKEN_MAX_AGE
+    browser.cookies.clear()
+    assert _me_with(browser, body["token"]).json()["account"]["id"] == str(m.id)
+    # a member cannot mint the owner's
+    _switch(browser, m.id, "4321")
+    assert browser.post(f"/api/accounts/{owner.id}/api-token").json() == {"detail": "own_account_only"}
+    # ...and the owner cannot mint a member's (switch to it first)
+    browser.cookies.clear()
+    _switch(browser, owner.id)
+    r = browser.post(f"/api/accounts/{m.id}/api-token")
+    assert (r.status_code, r.json()) == (403, {"detail": "own_account_only"})
+    assert browser.post(f"/api/accounts/{uuid.uuid4()}/api-token").status_code == 404
+    own = browser.post(f"/api/accounts/{owner.id}/api-token").json()["token"]
+    browser.cookies.clear()
+    assert _me_with(browser, own).json()["account"]["role"] == "owner"
+
+
+def test_api_token_endpoint_with_one_account(browser, owner):
+    r = browser.post(f"/api/accounts/{owner.id}/api-token")
+    assert r.status_code == 200 and _me_with(browser, r.json()["token"]).json()["account"]["id"] == str(owner.id)
 
 
 # ── member restrictions ──────────────────────────────────────────────────────
@@ -357,7 +508,7 @@ def test_member_cannot_start_install_level_jobs(browser, test_db, no_launch, met
     r = browser.request(method, path, json=body)
     assert (r.status_code, r.json()) == (403, {"detail": "owner_only"})
     # also through the API path
-    r = browser.request(method, path, json=body, headers={"X-Account": str(m.id)})
+    r = browser.request(method, path, json=body, headers={"X-Test-Act-As": str(m.id)})
     assert r.status_code == 403
     assert no_launch == []
 

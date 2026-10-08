@@ -22,7 +22,7 @@ each (method, route):
   * a 5xx answer fails the case as inconclusive: an erroring route proves nothing.
 
 Since MT-10 every case runs in both directions through the real auth paths: the owner
-calls with the `X-Account` header (API path) against the member's rows, and the member
+calls with a signed `X-Account-Token` (API path) against the member's rows, and the member
 calls with the signed `jn_account` cookie issued by POST /api/auth/switch (browser path)
 against the owner's rows. In each direction "A" is the caller and "B" the victim.
 
@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 from backend.accounts.context import unscoped, use_account
 from backend.tests.mt_leak_allowlist import ALLOWLIST
-from backend.tests.r4_support import _clear_running_state, _no_outbound, client  # noqa: F401 (fixtures)
+from backend.tests.r4_support import _clear_running_state, _no_outbound, account_token, client  # noqa: F401 (fixtures)
 
 MARKER = "ZZB-LEAK-7Q3X"          # in every text field of B's rows
 A_TEXT = "a-own-row"               # A's rows: no marker
@@ -525,9 +525,11 @@ def _act_as(client, direction, caller_id):
     """Make `client` act as the caller through a real MT-10 auth path."""
     if direction == "owner-via-header":
         client.cookies.clear()
-        client.headers["X-Account"] = str(caller_id)
+        client.headers.pop("X-Test-Act-As", None)
+        client.headers["X-Account-Token"] = account_token(caller_id)
     else:
-        client.headers.pop("X-Account", None)
+        client.headers.pop("X-Test-Act-As", None)
+        client.headers.pop("X-Account-Token", None)
         r = client.post("/api/auth/switch", json={"account_id": str(caller_id)})
         assert r.status_code == 200, r.text
         assert client.cookies.get("jn_account")
@@ -539,7 +541,7 @@ def _act_as(client, direction, caller_id):
 @pytest.mark.parametrize("method,path", _route_cases())
 def test_route_does_not_leak_b(method, path, direction, client, test_db, accounts, launches):
     """Caller A, victim B (B's rows carry MARKER). owner-via-header: A = owner with the
-    X-Account header, B = member. member-via-cookie: A = member with the jn_account
+    X-Account-Token, B = member. member-via-cookie: A = member with the jn_account
     cookie from POST /api/auth/switch, B = owner."""
     owner_id, member_id = accounts
     a_id, b_id = (owner_id, member_id) if direction == DIRECTIONS[0] else (member_id, owner_id)

@@ -1,7 +1,7 @@
 """MT-11 · Accounts API: list, create (+ copy-from), PATCH (name, colour, PIN), DELETE, export.
 
-`client` (r4_support) acts as the owner through the API path (X-API-Key + X-Account); a
-member call swaps the X-Account header; the cookie tests go through POST /api/auth/switch.
+`client` (r4_support) acts as the owner through the API path (X-API-Key + X-Account-Token); a
+member call swaps the act-as header (r4_support.ACT_AS); the cookie tests go through POST /api/auth/switch.
 """
 import io
 import json
@@ -55,7 +55,7 @@ def _member(db, name="Partner", pin=None, color="#2e9e6b"):
 
 def _as(c, account_id):
     c.cookies.clear()
-    c.headers["X-Account"] = str(account_id)
+    c.headers["X-Test-Act-As"] = str(account_id)
     return c
 
 
@@ -434,7 +434,7 @@ def test_own_pin_change_needs_current_pin_and_reissues_the_cookie(client, test_d
     owner.pin_hash = A.hash_pin(OWNER_PIN)
     test_db.commit()
     browser = client
-    browser.headers.pop("X-Account", None)
+    browser.headers.pop("X-Test-Act-As", None)
     r = browser.post("/api/auth/switch", json={"account_id": str(m.id), "pin": "1111"})
     assert r.status_code == 200
     old_cookie = browser.cookies.get("jn_account")
@@ -556,13 +556,13 @@ def test_delete_refused_while_the_account_has_running_work(client, test_db, owne
 
 def test_deleted_account_cookie_stops_working(client, test_db, owner, owner_pin):
     m = _member(test_db, name="Partner")
-    client.headers.pop("X-Account", None)
+    client.headers.pop("X-Test-Act-As", None)
     assert client.post("/api/auth/switch", json={"account_id": str(m.id)}).status_code == 200
     cookie = client.cookies.get("jn_account")
     client.cookies.clear()
-    client.headers["X-Account"] = str(owner.id)
+    client.headers["X-Test-Act-As"] = str(owner.id)
     assert client.request("DELETE", f"/api/accounts/{m.id}", json={"confirm_name": "Partner"}).status_code == 200
-    client.headers.pop("X-Account", None)
+    client.headers.pop("X-Test-Act-As", None)
     client.cookies.set("jn_account", cookie)
     # one account left: the install falls back to the owner, not to the removed member
     assert client.get("/api/auth/me").json()["account"]["id"] == str(owner.id)
@@ -651,7 +651,7 @@ def test_last_active_at_is_stamped_at_most_once_a_minute(client, test_db, owner,
 def test_adding_the_second_account_pins_the_owners_browser(client, test_db, owner, owner_pin):
     """MT-13: the owner's browser had no jn_account cookie (one account = the owner); after
     adding a member it keeps acting as the owner instead of landing on the picker."""
-    client.headers.pop("X-Account", None)
+    client.headers.pop("X-Test-Act-As", None)
     client.cookies.clear()
     assert client.get("/api/auth/me").json()["account"]["id"] == str(owner.id)
     r = client.post("/api/accounts", json={"name": "Alex"})

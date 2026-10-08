@@ -104,22 +104,25 @@ function backupToSession() {
   chrome.storage.session.set({ linkedinCapturedIds: Array.from(capturedIds) });
 }
 
-// MT-18: the account every backend call acts for. Chosen (and PIN-checked) in the popup,
-// kept in chrome.storage.local (per browser profile, not synced). Nothing stored = no
-// X-Account header (a one-account server then uses its owner, as before).
+// MT-18 / QA F1: the account every backend call acts for. Chosen (and PIN-checked) in the
+// popup, which stores the signed API token the server issued for it (POST
+// /api/auth/verify-pin) in chrome.storage.local (per browser profile, not synced) next to
+// the id it shows. Nothing stored = no X-Account-Token header (a one-account server then
+// uses its owner, as before). A bare account id is never sent: the server ignores it.
 async function addAccountHeader(headers) {
-  const { accountId } = await chrome.storage.local.get('accountId');
-  if (accountId) headers['X-Account'] = accountId;
+  const { accountToken } = await chrome.storage.local.get('accountToken');
+  if (accountToken) headers['X-Account-Token'] = accountToken;
   return headers;
 }
 
-// 401 invalid_account = that account was removed: forget it; the popup says "pick again".
+// 401 invalid_account_token = the account was removed, its PIN changed, or the token
+// expired: forget it; the popup says "pick again".
 async function noteAccountGone(resp) {
   if (resp.status !== 401) return;
   try {
     const d = await resp.clone().json();
-    if (d && d.detail === 'invalid_account') {
-      await chrome.storage.local.remove('accountId');
+    if (d && d.detail === 'invalid_account_token') {
+      await chrome.storage.local.remove(['accountId', 'accountToken']);
       await chrome.storage.local.set({ accountRemoved: true });
     }
   } catch (_) { /* not JSON */ }

@@ -123,55 +123,62 @@ const state = {
   theme: 'system',
   liInfo: false, afInfo: false, charsOpen: false, urlOpen: false,
   serverUrl: 'http://localhost', apiKey: '',
-  // MT-18: target account. accountId lives in chrome.storage.local (per browser profile, not
-  // synced: a synced choice would carry to another machine without that account's PIN step).
-  accounts: [], accountId: '', acctOpen: false, acctPending: '', acctNote: '',
+  // MT-18 / QA F1: target account. The signed API token the server issued for it (after its
+  // PIN, when it has one) lives in chrome.storage.local with the id the row shows (per
+  // browser profile, not synced: a synced token would carry to another machine).
+  accounts: [], accountId: '', accountToken: '', acctOpen: false, acctPending: '', acctNote: '',
 };
 let _sendT, _saveT;
+
+async function forgetAccount(note) {
+  state.accountId = ''; state.accountToken = ''; state.acctNote = note;
+  await chrome.storage.local.remove(['accountId', 'accountToken']);
+  await chrome.storage.local.set({ accountRemoved: true });
+}
 
 async function cfg() {
   const s = await chrome.storage.sync.get(['serverUrl', 'apiKey']);
   state.serverUrl = s.serverUrl || 'http://localhost';
   state.apiKey = s.apiKey || '';
-  const l = await chrome.storage.local.get(['accountId', 'accountRemoved']);
+  const l = await chrome.storage.local.get(['accountId', 'accountToken', 'accountRemoved']);
   state.accountId = l.accountId || '';
+  state.accountToken = l.accountToken || '';
   if (l.accountRemoved) state.acctNote = 'Account removed — pick again';
+  // a choice stored by the pre-token extension (bare id, no token) no longer counts
+  if (state.accountId && !state.accountToken) await forgetAccount('Pick the account again');
   return { serverUrl: state.serverUrl, apiKey: state.apiKey };
 }
 
-// Every backend call carries the install key and, when one is chosen, the account.
+// Every backend call carries the install key and, when one is chosen, the account token.
 function apiHeaders(extra) {
   const h = Object.assign({ 'X-API-Key': state.apiKey }, extra || {});
-  if (state.accountId) h['X-Account'] = state.accountId;
+  if (state.accountToken) h['X-Account-Token'] = state.accountToken;
   return h;
 }
 
-// 401 invalid_account = the chosen account was deleted: forget it and say so.
+// 401 invalid_account_token = the chosen account was removed, its PIN changed or the
+// token expired: forget it and say so.
 async function noteIfAccountGone(resp) {
   if (resp.status !== 401) return false;
   let d = null;
   try { d = await resp.clone().json(); } catch {}
   if (d && d.detail === 'account_required') { state.errHint = 'Choose an account in Settings › Saves to.'; return false; }
-  if (!d || d.detail !== 'invalid_account') return false;
-  state.errHint = 'Account removed — pick again in Settings › Saves to.';
-  state.accountId = ''; state.acctNote = 'Account removed — pick again';
-  await chrome.storage.local.remove('accountId');
-  await chrome.storage.local.set({ accountRemoved: true });
+  if (!d || d.detail !== 'invalid_account_token') return false;
+  state.errHint = 'Account changed or removed — pick again in Settings › Saves to.';
+  await forgetAccount('Account changed or removed — pick again');
   await loadAccounts(); render();
   return true;
 }
 
 // ---- account selector (MT-18) ----
-// The accounts list needs only the install key (no X-Account: a stale one would 401).
+// The accounts list needs only the install key (no token: a stale one would 401).
 async function loadAccounts(url, key) {
   try {
     const resp = await fetch(`${url || state.serverUrl}/api/auth/accounts`, { headers: { 'X-API-Key': key !== undefined ? key : state.apiKey } });
     state.accounts = resp.ok ? await resp.json() : [];
   } catch { state.accounts = []; }
   if (state.accounts.length >= 2 && state.accountId && !state.accounts.some(a => a.id === state.accountId)) {
-    state.accountId = ''; state.acctNote = 'Account removed — pick again';
-    await chrome.storage.local.remove('accountId');
-    await chrome.storage.local.set({ accountRemoved: true });
+    await forgetAccount('Account removed — pick again');
   }
   renderAccounts();
 }
@@ -200,17 +207,40 @@ function renderAccounts() {
   $('acctPin').classList.toggle('hide', !pend);
   if (pend) $('acctPinFor').textContent = `Enter the PIN for ${pend.name} (the owner's PIN also works)`;
 }
-async function storeAccount(a) {
-  state.accountId = a.id; state.acctNote = ''; state.acctOpen = false; state.acctPending = '';
-  await chrome.storage.local.set({ accountId: a.id });
+async function storeAccount(a, token) {
+  state.accountId = a.id; state.accountToken = token;
+  state.acctNote = ''; state.acctOpen = false; state.acctPending = '';
+  await chrome.storage.local.set({ accountId: a.id, accountToken: token });
   await chrome.storage.local.remove('accountRemoved');
   renderAccounts();
   // The popup reads the persona-bound state per account; background reads storage on each call.
   checkConnection();
 }
-function pickAccount(a) {
-  if (a.id === state.accountId) { state.acctOpen = false; renderAccounts(); return; }
-  if (!a.has_pin) { storeAccount(a); return; }
+// POST /api/auth/verify-pin issues the account's token: an account without a PIN gets it
+// with no PIN; one with a PIN after its PIN (or the owner's, for a member).
+async function requestToken(a, pin) {
+  const body = { account_id: a.id };
+  if (pin !== undefined) body.pin = pin;
+  const resp = await fetch(`${$('serverUrl').value.trim() || state.serverUrl}/api/auth/verify-pin`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': $('apiKey').value.trim() || state.apiKey },
+    body: JSON.stringify(body),
+  });
+  const d = await resp.json().catch(() => ({}));
+  return { resp, d };
+}
+async function pickAccount(a) {
+  if (a.id === state.accountId && state.accountToken) { state.acctOpen = false; renderAccounts(); return; }
+  if (!a.has_pin) {
+    try {
+      const { resp, d } = await requestToken(a);
+      if (resp.ok && d.token) { await storeAccount(a, d.token); return; }
+      if (d.detail !== 'pin_required') {      // a PIN set since the list loaded falls through to the PIN field
+        state.acctNote = resp.status === 404 ? 'That account no longer exists' : `Server error ${resp.status}`;
+        if (resp.status === 404) await loadAccounts(); else renderAccounts();
+        return;
+      }
+    } catch { state.acctNote = 'Cannot reach server'; renderAccounts(); return; }
+  }
   state.acctPending = a.id; $('acctPinIn').value = ''; $('acctPinErr').classList.add('hide');
   renderAccounts(); $('acctPinIn').focus();
 }
@@ -219,12 +249,8 @@ async function verifyPinAndStore() {
   if (!a) return;
   const err = (t) => { $('acctPinErr').textContent = t; $('acctPinErr').classList.remove('hide'); };
   try {
-    const resp = await fetch(`${$('serverUrl').value.trim() || state.serverUrl}/api/auth/verify-pin`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': $('apiKey').value.trim() || state.apiKey },
-      body: JSON.stringify({ account_id: a.id, pin: $('acctPinIn').value }),
-    });
-    const d = await resp.json().catch(() => ({}));
-    if (resp.ok) { await storeAccount(a); return; }
+    const { resp, d } = await requestToken(a, $('acctPinIn').value);
+    if (resp.ok && d.token) { await storeAccount(a, d.token); return; }
     if (d.detail === 'wrong_pin') err(`Wrong PIN — ${d.tries_left} ${d.tries_left === 1 ? 'try' : 'tries'} left`);
     else if (d.detail === 'pin_cooldown') err(`Too many tries — wait ${resp.headers.get('Retry-After') || 30} s`);
     else if (d.detail === 'pin_required') err('Enter the PIN');
@@ -357,11 +383,11 @@ async function checkConnection() {
   try {
     const url = $('serverUrl').value.trim() || state.serverUrl, key = $('apiKey').value.trim() || state.apiKey;
     const headers = { 'X-API-Key': key };
-    if (state.accountId) headers['X-Account'] = state.accountId;
+    if (state.accountToken) headers['X-Account-Token'] = state.accountToken;
     const resp = await fetch(`${url}/api/autofill/config`, { headers });
     let detail = '';
     if (resp.status === 401) { try { detail = (await resp.clone().json()).detail; } catch {} }
-    if (detail === 'invalid_account') { await noteIfAccountGone(resp); $('connTx').textContent = 'Account removed — pick again'; $('connDot').classList.add('bad'); }
+    if (detail === 'invalid_account_token') { await noteIfAccountGone(resp); $('connTx').textContent = 'Account changed or removed — pick again'; $('connDot').classList.add('bad'); }
     else if (detail === 'account_required') { $('connDot').classList.remove('bad'); $('connTx').textContent = 'Connected · choose an account'; }
     else if (resp.status === 401) { $('connDot').classList.add('bad'); $('connTx').textContent = 'API key rejected'; }
     else if (resp.ok) { $('connDot').classList.remove('bad'); $('connTx').textContent = `Connected · v${VERSION}`; }

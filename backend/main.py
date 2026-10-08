@@ -141,9 +141,10 @@ def _pool_busy_response() -> JSONResponse:
 
 # ── API Key auth middleware ──────────────────────────────────────────────────
 # MT-10: install password (X-API-Key header or jn_session cookie), then the account
-# (X-Account header with the header key, else the signed jn_account cookie, else the
-# owner when the install has one account, else 401 account_required). The rules and the
-# cookie format are documented in backend/accounts/auth.py.
+# (signed X-Account-Token header, else the signed jn_account cookie, else the owner when
+# the install has one account, else 401 account_required; a bad token is 401
+# invalid_account_token). The rules, the cookie and the token format are documented in
+# backend/accounts/auth.py.
 import hmac as _hmac_mw
 from backend.accounts.context import owner_context, owner_unlocked, use_account, is_unscoped
 from backend.accounts import auth as acct_auth
@@ -209,14 +210,12 @@ async def _api_key_auth(request: Request, call_next):
                 "api key BYPASS (first-run mode): path=%s — dashboard_api_key setting is empty",
                 request.url.path,
             )
-            header_key_ok = True
         else:
             # Key configured → require match (timing-safe compare)
             if not api_key:
                 return JSONResponse(status_code=401, content={"detail": "API key required"})
             if not _hmac_mw.compare_digest(api_key, expected):
                 return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
-            header_key_ok = bool(header_key) and _hmac_mw.compare_digest(header_key, expected)
 
         # Tests that drive the app on their own throwaway engine run unscoped (system
         # context); production requests never arrive unscoped.
@@ -224,8 +223,10 @@ async def _api_key_auth(request: Request, call_next):
             res = None
         else:
             try:
+                # QA F1 (R2-01): the signed X-Account-Token, else the jn_account cookie,
+                # else the one-account owner. A bare X-Account header is never read.
                 res = acct_auth.resolve_request(
-                    db, request.headers.get("X-Account", ""), header_key_ok,
+                    db, request.headers.get(acct_auth.TOKEN_HEADER, ""),
                     request.cookies.get(acct_auth.COOKIE_NAME, ""))
             except _PoolTimeout:
                 logger.warning("DB pool exhausted while resolving the account for %s", path)
@@ -423,9 +424,9 @@ def auth_switch(body: dict, response: _Response):
         db.close()
 
 
-@app.post("/api/auth/verify-pin", tags=["auth"], summary="Check an account PIN without signing in")
+@app.post("/api/auth/verify-pin", tags=["auth"], summary="Check an account PIN and issue its API token")
 def auth_verify_pin(body: dict):
-    """Body {account_id, pin?}. Same PIN rules, cooldown counters and owner-covers-member as /api/auth/switch, but sets no cookie and changes nothing (the extension uses it before storing a target account). Returns {ok, via, account}; errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown`. Needs the install key; no account needed."""
+    """Body {account_id, pin?}. Same PIN rules, cooldown counters and owner-covers-member as /api/auth/switch (an account without a PIN needs none), but sets no cookie and changes nothing. Returns {ok, via, account, token}: `token` is the account's signed API token, sent back as the `X-Account-Token` header (the extension stores it; valid 1 year, dies with a PIN change or the account). Errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown`. Needs the install key; no account needed."""
     body = body or {}
     pin = body.get("pin")
     if pin is not None and not isinstance(pin, str):
@@ -441,7 +442,8 @@ def auth_verify_pin(body: dict):
         except acct_auth.SwitchDenied as e:
             logger.info("pin check denied: account=%s reason=%s", target["id"], e.detail)
             return _switch_denied(e)
-        return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
+        return {"ok": True, "via": how, "account": acct_auth.public_account(target),
+                "token": acct_auth.make_api_token(db, target)}
     finally:
         db.close()
 

@@ -30,8 +30,8 @@ SHOTS = '/tmp/v2t/shots/mt13'
 def _api(method, path, body=None, account=None):
     data = None if body is None else json.dumps(body).encode()
     headers = {'X-API-Key': h.KEY, 'Content-Type': 'application/json'}
-    if account:
-        headers['X-Account'] = str(account)
+    if account:   # QA F1: a signed token from verify-pin (the member has no PIN)
+        headers['X-Account-Token'] = C.account_token(account, OWNER_PIN)
     req = urllib.request.Request(h.BASE + '/api' + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
