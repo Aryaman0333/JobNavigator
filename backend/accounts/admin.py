@@ -254,10 +254,10 @@ def _source_values(db, source_id, owner_id) -> dict:
 
 
 def _effective_value(db, source_id, owner_id, key: str) -> Optional[str]:
-    """What the source account reads for `key` (own value, else install value)."""
-    own = _source_values(db, source_id, owner_id)
-    if key in own:
-        return own[key]
+    """What the source account reads for `key` (the owner: the install value; a member:
+    `resolve_for`, so an 'own' section with no row gives the seeded default, QA F5)."""
+    if source_id != owner_id:
+        return acct_settings.resolve_for(db, source_id, key)[0]
     row = acct_settings.install_row(db, key)
     return row.value if row is not None else None
 

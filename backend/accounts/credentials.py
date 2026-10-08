@@ -1,8 +1,9 @@
 """Per-account subscription-CLI logins (MT-15).
 
 API keys need nothing here: they are settings in the 'models' section, so `get_setting`
-already gives a member on 'own' its own key/provider/model and a member on 'inherit' the
-owner's (MT-9). The three subscription CLIs keep their login outside the settings table,
+already gives a member on 'own' its own key/provider/model (empty when unset, never the
+owner's, QA F5) and a member on 'inherit' the owner's (MT-9). `llm_client` refuses an
+empty key for such a member instead of using the `.env` key. The three subscription CLIs keep their login outside the settings table,
 so they get per-account homes by the same rule:
 
 - Claude Code: the `claude_code_oauth_token` setting (models section, a secret). The
@@ -94,7 +95,10 @@ def claude_code_token(db) -> str:
 # ── Scraper sessions (MT-16) ─────────────────────────────────────────────────
 #
 # The LinkedIn browser sessions are files; Jobright's session is a setting (section
-# 'jobright', own for a member, so it is per account already) and Levels.fyi keeps none.
+# 'jobright': on 'own' the member's row, on 'inherit' the install row, so one Jobright
+# account keeps one session) and Levels.fyi keeps none. The LinkedIn files follow the
+# 'linkedin' section the same way (QA F5, R5-01): 'own' → the member's directory below,
+# 'inherit' → the owner's paths.
 # The OWNER keeps today's exact paths; a member gets a directory of its own that holds both
 # LinkedIn cookie jars, inside the bind-mounted ~/.linkedin_api so it survives a rebuild.
 #
@@ -114,15 +118,45 @@ LI_EXTENSION_FILE = "li_cookies.json"
 LI_PERSONAL_FILE = "linkedin_cookies.json"
 
 
+LINKEDIN_SECTION = "linkedin"
+
+
+def _linkedin_member(db) -> Optional[uuid.UUID]:
+    member = acct_settings.member_account(db)
+    if member is None:
+        return None
+    mode = acct_settings.section_mode(db, member, LINKEDIN_SECTION)
+    return member if mode == acct_settings.OWN else None
+
+
 def session_member(db=None) -> Optional[uuid.UUID]:
-    """The current account when it is a member (owner / system code / no context: None =
-    the owner's paths). Opens its own session when none is passed."""
+    """The current account when it is a member whose LinkedIn section is 'own' (QA F5,
+    R5-01); None = the owner's paths: owner, system code, no context, and a member on
+    'inherit' (it uses the owner's LinkedIn, so the owner's one session jar, PIN drop and
+    refresh state, never a second login into the owner's account). Opens its own session
+    when none is passed."""
     if db is not None:
-        return acct_settings.member_account(db)
+        return _linkedin_member(db)
     from backend.models.db import SessionLocal
     own = SessionLocal()
     try:
-        return acct_settings.member_account(own)
+        return _linkedin_member(own)
+    finally:
+        own.close()
+
+
+def linkedin_shared_from_owner(db=None) -> bool:
+    """True for a member whose LinkedIn section is 'inherit': its LinkedIn runs use the
+    owner's session; refreshing that session is the owner's job (R5-01)."""
+    def _check(d):
+        member = acct_settings.member_account(d)
+        return member is not None and _linkedin_member(d) is None
+    if db is not None:
+        return _check(db)
+    from backend.models.db import SessionLocal
+    own = SessionLocal()
+    try:
+        return _check(own)
     finally:
         own.close()
 

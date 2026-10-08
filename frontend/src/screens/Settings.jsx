@@ -647,7 +647,7 @@ export default function Settings() {
       ['linkedin', '', 'LinkedIn', '', [
         B('Personal email', 'Used by LinkedIn Personal collections.', 'linkedin_email', { w: '260px' }),
         B('Personal password', 'Stored locally.', 'linkedin_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
+        { kind: 'linkedin', lockKey: 'linkedin_email', label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
         SW('Use a mock account', 'The session signs in with the mock account below.', 'Off — the session signs in with the personal account above.', 'linkedin_use_mock_account',
           { dflt: !!val('linkedin_mock_email'), info: 'Optional. The extension captures jobs while you browse LinkedIn collections. A separate account keeps rate limits, CAPTCHAs or bans off your real profile.' }),
         ...(isOn('linkedin_use_mock_account', !!val('linkedin_mock_email')) ? [
@@ -844,7 +844,10 @@ export default function Settings() {
                 </div>
                 {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push} />}
                 {block === 'account' && <YourAccount data={acctData} me={me} onChanged={accountsChanged} push={push} />}
-                {rows.filter((r) => !(r.hide && r.hide())).map((r) => {
+                {rows.filter((r) => !(r.hide && r.hide())).map((r0) => {
+                  // QA F5 (R6-02): the owner's addresses and secrets reach a member only as
+                  // `_meta.set_by_owner` (the value is blanked); the row says so, read-only.
+                  const r = member && r0.key && meta?.[r0.key]?.set_by_owner ? { ...r0, kind: 'ownerset', ownerName } : r0
                   const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
                   if (!member) return row
                   // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and inert
@@ -1046,6 +1049,8 @@ function Row({ r, ctx }) {
           </>
         )
       }
+      case 'ownerset':
+        return <Helper style={{ flex: 1, minWidth: 0 }}>Set by {r.ownerName}</Helper>
       case 'linkedin':
         return <LinkedInRow li={li} setLi={setLi} flash={flash} />
       default:

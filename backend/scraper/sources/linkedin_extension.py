@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import MutableMapping
 
 from backend.models.db import (
     SessionLocal, Job,
@@ -17,9 +18,50 @@ from backend.analyzer.h1b_checker import check_job_h1b, determine_h1b_verdict
 
 logger = logging.getLogger("jobnavigator.jobs")
 
-# In-memory LinkedIn import progress tracker (shared with routes_jobs for the
-# progress-polling endpoint). Import this from routes_jobs via the module path.
-_linkedin_import_progress: dict = {}
+class _PerAccountProgress(MutableMapping):
+    """In-memory LinkedIn import progress, one dict per account (QA F5, R5-02).
+
+    Reads and writes go to the entry of the account in the current context (the import
+    task runs under the account that started it), so two accounts' imports never wipe or
+    mix each other's counters and each polls only its own."""
+
+    def __init__(self):
+        self._by_account: dict = {}
+
+    @staticmethod
+    def _key():
+        from backend.accounts.context import current_account
+        acc = current_account.get()
+        return str(acc) if acc is not None else ""
+
+    def _mine(self) -> dict:
+        return self._by_account.setdefault(self._key(), {})
+
+    def __getitem__(self, k):
+        return self._mine()[k]
+
+    def __setitem__(self, k, v):
+        self._mine()[k] = v
+
+    def __delitem__(self, k):
+        del self._mine()[k]
+
+    def __iter__(self):
+        return iter(dict(self._by_account.get(self._key(), {})))
+
+    def __len__(self):
+        return len(self._by_account.get(self._key(), {}))
+
+    def __repr__(self):
+        return repr(self._by_account.get(self._key(), {}))
+
+    def reset_all(self) -> None:
+        """Tests: forget every account's progress."""
+        self._by_account.clear()
+
+
+# Shared with routes_jobs for the progress-polling endpoint.
+_linkedin_import_progress = _PerAccountProgress()
 
 # Persisted (mounted) Playwright session cookies — written by
 # backend/refresh_linkedin_session.py. Survives container restarts.
@@ -142,7 +184,7 @@ async def enrich(linkedin_ids: list[str], db=None):
                          "`python -m backend.refresh_linkedin_session` first", _session_path())
             _linkedin_import_progress["status"] = "error"
             _linkedin_import_progress["error_details"] = [{"stage": "session",
-                "error": "no LinkedIn session — run refresh_linkedin_session"}]
+                "error": "no LinkedIn session — refresh it in Settings › LinkedIn"}]
             return
 
         existing_ext_ids = get_existing_external_ids(db)
@@ -181,7 +223,7 @@ async def enrich(linkedin_ids: list[str], db=None):
                                  "`python -m backend.refresh_linkedin_session`", me_status)
                     _linkedin_import_progress["status"] = "error"
                     _linkedin_import_progress["error_details"] = [{"stage": "session",
-                        "error": f"session invalid (me={me_status}) — run refresh_linkedin_session"}]
+                        "error": f"session invalid (me={me_status}) — refresh it in Settings › LinkedIn"}]
                     return
 
             for lid in pre_dedup:

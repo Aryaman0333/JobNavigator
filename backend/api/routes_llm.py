@@ -32,12 +32,17 @@ def _get(db, key: str) -> str:
 
 
 def _resolve_key(db, provider: str) -> str:
-    """Find an API key already configured for `provider` in any slot, else env."""
+    """Find an API key already configured for `provider` in any slot, else env. A member on
+    its own Models section sees only its own slots (get_setting never falls back to the
+    owner's there, QA F5) and never the `.env` key, which is the owner's (R3-02)."""
     for pkey, kkey in _KEY_SLOTS:
         if _get(db, pkey) == provider:
             val = _get(db, kkey)
             if val:
                 return val
+    from backend.accounts.credentials import own_login_account
+    if own_login_account(db) is not None:
+        return ""
     return os.getenv(_ENV_KEY.get(provider, ""), "")
 
 

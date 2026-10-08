@@ -22,17 +22,6 @@ logger = logging.getLogger("jobnavigator.jobs")
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-# The process-wide LinkedIn import progress belongs to the account that started the
-# import (MT-4): the route tags the dict under this key; other accounts poll it as idle.
-_PROGRESS_ACCOUNT = "_account"
-
-
-def _account_key():
-    from backend.accounts.context import current_account
-    acc = current_account.get()
-    return str(acc) if acc is not None else None
-
-
 def _score_resume_names(db, job) -> list[str]:
     """Résumé names an auto-score launch will cover; never fatal to the save itself."""
     try:
@@ -73,9 +62,6 @@ async def linkedin_import(request: Request, db: Session = Depends(get_db)):
     }
     new_count = sum(1 for lid in linkedin_ids if lid not in existing_li_ids)
 
-    _linkedin_import_progress.clear()
-    _linkedin_import_progress[_PROGRESS_ACCOUNT] = _account_key()
-
     async def _do():
         await _scrape_linkedin_ids(linkedin_ids)
 
@@ -87,6 +73,9 @@ async def linkedin_import(request: Request, db: Session = Depends(get_db)):
             status_code=409,
             detail=f"{e.job_type} is already running",
         )
+    # Progress is per account (R5-02) and reset only once this import is accepted: a 409
+    # duplicate leaves the running import's counters alone. The task has not run yet.
+    _linkedin_import_progress.clear()
 
     return {
         "accepted": len(linkedin_ids),
@@ -99,10 +88,9 @@ async def linkedin_import(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/linkedin-import/progress")
 def linkedin_import_progress():
-    """Poll LinkedIn import progress (another account's import reads as idle)."""
-    progress = {k: v for k, v in _linkedin_import_progress.items() if k != _PROGRESS_ACCOUNT}
-    owner = _linkedin_import_progress.get(_PROGRESS_ACCOUNT)
-    if not progress or (owner is not None and owner != _account_key()):
+    """Poll the caller's own LinkedIn import progress (idle when it has none running)."""
+    progress = dict(_linkedin_import_progress)
+    if not progress:
         return {"status": "idle"}
     return progress
 

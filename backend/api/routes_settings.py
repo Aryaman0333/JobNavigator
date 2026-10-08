@@ -26,25 +26,89 @@ def _is_secret(key: str) -> bool:
     return key in _REDACT_KEYS or any(key.endswith(s) for s in _REDACT_SUFFIXES)
 
 
+# QA F5 (R3-03 / R6-02): the owner's personal values a member reads through an inherited or
+# owner-only section are never served in clear: addresses and chat ids come back "" with
+# `_meta.set_by_owner`, secrets keep the "••••••" placeholder and get the same flag, and
+# the proxy URL keeps its host but masks the credentials in it.
+_OWNER_PERSONAL_SUFFIXES = ("_email", "_chat_id")
+_MASKED_URL_KEYS = {"proxy_url"}
+
+
+def _is_owner_personal(key: str) -> bool:
+    return any(key.endswith(s) for s in _OWNER_PERSONAL_SUFFIXES)
+
+
+def mask_url_credentials(value: str) -> str:
+    """`scheme://user:pass@host:port/…` → `scheme://••••@host:port/…`; a URL with no
+    credentials is returned as it is."""
+    from urllib.parse import urlsplit, urlunsplit
+    v = (value or "").strip()
+    if "@" not in v:
+        return v
+    try:
+        parts = urlsplit(v)
+        if parts.netloc and "@" in parts.netloc:
+            host = parts.netloc.rsplit("@", 1)[1]
+            return urlunsplit(parts._replace(netloc="••••@" + host))
+    except ValueError:
+        pass
+    # not a parseable URL: hide everything up to the last "@"
+    head, _, tail = v.rpartition("@")
+    scheme = head.split("://", 1)[0] + "://" if "://" in head else ""
+    return f"{scheme}••••@{tail}"
+
+
+def _check_default_resume(db, value) -> None:
+    """R3-05: `default_resume_id` is "", "persona" or the id of one of the caller's own base
+    résumés (the Resume query is account-scoped); anything else is a 422."""
+    v = value.strip() if isinstance(value, str) else value
+    if v in ("", "persona"):
+        return
+    from backend.models.db import Resume
+    try:
+        rid = uuid.UUID(str(v))
+    except (ValueError, TypeError, AttributeError):
+        rid = None
+    found = rid is not None and db.query(Resume.id).filter(
+        Resume.id == rid, Resume.is_base == True).first() is not None  # noqa: E712 (scoped)
+    if not found:
+        raise HTTPException(status_code=422, detail="default_resume_id must be \"\", \"persona\" or the id of one of your base résumés")
+
+
 @router.get("")
 def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key section, source, editable); always on for members"),
                  db: Session = Depends(get_db)):
-    """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values (the response is unchanged unless `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`."""
+    """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values (the response is unchanged unless `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`. A member never receives the owner's addresses, chat ids or secrets: those come back empty (secrets as "••••••") with `set_by_owner: true` in `_meta`, and `proxy_url` with its credentials masked."""
     rows = [r for r in acct_settings.effective_rows(db) if r[0] not in _HIDDEN_KEYS]
+    member_caller = not acct_settings.is_owner_caller(db)
     result = {}
-    for key, value, _source in rows:
+    owner_set = set()
+    for key, value, source in rows:
+        from_owner = member_caller and source == "install"
         # Redact secrets — return empty string if not set, "••••••" if set
         if _is_secret(key):
             result[key] = "" if not value else "•" * 6
+            if from_owner and value:
+                owner_set.add(key)
+            continue
+        if from_owner and _is_owner_personal(key):
+            result[key] = ""
+            if value:
+                owner_set.add(key)
+            continue
+        if from_owner and key in _MASKED_URL_KEYS:
+            result[key] = mask_url_credentials(value)
             continue
         try:
             result[key] = json.loads(value)
         except (json.JSONDecodeError, TypeError):
             result[key] = value
-    if meta or not acct_settings.is_owner_caller(db):
+    if meta or member_caller:
         info = acct_settings.key_meta(db, [k for k, _v, _s in rows])
         for key, _value, source in rows:
             info[key]["source"] = source
+            if key in owner_set:
+                info[key]["set_by_owner"] = True
         result["_meta"] = info
     return result
 
@@ -89,6 +153,9 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
             status_code=403,
             detail="These settings are managed by the account owner: " + ", ".join(e.keys),
         )
+
+    if "default_resume_id" in checkable:
+        _check_default_resume(db, checkable["default_resume_id"])
 
     warnings: list[str] = []
     updated = []

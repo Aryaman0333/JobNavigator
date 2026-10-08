@@ -8,8 +8,15 @@ with that member's account_id). Which one a member reads depends on the key's se
 - scope 'own_always': always the member's own row; with no row yet the seeded default,
   never the owner's value (a chat id, a mailbox, a résumé id are personal).
 - scope 'policy': the owner picks per member 'inherit' (install value, read-only) or
-  'own' (the member's row when one exists, else the install value). No
+  'own' (the member's row when one exists, else the seeded default). No
   `section_policies` row = the section's default.
+
+QA F5 (R3-01/R3-02/T3-06): 'own' never falls back to the owner's install value. A member
+on 'own' with no row of its own reads the seeded default, exactly like own_always: empty
+for credentials, emails, sessions and API keys; the seeded lists for the global excludes
+(a new member starts from the defaults, not the owner's personal lists, unless copy-from
+"excludes" copied them); the seeded prompts/models elsewhere. Sharing the owner's value is
+what 'inherit' is for.
 
 Every settings read in the backend goes through `get_setting()` (or a module-local
 wrapper that calls it), so this file is the one place that knows the rules. The owner,
@@ -174,19 +181,27 @@ def _seeded(key: str) -> Optional[str]:
     return entry[0] if entry else None
 
 
+def resolve_for(db, account_id, key: str):
+    """(value, source) `account_id` (a member) reads for `key`: its own row in a section it
+    owns ('account'), else the seeded default ('default'; None when the key has no seeded
+    value) — never the install value; in an inherited / owner-only section the install
+    value ('install'). See the module docstring (QA F5)."""
+    if _owns(section_mode(db, account_id, section_of(key))):
+        row = _account_row(db, account_id, key)
+        if row is not None:
+            return row.value, "account"
+        seeded = _seeded(key)
+        return (seeded, "default") if seeded is not None else (None, None)
+    row = install_row(db, key)
+    return (row.value, "install") if row is not None else (None, None)
+
+
 def resolve_setting(db, key: str):
     """(value, source) for the current account: source 'install' | 'account' | 'default'
-    (seeded default, own_always with no row yet) | None (no value anywhere)."""
+    (seeded default: a member section it owns with no row yet) | None (no value anywhere)."""
     member = member_account(db)
     if member is not None:
-        mode = section_mode(db, member, section_of(key))
-        if _owns(mode):
-            row = _account_row(db, member, key)
-            if row is not None:
-                return row.value, "account"
-            if mode == OWN_ALWAYS:
-                seeded = _seeded(key)
-                return (seeded, "default") if seeded is not None else (None, None)
+        return resolve_for(db, member, key)
     row = install_row(db, key)
     return (row.value, "install") if row is not None else (None, None)
 
@@ -223,28 +238,6 @@ def default_resume_ids(db) -> list:
 
 
 # ── Writes ───────────────────────────────────────────────────────────────────
-
-def write_target(db, key: str) -> Optional[uuid.UUID]:
-    """Account id a write of `key` goes to for the current account (None = install row).
-    Raises SettingNotWritable when a member does not own the key's section."""
-    member = member_account(db)
-    if member is None:
-        return None
-    if not _owns(section_mode(db, member, section_of(key))):
-        raise SettingNotWritable([key])
-    return member
-
-
-def check_writable(db, keys) -> Optional[uuid.UUID]:
-    """All-or-nothing check for a PATCH: the member id (or None for install writes)."""
-    member = member_account(db)
-    if member is None:
-        return None
-    denied = [k for k in keys if not _owns(section_mode(db, member, section_of(k)))]
-    if denied:
-        raise SettingNotWritable(denied)
-    return member
-
 
 def write_targets(db, keys) -> dict:
     """{key: account id or None (install)} for a PATCH, all-or-nothing (MT-14).
@@ -328,7 +321,7 @@ def effective_rows(db):
         mode = modes[sid]
         if _owns(mode) and key in own:
             out.append((key, own[key], "account"))
-        elif mode == OWN_ALWAYS:
+        elif _owns(mode):
             seeded = _seeded(key)
             if seeded is not None:
                 out.append((key, seeded, "default"))

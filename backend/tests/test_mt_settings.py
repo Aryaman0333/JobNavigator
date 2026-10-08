@@ -114,14 +114,15 @@ def test_inherit_reads_install_even_with_an_own_row(test_db, accounts):
         assert S.resolve_setting(test_db, "scoring_rubric")[1] == "install"
 
 
-def test_own_reads_the_member_row_else_install(test_db, accounts):
+def test_own_reads_the_member_row_else_the_seeded_default(test_db, accounts):
+    # QA F5 (R3-01/T3-06): 'own' never falls back to the owner's install value
     a, b = accounts
     set_setting(test_db, "title_exclude_global", '["intern"]')
     set_setting(test_db, "company_exclude_global", '["Acme"]')
     _own(test_db, b, "title_exclude_global", '["senior"]')
     with use_account(b):
         assert S.get_setting(test_db, "title_exclude_global") == '["senior"]'
-        assert S.get_setting(test_db, "company_exclude_global") == '["Acme"]'   # no own row yet
+        assert S.resolve_setting(test_db, "company_exclude_global") == ("[]", "default")   # no own row yet
 
 
 def test_policy_flip_switches_the_source(test_db, accounts):
@@ -310,7 +311,8 @@ def test_member_get_returns_effective_values_redacted_with_meta(test_db, account
     assert body["llm_api_key"] == "•" * 6                  # inherited, still redacted
     assert body["linkedin_password"] == "•" * 6            # own secret, redacted
     assert meta["title_exclude_global"] == {"section": "exclude", "editable": True, "source": "account"}
-    assert meta["llm_api_key"] == {"section": "models", "editable": False, "source": "install"}
+    assert meta["llm_api_key"] == {"section": "models", "editable": False, "source": "install",
+                                   "set_by_owner": True}
     assert meta["telegram_chat_id"]["source"] == "default" and meta["telegram_chat_id"]["editable"]
     assert meta["proxy_url"] == {"section": "advanced", "editable": False, "source": "install"}
 

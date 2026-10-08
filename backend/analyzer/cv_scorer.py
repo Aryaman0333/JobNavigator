@@ -166,12 +166,20 @@ def _get_default_resume(db) -> dict:
     """Return {Resume.name: flat_text} for the default Resume (special id 'persona' returns persona text); empty dict if not set or not found."""
     from backend.models.db import Resume
     # Résumé query is account-scoped: an id from another account finds nothing.
-    default_id = get_setting(db, "default_resume_id")
+    default_id = (get_setting(db, "default_resume_id") or "").strip()
     if not default_id:
         return {}
     if default_id == _PERSONA_KEY:
         return _get_persona_text(db)
-    r = db.query(Resume).filter(Resume.id == default_id, Resume.is_base == True).first()
+    # R3-05: a stored value that is not a UUID counts as unset (Postgres would raise a
+    # DataError in the scoring sweep otherwise).
+    import uuid as _uuid
+    try:
+        rid = _uuid.UUID(default_id)
+    except ValueError:
+        logger.warning("default_resume_id %r is not a résumé id; ignored", default_id)
+        return {}
+    r = db.query(Resume).filter(Resume.id == rid, Resume.is_base == True).first()
     if not r:
         return {}
     text = _flatten_resume(r.json_data or {})

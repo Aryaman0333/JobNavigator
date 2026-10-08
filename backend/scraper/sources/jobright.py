@@ -103,7 +103,10 @@ async def _ensure_session(force_relogin: bool = False) -> str:
         email = _get_setting(db, "jobright_email")
         password = _get_setting(db, "jobright_password")
         if not email or not password:
-            raise RuntimeError("Jobright credentials not configured (set jobright_email and jobright_password in Settings)")
+            # T7-11 / QA F5: a member on its own Jobright section with nothing set reads ""
+            # here (never the owner's credentials), so its copied search fails with this.
+            raise RuntimeError("Jobright is not set up for this account: set your Jobright "
+                               "email and password in Settings › Jobright.ai")
 
         session_id = await _login(email, password)
 

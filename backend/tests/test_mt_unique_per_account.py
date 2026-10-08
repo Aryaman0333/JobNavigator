@@ -139,18 +139,21 @@ def test_search_test_results_are_returned_only_to_their_account(client, accounts
 
 
 def test_linkedin_import_progress_of_another_account_reads_idle(client, accounts):
-    from backend.api.routes_jobs import _PROGRESS_ACCOUNT
+    # R5-02: progress is kept per account (QA F5)
     from backend.scraper.sources.linkedin_extension import _linkedin_import_progress
     a, b = accounts
-    _linkedin_import_progress.clear()
-    _linkedin_import_progress.update({"status": "running", "total": 3})
+    _linkedin_import_progress.reset_all()
     try:
-        _linkedin_import_progress[_PROGRESS_ACCOUNT] = str(b)
+        with use_account(b):
+            _linkedin_import_progress.update({"status": "running", "total": 3})
         assert client.get("/api/jobs/linkedin-import/progress").json() == {"status": "idle"}
-        _linkedin_import_progress[_PROGRESS_ACCOUNT] = str(a)
-        assert client.get("/api/jobs/linkedin-import/progress").json() == {"status": "running", "total": 3}
+        with use_account(a):
+            _linkedin_import_progress.update({"status": "running", "total": 5})
+        assert client.get("/api/jobs/linkedin-import/progress").json() == {"status": "running", "total": 5}
+        with use_account(b):
+            assert dict(_linkedin_import_progress) == {"status": "running", "total": 3}
     finally:
-        _linkedin_import_progress.clear()
+        _linkedin_import_progress.reset_all()
 
 
 def test_unscored_counters_count_only_the_account(client, test_db, accounts):

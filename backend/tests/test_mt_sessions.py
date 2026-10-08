@@ -81,12 +81,17 @@ async def test_two_members_never_share_a_path(test_db, accounts, roots):
     assert len(seen) == 9
 
 
-async def test_a_member_path_does_not_depend_on_the_models_policy(test_db, accounts, roots):
+async def test_a_member_path_follows_the_linkedin_policy_not_the_models_one(test_db, accounts, roots):
+    # QA F5 (R5-01): 'inherit' LinkedIn = the owner's session paths
     a, b = accounts
+    test_db.add(SectionPolicy(account_id=b, section="models", mode="inherit"))
+    test_db.commit()
+    with use_account(b):
+        assert str(b) in C.linkedin_extension_cookies(test_db)       # linkedin 'own' (default)
     test_db.add(SectionPolicy(account_id=b, section="linkedin", mode="inherit"))
     test_db.commit()
     with use_account(b):
-        assert str(b) in C.linkedin_extension_cookies(test_db)
+        assert C.linkedin_extension_cookies(test_db) == C.LI_EXTENSION_OWNER
 
 
 # ── LinkedIn Personal + extension import ─────────────────────────────────────

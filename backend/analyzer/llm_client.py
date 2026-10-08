@@ -201,6 +201,8 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
     effort = _supported_effort(provider, cfg["effort"])
     cap = _output_cap(provider, max_tokens, effort)
 
+    if provider in ("claude_api", "openai", "openrouter"):
+        _require_own_key(provider, api_key)
     if provider == "claude_api":
         async for c in _stream_claude(prompt, system, model, api_key, cap, cached_prefix, effort):
             yield c
@@ -301,10 +303,27 @@ async def _stream_openai(prompt, system, model, api_key, max_tokens, base_url=No
             yield delta
 
 
+_KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter": "OpenRouter"}
+
+
+def _require_own_key(provider: str, api_key: str) -> None:
+    """QA F5 (R3-02): a member on its own Models section uses only its own API keys. An
+    empty key for a keyed provider fails clearly instead of reaching the `.env` key (the
+    owner's) or sending an empty bearer. The owner and members on 'inherit' keep today's
+    behaviour (the install key, then the env var)."""
+    if api_key or provider not in _KEYED_PROVIDERS:
+        return
+    if _own_login_account() is None:
+        return
+    raise NonRetryableLLMError(
+        f"No API key for {_KEYED_PROVIDERS[provider]} — set it in Settings › Models")
+
+
 async def _dispatch(provider: str, model: str, api_key: str,
                     prompt: str, system: str, max_tokens: int,
                     cached_prefix: str | None = None, effort: str = "") -> dict:
     """Route to the correct provider; only `claude_api` supports prompt caching, others get cached_prefix concatenated into the prompt (no cache discount). `effort` reaches only the providers in REASONING_EFFORTS."""
+    _require_own_key(provider, api_key)
     effort = _supported_effort(provider, effort)
     max_tokens = _output_cap(provider, max_tokens, effort)
     if provider == "claude_api":

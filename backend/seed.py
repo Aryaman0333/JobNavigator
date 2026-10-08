@@ -859,14 +859,17 @@ SETTINGS_SCOPING_STATEMENTS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_install_key ON settings (key) WHERE account_id IS NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_account_key ON settings (account_id, key) WHERE account_id IS NOT NULL",
     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS id SERIAL",
+    # R3-06: the old primary key is dropped by its actual name (a restored or renamed
+    # table may not call it settings_pkey).
     """DO $$
+DECLARE pk_name text;
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint c
+  SELECT c.conname INTO pk_name FROM pg_constraint c
     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
     WHERE c.conrelid = 'settings'::regclass AND c.contype = 'p' AND a.attname = 'key'
-  ) THEN
-    ALTER TABLE settings DROP CONSTRAINT settings_pkey;
+    LIMIT 1;
+  IF pk_name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE settings DROP CONSTRAINT %I', pk_name);
     ALTER TABLE settings ADD CONSTRAINT settings_pkey PRIMARY KEY (id);
   END IF;
 END $$""",
@@ -1096,14 +1099,21 @@ def migrate_cv_terminology(db):
     """Rename 'CV'/'CVs' -> 'Resume'/'Resumes' in editable prompt-text settings; word-boundary matching leaves template tokens like CV_NAMES_HERE intact."""
     import re
     for key in ("scoring_rubric",):
-        row = install_row(db, key)
-        if not row or not row.value:
-            continue
-        new = re.sub(r"\bCVs\b", "Resumes", row.value)
-        new = re.sub(r"\bCV\b", "Resume", new)
-        if new != row.value:
-            row.value = new
+        for row in _all_rows(db, key):   # R3-04: members' own rows too
+            if not row.value:
+                continue
+            new = re.sub(r"\bCVs\b", "Resumes", row.value)
+            new = re.sub(r"\bCV\b", "Resume", new)
+            if new != row.value:
+                row.value = new
     db.commit()
+
+
+def _all_rows(db, key: str) -> list:
+    """The install row and every account's own row of `key` (R3-04: a startup migration
+    that rewrites a value applies to members on 'own' as well), install first."""
+    rows = db.query(Setting).filter(Setting.key == key).all()
+    return sorted(rows, key=lambda r: r.account_id is not None)
 
 
 def migrate_llm_settings(db):
@@ -1116,43 +1126,55 @@ def migrate_llm_settings(db):
         seen_row = Setting(key="llm_seeded_models", value="[]",
                            description="Internal: default model keys already offered, so user deletions persist across restarts")
         db.add(seen_row)
-    if row and row.value:
+    mkey = lambda m: f'{m.get("provider")}|{m.get("model")}'
+    default_list = json.loads(DEFAULT_SETTINGS["llm_models_list"][0])
+    try:
+        seen_before = set(json.loads(seen_row.value or "[]"))
+    except (ValueError, TypeError):
+        seen_before = set()
+    # Defaults this release offers for the first time; they reach every list below.
+    new_defaults = [d for d in default_list if mkey(d) not in seen_before]
+
+    def _merge(list_row):
         try:
-            current = json.loads(row.value)
+            current = json.loads(list_row.value)
         except (ValueError, TypeError):
             current = []
-        current = [m for m in current if m.get("provider") != "openai_compat"]
-        default_list = json.loads(DEFAULT_SETTINGS["llm_models_list"][0])
-        try:
-            seen = set(json.loads(seen_row.value or "[]"))
-        except (ValueError, TypeError):
-            seen = set()
-        mkey = lambda m: f'{m.get("provider")}|{m.get("model")}'
+        if not isinstance(current, list):
+            current = []
+        current = [m for m in current if isinstance(m, dict) and m.get("provider") != "openai_compat"]
         have = {mkey(m) for m in current}
-        for d in default_list:
-            dk = mkey(d)
-            if dk not in seen and dk not in have:  # new default the user never removed
+        for d in new_defaults:
+            if mkey(d) not in have:   # new default the user never removed
                 current.append(d)
-                have.add(dk)
-            seen.add(dk)
-        seen_row.value = json.dumps(sorted(seen))
-        row.value = json.dumps(current)
+                have.add(mkey(d))
+        list_row.value = json.dumps(current)
+
+    if row and row.value:
+        _merge(row)
+        seen_row.value = json.dumps(sorted(seen_before | {mkey(d) for d in default_list}))
+    # R3-04: a member on its own Models section keeps its own list; it gets the same new
+    # defaults (one seen-list for the install, so a default it deleted stays deleted).
+    for member_row in db.query(Setting).filter(Setting.key == "llm_models_list",
+                                               Setting.account_id.isnot(None)).all():
+        if member_row.value:
+            _merge(member_row)
 
     provider_keys = ["llm_provider", "llm_fallback_provider", "email_llm_provider",
                      "cv_tailor_llm_provider", "cover_letter_llm_provider", "autofill_llm_provider",
                      "scoring_llm_provider"]
     for key in provider_keys:
-        r = install_row(db, key)
-        if r and r.value == "openai_compat":
-            r.value = "openai"
+        for r in _all_rows(db, key):
+            if r.value == "openai_compat":
+                r.value = "openai"
 
     model_keys = ["llm_model", "llm_fallback_model", "email_llm_model",
                   "cv_tailor_llm_model", "cover_letter_llm_model", "autofill_llm_model",
                   "scoring_llm_model"]
     for key in model_keys:
-        r = install_row(db, key)
-        if r and r.value == "claude-haiku-4-5-20251001":
-            r.value = "claude-haiku-4-5"
+        for r in _all_rows(db, key):
+            if r.value == "claude-haiku-4-5-20251001":
+                r.value = "claude-haiku-4-5"
 
     db.commit()
 
@@ -1441,22 +1463,26 @@ def migrate_h1b_to_visa_cache(db):
 def migrate_autofill_dicts(db):
     """Merge newly-added canonical keys into autofill_field_patterns/autofill_option_synonyms without clobbering the user's edits (only missing top-level keys are added)."""
     for setting_key in ("autofill_field_patterns", "autofill_option_synonyms"):
-        row = install_row(db, setting_key)
-        if not row:
-            continue
         default_json = DEFAULT_SETTINGS.get(setting_key, ("{}", ""))[0]
         try:
             defaults = json.loads(default_json)
-            stored = json.loads(row.value or "{}")
         except (ValueError, TypeError):
             continue
-        changed = False
-        for k, v in defaults.items():
-            if k not in stored:
-                stored[k] = v
-                changed = True
-        if changed:
-            row.value = json.dumps(stored)
+        # R3-04: the install row and every member's own row
+        for row in _all_rows(db, setting_key):
+            try:
+                stored = json.loads(row.value or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(stored, dict):
+                continue
+            changed = False
+            for k, v in defaults.items():
+                if k not in stored:
+                    stored[k] = v
+                    changed = True
+            if changed:
+                row.value = json.dumps(stored)
     db.commit()
 
 

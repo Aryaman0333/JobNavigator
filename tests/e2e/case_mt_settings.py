@@ -306,6 +306,33 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         st, s = _api('GET', '/settings', account=owner_id)
         c.eq('… the owner’s value is untouched', (s or {}).get('prep_include'), prep_before)
 
+        # ── QA F5: 'own' never shows the owner's values; 'inherit' shows "Set by <owner>" ──
+        owner_li = (s or {}).get('linkedin_email') or ''
+        st, ms = _api('GET', '/settings', account=member_id)
+        c.eq('F5: member on own LinkedIn reads no owner email', (ms or {}).get('linkedin_email'), '')
+        c.check('F5: … nor the owner’s address anywhere', not owner_li or owner_li not in str(ms))
+        st, _ = _api('PATCH', '/settings/policies', {'account_id': member_id, 'section': 'linkedin', 'mode': 'inherit'}, account=owner_id)
+        c.eq('F5: owner flips the member’s LinkedIn to inherit', st, 200)
+        st, ms = _api('GET', '/settings', account=member_id)
+        c.check('F5: inherit still never serves the owner’s address', not owner_li or owner_li not in str(ms))
+        if owner_li:
+            c.check('F5: … it is flagged set_by_owner', ((ms or {}).get('_meta') or {}).get('linkedin_email', {}).get('set_by_owner') is True)
+            C.go(mpg, '/settings', settle=1500)
+            _scroll_to(mpg, 'linkedin')
+            c.check('F5: the member’s LinkedIn row reads “Set by <owner>”',
+                    mpg.evaluate("""(t) => { const h = document.querySelector('[data-sec="sec-linkedin"]');
+                      return !!h && h.parentElement.textContent.includes(t) }""", f'Set by {owner_name}'))
+            c.check('F5: … and its Refresh cookie row is locked (owner-only refresh)',
+                    mpg.evaluate("""() => { const h = document.querySelector('[data-sec="sec-linkedin"]');
+                      return !!h && [...h.parentElement.querySelectorAll('[data-locked="true"]')]
+                        .some((x) => x.textContent.includes('Session cookie')) }"""))
+            mpg.screenshot(path=f'{SHOTS}/member-linkedin-set-by-owner.png')
+        st, li = _api('GET', '/linkedin/session', account=member_id)
+        c.check('F5: the member’s LinkedIn session is the owner’s (shared)', (li or {}).get('shared') is True, li)
+        st, _ = _api('POST', '/linkedin/session/refresh', account=member_id)
+        c.eq('F5: … and only the owner refreshes it', st, 403)
+        _api('PATCH', '/settings/policies', {'account_id': member_id, 'section': 'linkedin', 'mode': 'own'}, account=owner_id)
+
         # ── D3: the owner has no PIN → the lock card is a plain Unlock (a privacy latch) ──
         _scroll_to(mpg, 'advanced')
         c.eq('no owner PIN: the lock card has no PIN pad', _sec_has(mpg, 'advanced', '[data-lock-card] input'), 0)

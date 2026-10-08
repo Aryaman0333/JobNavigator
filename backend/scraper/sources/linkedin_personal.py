@@ -24,6 +24,21 @@ def cookie_path() -> str:
     return linkedin_personal_cookies()
 
 
+NOT_SET_UP = ("LinkedIn is not set up for this account: add your LinkedIn email and "
+              "password in Settings › LinkedIn")
+
+
+def _check_set_up(email: str, password: str) -> None:
+    """Fail before opening a browser when the account has neither a saved session nor
+    credentials (T7-11: a member's copied LinkedIn Personal search on its own, empty
+    LinkedIn section fails clearly; it never borrows the owner's credentials)."""
+    if email and password:
+        return
+    import os
+    if not os.path.exists(cookie_path()):
+        raise RuntimeError(NOT_SET_UP)
+
+
 # Delay ranges (seconds) — tuned to avoid 429s
 DELAY_BETWEEN_CARDS = (1.5, 3.0)       # after clicking each card
 DELAY_BEFORE_CLICK = (0.3, 0.7)        # before clicking a card
@@ -726,6 +741,7 @@ async def run(search: Search) -> dict:
             password = get_setting(db_settings, "linkedin_password", "")
         finally:
             db_settings.close()
+        _check_set_up(email, password)
 
         collections_to_scrape = search.sources or ["recommended", "top-applicant"]
         collections_to_scrape = [c for c in collections_to_scrape if c in ALL_COLLECTIONS]
@@ -933,6 +949,7 @@ async def preview(search, db) -> dict:
     try:
         email = get_setting(db, "linkedin_email", "")
         password = get_setting(db, "linkedin_password", "")
+        _check_set_up(email, password)
 
         collections_to_scrape = search.sources or ["recommended", "top-applicant"]
         collections_to_scrape = [c for c in collections_to_scrape if c in ALL_COLLECTIONS]
