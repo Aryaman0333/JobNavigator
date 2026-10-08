@@ -3,9 +3,9 @@
 Roles: one owner, up to four members (MAX_ACCOUNTS = 5 in total).
 - GET    /accounts                 owner: every account with counts; member: its own row in
                                    full, the others as {id, name, color, role}.
-- POST   /accounts                 owner only. 409 `account_limit` at 5 accounts; 409
-                                   `owner_pin_required` while the owner has no PIN (the
-                                   picker would otherwise open the owner without one).
+- POST   /accounts                 owner only. 409 `account_limit` at 5 accounts. PINs are
+                                   optional, the owner's included (QA F2 / D3): an owner
+                                   without a PIN opens from the picker with one click.
 - PATCH  /accounts/{account_id}    owner: any account; member: itself. PIN rules below.
 - DELETE /accounts/{account_id}    owner only; never the owner or the caller; typed name;
                                    pg_dump first (abort when it fails); itemised counts.
@@ -18,7 +18,8 @@ PIN (body key `pin`: 4 digits = set/change, null or "" = remove):
   the MT-10 per-account cooldown); afterwards the caller's `jn_account` cookie is re-signed
   (a PIN change invalidates every cookie issued for the account, MT-10);
 - the owner may set or clear a member's PIN without it (a reset; nothing secret returned);
-- the owner's PIN cannot be removed while other accounts exist (409 `owner_pin_required`).
+- the owner may remove their own PIN at any time, members or not (QA F2 / D3); without an
+  owner PIN the owner sections a member sees are only a privacy latch (a plain Unlock).
 """
 import logging
 import re
@@ -137,7 +138,7 @@ def list_accounts(db: Session = Depends(get_db)):
 
 @router.post("", status_code=201)
 def create_account(response: Response, body: dict = Body(...), db: Session = Depends(get_db)):
-    """Owner only. Body `{name, color?, pin?, copy_from?: {account_id, items: [persona, qa, resumes, companies, searches, settings, voices, excludes]}}`. The new account is always a member and starts with an empty Persona and the two built-in extension searches; copy-from deep-copies the chosen items (new ids; résumé ids inside companies' `selected_resume_ids` and `default_resume_id` point at the copies, ids not copied are dropped; no jobs, applications or letters). 409 `account_limit` (5 accounts), 409 `owner_pin_required` (set the owner's PIN first), 409 `name_taken`, 422 bad name/colour/PIN/items, 404 unknown copy source."""
+    """Owner only. Body `{name, color?, pin?, copy_from?: {account_id, items: [persona, qa, resumes, companies, searches, settings, voices, excludes]}}`. The new account is always a member and starts with an empty Persona and the two built-in extension searches; copy-from deep-copies the chosen items (new ids; résumé ids inside companies' `selected_resume_ids` and `default_resume_id` point at the copies, ids not copied are dropped; no jobs, applications or letters). PINs are optional, the owner's too. 409 `account_limit` (5 accounts), 409 `name_taken`, 422 bad name/colour/PIN/items, 404 unknown copy source."""
     body = body or {}
     accounts = _accounts(db)
     caller = _caller(accounts)
@@ -146,9 +147,7 @@ def create_account(response: Response, body: dict = Body(...), db: Session = Dep
     if len(accounts) >= admin.MAX_ACCOUNTS:
         return _error(409, "account_limit",
                       f"An install holds at most {admin.MAX_ACCOUNTS} accounts; remove one first.")
-    if not caller["pin_hash"]:
-        return _error(409, "owner_pin_required",
-                      "Set a PIN on the owner account before adding another account.")
+    # QA F2 / D3: PINs are optional, the owner's too (no `owner_pin_required` any more).
 
     name = _clean_name(body.get("name"))
     if _name_taken(accounts, name):
@@ -203,7 +202,7 @@ def create_account(response: Response, body: dict = Body(...), db: Session = Dep
 @router.patch("/{account_id}")
 def update_account(account_id: str, request: Request, response: Response,
                    body: dict = Body(...), db: Session = Depends(get_db)):
-    """Body: any of `name`, `color`, `pin` (4 digits to set/change, null or "" to remove), `current_pin`. Owner: any account; member: itself (else 403). Changing one's own PIN needs `current_pin` when one is set (401 `pin_required` / `wrong_pin`, 429 `pin_cooldown`) and re-issues this browser's `jn_account` cookie; the owner may reset a member's PIN without it. The owner's PIN cannot be removed while other accounts exist (409 `owner_pin_required`). Returns `{account, pin_changed}` — never a hash."""
+    """Body: any of `name`, `color`, `pin` (4 digits to set/change, null or "" to remove), `current_pin`. Owner: any account; member: itself (else 403). Changing one's own PIN needs `current_pin` when one is set (401 `pin_required` / `wrong_pin`, 429 `pin_cooldown`) and re-issues this browser's `jn_account` cookie; the owner may reset a member's PIN without it. Every PIN is optional, the owner's included (it can be removed with members present). Returns `{account, pin_changed}` — never a hash."""
     body = body or {}
     accounts = _accounts(db)
     caller = _caller(accounts)
@@ -228,9 +227,6 @@ def update_account(account_id: str, request: Request, response: Response,
         removing = new_pin in (None, "")
         if not removing:
             _clean_pin(new_pin)
-        if removing and target["role"] == "owner" and len(accounts) > 1:
-            return _error(409, "owner_pin_required",
-                          "The owner's PIN cannot be removed while other accounts exist.")
         if is_self and target["pin_hash"]:
             current = body.get("current_pin")
             if current is not None and not isinstance(current, str):

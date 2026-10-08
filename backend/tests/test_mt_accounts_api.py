@@ -139,12 +139,19 @@ def test_member_sees_its_own_row_and_only_names_of_others(client, test_db, owner
 
 # ── POST /api/accounts ───────────────────────────────────────────────────────
 
-def test_second_account_needs_an_owner_pin(client, test_db, owner):
+def test_second_account_without_any_pin(client, test_db, owner):
+    """QA F2 / D3: no owner PIN needed to add an account, and the new one may have none."""
+    assert not owner.pin_hash
     r = client.post("/api/accounts", json={"name": "Partner"})
-    assert r.status_code == 409
-    assert r.json()["detail"] == "owner_pin_required" and r.json()["message"]
-    assert test_db.query(Account).count() == 1
+    assert r.status_code == 201, r.text
+    acc = r.json()["account"]
+    assert acc["role"] == "member" and acc["has_pin"] is False
+    assert test_db.query(Account).count() == 2
+    test_db.expire_all()
+    assert test_db.query(Account).filter(Account.role == "owner").one().pin_hash is None
 
+
+def test_second_account_with_pins(client, test_db, owner):
     owner.pin_hash = A.hash_pin(OWNER_PIN)
     test_db.commit()
     r = client.post("/api/accounts", json={"name": "Partner", "pin": "2222"})
@@ -483,15 +490,15 @@ def test_owner_pin_rules(client, test_db, owner):
     assert r.status_code == 200 and r.json()["account"]["has_pin"] is True
     assert "jn_account=" in r.headers.get("set-cookie", "")
     _member(test_db)
-    r = client.patch(f"/api/accounts/{owner.id}", json={"pin": None, "current_pin": OWNER_PIN})
-    assert r.status_code == 409 and r.json()["detail"] == "owner_pin_required"
+    # removing needs the current PIN ...
+    r = client.patch(f"/api/accounts/{owner.id}", json={"pin": None})
+    assert r.status_code == 401 and r.json()["detail"] == "pin_required"
     r = client.patch(f"/api/accounts/{owner.id}", json={"pin": "1357", "current_pin": OWNER_PIN})
     assert r.status_code == 200
-    with unscoped():
-        test_db.query(Account).filter(Account.role != "owner").delete()
-        test_db.commit()
+    # ... and is allowed with members present (QA F2 / D3: no owner_pin_required)
     r = client.patch(f"/api/accounts/{owner.id}", json={"pin": None, "current_pin": "1357"})
     assert r.status_code == 200 and r.json()["account"]["has_pin"] is False
+    assert "owner_pin_required" not in r.text
 
 
 # ── DELETE /api/accounts/{id} ────────────────────────────────────────────────

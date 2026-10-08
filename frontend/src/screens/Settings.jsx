@@ -8,7 +8,7 @@ import api from '../api'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import {
-  AccountsTable, AddAccountModal, AddPeopleRow, YourAccount, accountsChanged,
+  AccountsTable, AddAccountModal, YourAccount, accountsChanged,
   LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, memberGroup, rowLocked, scopeTag,
 } from './SettingsAccounts'
 import '../theme.css'
@@ -184,8 +184,9 @@ export default function Settings() {
     fetch('/health').then((r) => r.ok ? r.json() : null).then((h) => { if (on && h?.version) setBackendVersion(String(h.version)) }).catch(() => {})
     return () => { on = false }
   }, [])
-  // Anchor rail highlights where the scroller is parked; opens at the top (Display, the first section).
-  const [active, setActive] = useState('appearance')
+  // Anchor rail highlights where the scroller is parked; null = the top, i.e. the first
+  // section of the page (T7-01: Accounts / Your account when shown, else Display).
+  const [active, setActive] = useState(null)
   const [info, setInfo] = useState(null)      // which row's info panel is open
   const [ovr, setOvr] = useState({})          // which override rows are expanded
   const [trig, setTrig] = useState({})        // action button states
@@ -206,13 +207,14 @@ export default function Settings() {
   const askText = useCallback((spec) => new Promise((resolve) => {
     setDialog({ kind: 'prompt', ...spec, onSubmit: (v) => { setDialog(null); resolve(v) }, onCancel: () => { setDialog(null); resolve(null) } })
   }), [])
-  // ── accounts (MT-13) ──
-  // `me` from /auth/me; `acctData` = GET /accounts, fetched only with two or more
-  // accounts. With one account the page is the pre-multi-tenancy page plus one row
-  // at the end of System › Advanced (the owner's way to add the first member).
+  // ── accounts (MT-13, QA F2 / D2) ──
+  // `me` from /auth/me; `acctData` = GET /accounts. The owner always gets the Accounts
+  // section first (one account: own row + Add account), a member "Your account"; the
+  // role-based parts (policies, locks) need two or more accounts.
   const [me, setMe] = useState(null)              // { id, name, color, role, has_pin }
   const [acctCount, setAcctCount] = useState(1)
   const [acctData, setAcctData] = useState(null)  // { accounts, max_accounts, self_id }
+  const [ownerHasPin, setOwnerHasPin] = useState(true)   // D3: false → a plain Unlock, no PIN pad
   const [adding, setAdding] = useState(false)
   // MT-14: settings by role (all of it only with two or more accounts)
   const [meta, setMeta] = useState(null)           // member: GET /settings `_meta`
@@ -228,9 +230,15 @@ export default function Settings() {
       const { data } = await api.get('/auth/me')
       if (!data?.account) return
       const n = Number(data.accounts_count) || 1
-      setMe(data.account); setAcctCount(n)
+      setMe(data.account); setAcctCount(n); setOwnerHasPin(data.owner_has_pin !== false)
+      const owner = data.account.role === 'owner'
+      if (n < 2) {
+        const r = await api.get('/accounts').catch(() => ({ data: null }))
+        setAcctData(r.data || null)
+        const self = (r.data?.accounts || []).find((a) => a.id === data.account.id)
+        if (self) setMe((m) => ({ ...m, ...self }))
+      }
       if (n >= 2) {
-        const owner = data.account.role === 'owner'
         const [r, secs, pols] = await Promise.all([
           api.get('/accounts'),
           api.get('/settings/sections').catch(() => ({ data: [] })),
@@ -245,7 +253,7 @@ export default function Settings() {
         setUnlockedUntil(Number.isFinite(t) && t > Date.now() ? t : null)
         const self = (r.data?.accounts || []).find((a) => a.id === data.account.id)
         if (self) setMe((m) => ({ ...m, ...self }))
-      } else { setAcctData(null); setSidx(null); setPolicies({}); setUnlockedUntil(null) }
+      } else { setSidx(null); setPolicies({}); setPolicyFor(''); setUnlockedUntil(null) }
     } catch { /* silent: the accounts UI stays hidden, every other row works */ }
   }, [])
   useEffect(() => {
@@ -253,6 +261,7 @@ export default function Settings() {
     return () => window.removeEventListener('jn:accounts-changed', loadAccounts)
   }, [loadAccounts])
   const multi = acctCount >= 2 && !!me
+  const hasMe = !!me
   const isOwner = !me || me.role === 'owner'
   const member = multi && !isOwner
   const ownerName = (acctData?.accounts || []).find((a) => a.role === 'owner')?.name || 'the owner'
@@ -444,9 +453,9 @@ export default function Settings() {
     const curVoice = S.cover_letter_default_voice
     if (curVoice && !voiceOpts.some((o) => o[0] === curVoice)) voiceOpts.push([curVoice, `${curVoice} — not in presets`])
 
-    // MT-13: from two accounts on, the owner's "Accounts" table / a member's "Your account" comes first.
+    // QA F2 / D2: the owner's "Accounts" section (one account too) / a member's "Your account" comes first.
     // Their bodies are not rows (`block`), so they carry no row list and match the search by title.
-    const people = !multi ? [] : isOwner
+    const people = !hasMe ? [] : isOwner
       ? [['accounts', 'People', 'Accounts', '', [], 'accounts']]
       : [['account', 'You', 'Your account', '', [], 'account']]
     return [
@@ -650,13 +659,10 @@ export default function Settings() {
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),
         { kind: 'apikey', label: 'Dashboard API key', help: 'Saving refreshes the session cookie so iframes keep working.' },
         BT('DB backup', 'DB snapshot now, outside the cron.', 'Run backup', () => api.post('/db/backup'), { ownerOnly: true }),
-        // MT-13: the one row a single-account install gains — the owner's way in to adding the first member.
-        // From two accounts on, the full Accounts section at the top takes over.
-        ...(!multi && isOwner ? [{ kind: 'addpeople', label: 'Accounts', help: 'Add people to this install — each gets their own jobs, résumés and settings.' }] : []),
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, sidx, gmail])
+  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, hasMe, sidx, gmail])
 
   // The rail's account menu lands here: `#accounts` (Manage accounts) scrolls to the
   // Accounts / Your account section, `#add-account` also opens the Add dialog. The hash is
@@ -665,7 +671,7 @@ export default function Settings() {
   useEffect(() => {
     const h = loc.hash.replace('#', '')
     if (!ready || !hasS || (h !== 'accounts' && h !== 'add-account')) return
-    const target = multi ? (isOwner ? 'accounts' : 'account') : 'advanced'
+    const target = isOwner ? 'accounts' : 'account'
     setActive(target)
     requestAnimationFrame(() => {
       const c = scrollRef.current
@@ -716,6 +722,8 @@ export default function Settings() {
     })
     return out
   }, [sections, member, sidx, ownerName, unlocked])  // eslint-disable-line react-hooks/exhaustive-deps
+  // T7-01: at the top (nothing jumped to yet) the first section of the page is the current one
+  const cur = (active && ordered.some((s) => s[0] === active)) ? active : ordered[0]?.[0]
   const lockCtx = { member, unlocked, meta, idx: sidx }
   const sectionLocked = (rows) => rows.some((r) => !(r.hide && r.hide()) && rowLocked(r, lockCtx))
   const visible = ordered.filter(matches)
@@ -735,12 +743,16 @@ export default function Settings() {
       {/* MT-14: a member's lock pill; the owner's "whose policies" picker */}
       {ready && member && (
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: 32 }}>
-          <UnlockPill ownerName={ownerName} unlockedUntil={unlockedUntil} onUnlocked={onUnlocked} onLock={lockOwner} />
+          <UnlockPill ownerName={ownerName} unlockedUntil={unlockedUntil} onUnlocked={onUnlocked} onLock={lockOwner} ownerHasPin={ownerHasPin} />
         </span>
       )}
+      {/* T7-06: these controls set a member's policy, not the owner's own settings */}
       {ready && multi && isOwner && policyFor && (
-        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Helper style={{ whiteSpace: 'nowrap' }}>Policies for</Helper>
+        <span data-member-policies style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0 }}>
+            <Label>Member policies</Label>
+            <Helper size="xs" style={{ whiteSpace: 'nowrap' }}>Inherit / Own per section, for</Helper>
+          </span>
           <Select value={policyFor} width="180px" ariaLabel="Member whose section policies you set"
             options={(acctData?.accounts || []).filter((a) => a.role !== 'owner').map((a) => [a.id, a.name])}
             onPick={setPolicyFor} />
@@ -796,9 +808,9 @@ export default function Settings() {
               <div onClick={() => jump(id)} {...kb(() => jump(id), 'link')} aria-label={`Jump to ${title}`} className="v2-anchor" style={{ display: 'flex', alignItems: 'center', height: 29, padding: '0 26px 0 29px', fontSize: 12.5, cursor: 'pointer',
                 // MT-14: a member's locked sections read dimmed in the nav
                 ...(member && sectionLocked(rows) ? { opacity: 0.55 } : null),
-                color: active === id && !q ? 'var(--text)' : 'var(--text-2)', fontWeight: active === id && !q ? 600 : 400,
+                color: cur === id && !q ? 'var(--text)' : 'var(--text-2)', fontWeight: cur === id && !q ? 600 : 400,
                 /* 3px accent border + 29px left pad keeps the label position consistent whether or not the border shows */
-                borderLeft: `3px solid ${active === id && !q ? 'var(--accent)' : 'transparent'}` }}>{title}</div>
+                borderLeft: `3px solid ${cur === id && !q ? 'var(--accent)' : 'transparent'}` }}>{title}</div>
             </div>
           ))}
         </div>
@@ -833,7 +845,7 @@ export default function Settings() {
                 {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push} />}
                 {block === 'account' && <YourAccount data={acctData} me={me} onChanged={accountsChanged} push={push} />}
                 {rows.filter((r) => !(r.hide && r.hide())).map((r) => {
-                  const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow, openAdd: () => setAdding(true) }} />
+                  const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
                   if (!member) return row
                   // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and inert
                   const locked = rowLocked(r, lockCtx)
@@ -844,7 +856,7 @@ export default function Settings() {
                   )
                 })}
                 {member && !block && sectionLocked(rows) && (
-                  <LockCard ownerName={ownerName} sectionTitle={title} onUnlocked={onUnlocked}
+                  <LockCard ownerName={ownerName} sectionTitle={title} onUnlocked={onUnlocked} ownerHasPin={ownerHasPin}
                     inherited={sidx?.byId?.[id]?.scope === 'policy' && sidx?.byId?.[id]?.mode === 'inherit'} />
                 )}
               </div>
@@ -880,7 +892,7 @@ export default function Settings() {
       {modelsOpen && <ModelsModal S={S} save={save} onClose={() => setModelsOpen(false)} />}
       {dialog && (dialog.kind === 'prompt' ? <PromptDialog {...dialog} /> : <ConfirmDialog {...dialog} />)}
       {adding && me && (
-        <AddAccountModal accounts={acctData?.accounts || [me]} me={me} onClose={() => setAdding(false)} onCreated={created} />
+        <AddAccountModal accounts={acctData?.accounts || [me]} onClose={() => setAdding(false)} onCreated={created} />
       )}
       {toasts.length > 0 && <ToastStack toasts={toasts} onClose={dismiss} />}
     </div>
@@ -1036,8 +1048,6 @@ function Row({ r, ctx }) {
       }
       case 'linkedin':
         return <LinkedInRow li={li} setLi={setLi} flash={flash} />
-      case 'addpeople':
-        return <AddPeopleRow onAdd={ctx.openAdd} />
       default:
         return null
     }

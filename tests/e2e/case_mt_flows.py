@@ -5,7 +5,7 @@ dialog and Gmail row (MT-17/19), Export my data, the owner's Stats "All accounts
 
 SAFE FOR THE LIVE DB, by construction (the mt-switch / mt-settings pattern):
 - SKIPs unless the install has exactly ONE account and the owner has no PIN when it starts;
-- the owner PIN it sets (the Add dialog's "Set your PIN first" step) is removed again in
+- the owner PIN it sets (Settings › Accounts › Set PIN, QA F2) is removed again in
   `finally`;
 - it creates one member `ZZM Member <n>` copying persona, résumés, companies and searches
   from the owner (nothing else, never jobs), and removes it in `finally` (through the Remove
@@ -128,13 +128,16 @@ def _mt_flows(c):
             mpg = None
             try:
                 # ── create through Settings › Accounts › Add, with copy-from ──
+                # QA F2: the owner PIN is optional (D3); this case keeps testing the PIN paths,
+                # so it sets one from the always-present Accounts section (D2) first
                 C.go(opg, '/settings', settle=1200)
-                _scroll_to(opg, 'advanced')
-                opg.locator('[aria-label="Add an account to this install"]').click()
-                c.check('an owner without a PIN is asked to set one', _wait_text(opg, 'Set your PIN first'))
+                opg.locator('[aria-label="Set your PIN"]').click()
+                c.check('the owner sets a PIN from Settings › Accounts', _wait_text(opg, 'New PIN'))
                 opg.keyboard.type(OWNER_PIN, delay=60)
-                c.check('… and to repeat it', _wait_text(opg, 'Same PIN again'))
+                c.check('… and repeats it', _wait_text(opg, 'Same PIN again'))
                 opg.keyboard.type(OWNER_PIN, delay=60)
+                c.check('… PIN set', _wait_text(opg, 'PIN set'))
+                opg.get_by_text('+ Add account', exact=True).click()
                 c.check('the Add account form opens', _wait_text(opg, 'Start from a copy of'))
                 opg.locator('[aria-label="Account name"]').fill(member_name)
                 opg.locator('[aria-label="PIN for the new account"]').fill(MEMBER_PIN)

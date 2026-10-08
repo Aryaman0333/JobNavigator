@@ -450,7 +450,7 @@ def auth_verify_pin(body: dict):
 
 @app.get("/api/auth/me", tags=["auth"], summary="The account this browser acts as")
 def auth_me(request: Request):
-    """{account: {id, name, color, role, has_pin}, accounts_count, owner_unlocked_until (ISO or null)}. 401 `account_required` when the install has several accounts and this browser picked none."""
+    """{account: {id, name, color, role, has_pin}, accounts_count, owner_has_pin, owner_unlocked_until (ISO or null)}. `owner_has_pin` (public: the picker lists has_pin too) tells a member's lock card whether the owner unlock needs a PIN or is a plain Unlock (QA F2 / D3). 401 `account_required` when the install has several accounts and this browser picked none."""
     from backend.accounts.context import current_account
     db = SessionLocal()
     try:
@@ -459,7 +459,9 @@ def auth_me(request: Request):
         if acc is None:
             raise HTTPException(status_code=404, detail="No account")
         until = getattr(request.state, "owner_unlocked_until", 0) or 0
+        owner = acct_auth._owner_of(accounts)
         return {"account": acct_auth.public_account(acc), "accounts_count": len(accounts),
+                "owner_has_pin": bool(owner and owner["pin_hash"]),
                 "owner_unlocked_until": _epoch_iso(until) if until > acct_auth._now() else None}
     finally:
         db.close()

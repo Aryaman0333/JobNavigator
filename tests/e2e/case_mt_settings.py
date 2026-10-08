@@ -2,8 +2,9 @@
 
 SAFE FOR THE LIVE DB, by construction (the mt-switch pattern):
 - SKIPs unless the install has exactly ONE account and the owner has no PIN when it starts;
-- the owner PIN it sets (through the Add account dialog's "Set your PIN first" step) is
-  removed again in `finally`;
+- QA F2: it adds the member with no PIN anywhere (D3) and checks the plain Unlock, then sets
+  an owner PIN (Settings › Accounts › Set PIN) for the PIN paths; that PIN is removed again
+  in `finally`;
 - it creates one member `ZZS Member <n>` with no copy-from, and deletes it in `finally`
   (through the UI when the flow gets there, else the API; the API takes its own
   pre-removal pg_dump first);
@@ -80,6 +81,12 @@ def _nav(pg):
     return pg.evaluate("""() => [...document.querySelectorAll('.v2-anchor')].map((e) => e.textContent.trim())""")
 
 
+def _active(pg):
+    """The nav entry drawn as current (600 weight)."""
+    return pg.evaluate("""() => { const a = [...document.querySelectorAll('.v2-anchor')].find((e) => getComputedStyle(e).fontWeight === '600');
+      return a ? a.textContent.trim() : null }""")
+
+
 def _scroll_to(pg, sec):
     pg.evaluate("""(s) => { const el = document.querySelector(`[data-sec="sec-${s}"]`); if (el) el.scrollIntoView({ block: 'start' }) }""", sec)
     pg.wait_for_timeout(300)
@@ -104,20 +111,20 @@ def _mt_settings(c):
         with h.browser() as b:
             opg = C.seeded_page(b)
             try:
-                # ── MT-13: one account → only the Advanced row ──
+                # ── QA F2 / D2: one account → the Accounts section first, own row + Add ──
                 C.go(opg, '/settings', settle=1200)
-                c.check('one account: no Accounts section in the nav', 'Accounts' not in _nav(opg), _nav(opg))
-                _scroll_to(opg, 'advanced')
-                add = opg.locator('[aria-label="Add an account to this install"]')
-                c.eq('one account: the Advanced › Accounts row offers "Add account…"', add.count(), 1)
-                add.click()
-                c.check('an owner without a PIN is asked to set one first', _wait_text(opg, 'Set your PIN first'))
-                opg.keyboard.type(OWNER_PIN, delay=60)
-                c.check('… and to repeat it', _wait_text(opg, 'Same PIN again'))
-                opg.keyboard.type(OWNER_PIN, delay=60)
-                c.check('then the Add account form opens', _wait_text(opg, 'Start from a copy of'))
-                st, d = _api('GET', '/accounts')
-                c.check('the owner has a PIN now', st == 200 and d['accounts'][0]['has_pin'], st)
+                c.check('one account: Accounts is the first section', (_nav(opg) or [''])[0] == 'Accounts', _nav(opg))
+                c.eq('T7-01: at the top the first nav entry is the highlighted one', _active(opg), 'Accounts')
+                c.eq('one account: the table has the owner row only', opg.locator('[data-account-row]').count(), 1)
+                c.check('… with Set PIN, API token and Edit',
+                        all(opg.locator(f'[aria-label="{a}"]').count() == 1 for a in
+                            ('Set your PIN', 'Create an API token for scripts', 'Rename or recolour your account')))
+                c.eq('no Advanced "Add account…" row any more', opg.locator('[aria-label="Add an account to this install"]').count(), 0)
+                opg.screenshot(path=f'{SHOTS}/owner-one-account.png')
+                # ── D3: no owner PIN step; the member gets no PIN either ──
+                opg.get_by_text('+ Add account', exact=True).click()
+                c.check('the Add account form opens at once (no owner PIN step)', _wait_text(opg, 'Start from a copy of'))
+                c.check('… no "Set your PIN first"', not C.body_has(opg, 'Set your PIN first'))
 
                 opg.locator('[aria-label="Account name"]').fill(member_name)
                 opg.locator('[aria-label="Copy from account"]').click()
@@ -135,10 +142,17 @@ def _mt_settings(c):
                 c.check('the member exists', st == 200 and len(acc) == 1, f'{st}')
                 member_id = acc[0]['id'] if acc else None
                 c.eq('the owner browser still acts as the owner (no picker)', _me(opg), {'status': 200, 'name': owner_name})
+                st, d = _api('GET', '/accounts', account=owner_id)
+                c.check('both accounts have no PIN', st == 200 and not any(a['has_pin'] for a in d['accounts']), st)
                 c.check('two accounts: the Accounts section comes first', (_nav(opg) or [''])[0] == 'Accounts', _nav(opg))
-                _scroll_to(opg, 'advanced')
-                c.eq('… and the Advanced row is gone', opg.locator('[aria-label="Add an account to this install"]').count(), 0)
                 _scroll_to(opg, 'accounts')
+                # R6-07: the owner recolours the member from its row
+                opg.locator(f'[aria-label="Rename or recolour {member_name}"]').click()
+                opg.locator('[aria-label="Account colour"] [role="radio"]').nth(3).click()
+                opg.get_by_text('Save', exact=True).last.click()
+                c.check('owner Edit saves', _wait_text(opg, f'Saved {member_name}'))
+                st, d = _api('GET', '/accounts', account=owner_id)
+                c.eq('… the member colour changed', [a['color'] for a in d['accounts'] if a['id'] == member_id], ['#e0912b'])
                 rows = opg.locator('[data-account-row]')
                 c.eq('the table lists both accounts', rows.count(), 2)
                 c.check('the owner row says "you"', 'you' in opg.locator(f'[data-account-row="{owner_name}"]').inner_text())
@@ -198,8 +212,8 @@ def _mt_settings(c):
                 st, d = _api('GET', '/accounts', account=owner_id)
                 if st == 200 and len(d['accounts']) == 1:
                     member_id = None
-                c.check('back to one account: the Advanced row returns',
-                         opg.locator('[aria-label="Add an account to this install"]').count() == 1 or _wait_text(opg, 'Add people to this install'))
+                c.check('back to one account: Accounts keeps the owner row and Add',
+                        _wait_text(opg, 'Just you') and opg.locator('[data-account-row]').count() == 1)
                 errs, perrs = C.console_errors(opg)
                 c.check('owner: no page errors', not perrs, '; '.join(perrs[:2]))
             finally:
@@ -270,7 +284,8 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         # ── owner flips Interview prep to Own for the member ──
         C.go(opg, '/settings', settle=1500)
         c.check('owner: Accounts has no scope tag; Advanced says Owner only', _tag(opg, 'advanced') == 'Owner only', _tag(opg, 'advanced'))
-        c.check('owner: the policy picker names the member', C.body_has(opg, 'Policies for'))
+        c.check('owner: the picker is labelled as member policies (T7-06)', C.body_has(opg, 'Member policies') or C.body_has(opg, 'MEMBER POLICIES'))
+        c.check("owner: the toggles name the member's policy", C.body_has(opg, f'{member_name}’s policy:'))
         _scroll_to(opg, 'prep')
         opg.locator('[data-sec="sec-prep"] [role="radio"]', has_text='Own').click()
         c.check('owner: flipping toasts in the header', _wait_text(opg, f'{member_name} keeps their own Interview prep'))
@@ -290,6 +305,27 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         c.eq('… to the member’s own value', (s or {}).get('prep_include'), 'posting')
         st, s = _api('GET', '/settings', account=owner_id)
         c.eq('… the owner’s value is untouched', (s or {}).get('prep_include'), prep_before)
+
+        # ── D3: the owner has no PIN → the lock card is a plain Unlock (a privacy latch) ──
+        _scroll_to(mpg, 'advanced')
+        c.eq('no owner PIN: the lock card has no PIN pad', _sec_has(mpg, 'advanced', '[data-lock-card] input'), 0)
+        c.check('… says it is only a privacy latch', C.body_has(mpg, 'only a privacy latch'))
+        mpg.screenshot(path=f'{SHOTS}/member-lock-card-plain.png')
+        mpg.locator('[data-lock-card="Advanced"] [aria-label^="Unlock the shared settings"]').click()
+        c.check('the plain Unlock unlocks', _wait_text_ci(mpg, f'Unlocked as {owner_name} · until'))
+        c.eq('… the lock cards are gone', _sec_has(mpg, 'advanced', '[data-lock-card]'), 0)
+        mpg.get_by_text('Lock', exact=True).click()
+        c.check('Lock relocks (plain)', _wait_text(mpg, f'Owner sections locked · Unlock as {owner_name}'))
+
+        # ── the owner sets a PIN from Settings › Accounts; the member's card becomes a PIN pad ──
+        C.go(opg, '/settings', settle=1500)
+        opg.locator('[aria-label="Set your PIN"]').click()
+        c.check('owner: Set PIN dialog', _wait_text(opg, 'New PIN'))
+        opg.keyboard.type(OWNER_PIN, delay=60)
+        c.check('… repeat', _wait_text(opg, 'Same PIN again'))
+        opg.keyboard.type(OWNER_PIN, delay=60)
+        c.check('… PIN set', _wait_text(opg, 'PIN set'))
+        C.go(mpg, '/settings', settle=1500)
 
         # ── unlock with the owner PIN, edit an owner section, lock again ──
         _scroll_to(mpg, 'advanced')

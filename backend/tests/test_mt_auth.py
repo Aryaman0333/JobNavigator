@@ -563,6 +563,38 @@ def test_verify_owner_pin_without_an_owner_pin_is_ok(browser, test_db):
     assert r.status_code == 200 and r.json()["unlocked_until"]
 
 
+def test_no_pins_anywhere_create_switch_unlock(browser, test_db, owner):
+    """QA F2 / D3: an owner without a PIN adds a PIN-less member; both open instantly from
+    the picker, /auth/me says the owner has no PIN, and the member's owner unlock is a plain
+    Unlock (no PIN in the body)."""
+    assert not owner.pin_hash
+    r = browser.post("/api/accounts", json={"name": "Alex"})          # one account: acts as owner
+    assert r.status_code == 201, r.text
+    member_id = r.json()["account"]["id"]
+    assert r.json()["account"]["has_pin"] is False
+    picker = {a["id"]: a for a in browser.get("/api/auth/accounts").json()}
+    assert picker[str(owner.id)]["has_pin"] is False and picker[member_id]["has_pin"] is False
+    browser.cookies.clear()
+    r = _switch(browser, member_id)
+    assert r.status_code == 200 and r.json()["via"] == "no_pin"
+    me = _me(browser).json()
+    assert me["account"]["id"] == member_id and me["owner_has_pin"] is False
+    assert browser.patch("/api/settings", json={"proxy_url": "socks5://x"}).status_code == 403
+    r = browser.post("/api/auth/verify-owner-pin", json={})
+    assert r.status_code == 200 and r.json()["unlocked_until"]
+    assert _me(browser).json()["owner_unlocked_until"]
+    r = _switch(browser, owner.id)                                     # owner: instant too
+    assert r.status_code == 200 and r.json()["via"] == "no_pin"
+    assert _me(browser).json()["account"]["role"] == "owner"
+
+
+def test_me_reports_owner_has_pin(browser, test_db, owner):
+    m = _member(test_db)
+    _set_pin(test_db, owner, "9999")
+    _switch(browser, m.id)
+    assert _me(browser).json()["owner_has_pin"] is True
+
+
 def test_verify_owner_pin_needs_an_account(browser, test_db, owner):
     _member(test_db)
     _set_pin(test_db, owner, "9999")

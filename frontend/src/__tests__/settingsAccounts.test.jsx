@@ -19,6 +19,7 @@ import api from '../api'
 import {
   countsLine, errorText, PinDialog, AddAccountModal, RemoveAccountModal, ColorPicker, COPY_ITEMS,
   indexSections, rowKey, memberCanEdit, rowLocked, memberGroup, scopeTag, LockCard, UnlockPill,
+  AccountsTable, EditAccountModal, PolicyToggle,
 } from '../screens/SettingsAccounts'
 
 const typePin = (pin, label) => {
@@ -91,15 +92,17 @@ describe('PinDialog', () => {
 
 describe('AddAccountModal', () => {
   const owner = { id: 'o1', name: 'Viktor', color: '#2f6fed', role: 'owner', has_pin: true }
-  it('an owner without a PIN sets one first (twice), then sees the form', async () => {
-    api.patch.mockResolvedValue({ data: {} })
-    render(<AddAccountModal accounts={[{ ...owner, has_pin: false }]} me={{ ...owner, has_pin: false }} onClose={() => {}} onCreated={() => {}} />)
-    expect(screen.getByText('Set your PIN first')).toBeTruthy()
-    typePin('4321', 'New PIN')
-    typePin('4321', 'Same PIN again')
-    await flush(); await flush()
-    expect(api.patch).toHaveBeenCalledWith('/accounts/o1', { pin: '4321' })
-    expect(screen.getByLabelText('Account name')).toBeTruthy()
+  it('an owner without a PIN goes straight to the form and adds a PIN-less member (D3)', async () => {
+    api.post.mockResolvedValue({ data: { account: { id: 'm1', name: 'Alex' }, copied: {} } })
+    const onCreated = vi.fn()
+    render(<AddAccountModal accounts={[{ ...owner, has_pin: false }]} onClose={() => {}} onCreated={onCreated} />)
+    expect(screen.queryByText('Set your PIN first')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'Alex' } })
+    fireEvent.click(screen.getByText('Add account', { selector: '[role="button"], button' }))
+    await flush()
+    expect(api.patch).not.toHaveBeenCalled()
+    expect(api.post).toHaveBeenCalledWith('/accounts', { name: 'Alex', color: '#d9534f' })
+    expect(onCreated).toHaveBeenCalled()
   })
   it('posts name, first free colour, PIN and the copy-from items', async () => {
     api.post.mockResolvedValue({ data: { account: { id: 'm1', name: 'Alex' }, copied: {} } })
@@ -234,6 +237,27 @@ describe('LockCard / UnlockPill', () => {
     expect(onUnlocked).not.toHaveBeenCalled()
     expect(screen.getByText('Wrong PIN · 4 tries left')).toBeTruthy()
   })
+  it('without an owner PIN the lock card is a plain Unlock button (D3)', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, unlocked_until: '2026-10-05T12:15:00+00:00' } })
+    const onUnlocked = vi.fn()
+    render(<LockCard ownerName="Viktor" sectionTitle="Advanced" ownerHasPin={false} onUnlocked={onUnlocked} />)
+    expect(screen.queryAllByLabelText(/Viktor’s PIN digit/)).toHaveLength(0)
+    expect(screen.getByText(/only a privacy latch/)).toBeTruthy()
+    fireEvent.click(screen.getByText('Unlock', { selector: '[role="button"], button' }))
+    await flush()
+    expect(api.post).toHaveBeenCalledWith('/auth/verify-owner-pin', { pin: undefined })
+    expect(onUnlocked).toHaveBeenCalledWith(Date.parse('2026-10-05T12:15:00+00:00'))
+  })
+  it('without an owner PIN the pill dialog has a plain Unlock too', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, unlocked_until: '2026-10-05T12:15:00+00:00' } })
+    const onUnlocked = vi.fn()
+    render(<UnlockPill ownerName="Viktor" unlockedUntil={null} ownerHasPin={false} onUnlocked={onUnlocked} onLock={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Owner sections locked — unlock as Viktor'))
+    expect(screen.queryAllByLabelText(/Viktor’s PIN digit/)).toHaveLength(0)
+    fireEvent.click(screen.getByLabelText('Unlock the shared settings as Viktor'))
+    await flush()
+    expect(onUnlocked).toHaveBeenCalled()
+  })
   it('the pill reads locked ↔ unlocked and Lock calls back', async () => {
     const onLock = vi.fn().mockResolvedValue()
     const { rerender } = render(<UnlockPill ownerName="Viktor" unlockedUntil={null} onUnlocked={() => {}} onLock={onLock} />)
@@ -245,5 +269,77 @@ describe('LockCard / UnlockPill', () => {
     fireEvent.click(screen.getByText('Lock'))
     await flush()
     expect(onLock).toHaveBeenCalled()
+  })
+})
+
+// ── QA F2 · D2 Accounts section with one account, R6-07 rename/recolour, T7-06 ──
+describe('AccountsTable (owner, always shown)', () => {
+  const me = { id: 'o1', name: 'Viktor', color: '#2f6fed', role: 'owner', has_pin: false }
+  const one = { accounts: [{ ...me, is_self: true, counts: { jobs: 12 } }], max_accounts: 5, self_id: 'o1' }
+  it('with one account: own row, PIN, API token, Edit, Add account; no Remove', () => {
+    const onAdd = vi.fn()
+    render(<AccountsTable data={one} me={me} onAdd={onAdd} onChanged={() => {}} push={() => {}} />)
+    const rows = screen.getAllByRole('row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].getAttribute('data-account-row')).toBe('Viktor')
+    expect(screen.getByText('12 jobs')).toBeTruthy()
+    expect(screen.getByLabelText('Set your PIN')).toBeTruthy()
+    expect(screen.getByLabelText('Create an API token for scripts')).toBeTruthy()
+    expect(screen.getByLabelText('Rename or recolour your account')).toBeTruthy()
+    expect(screen.queryByText('Remove')).toBeNull()
+    expect(screen.getByText(/Just you/)).toBeTruthy()
+    fireEvent.click(screen.getByText('+ Add account', { selector: '[role="button"], button' }))
+    expect(onAdd).toHaveBeenCalled()
+  })
+  it('falls back to the caller when GET /accounts has not answered', () => {
+    render(<AccountsTable data={null} me={me} onAdd={() => {}} onChanged={() => {}} push={() => {}} />)
+    expect(screen.getAllByRole('row')).toHaveLength(1)
+  })
+  it('a member row has Edit, Reset PIN and Remove; own PIN dialog offers Remove PIN instead', () => {
+    const data = { accounts: [{ ...me, has_pin: true, is_self: true }, { id: 'm1', name: 'Alex', color: '#2e9e6b', role: 'member', has_pin: false }], max_accounts: 5 }
+    render(<AccountsTable data={data} me={me} onAdd={() => {}} onChanged={() => {}} push={() => {}} />)
+    expect(screen.getByLabelText('Rename or recolour Alex')).toBeTruthy()
+    expect(screen.getByLabelText('Remove Alex')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Change your PIN'))
+    fireEvent.click(screen.getByText('Remove PIN instead'))
+    expect(screen.getAllByText('Remove your PIN').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText(/Current PIN digit/)).toHaveLength(4)
+  })
+  it('Edit renames and recolours through PATCH (R6-07)', async () => {
+    api.patch.mockResolvedValue({ data: {} })
+    const push = vi.fn()
+    const onChanged = vi.fn()
+    const data = { accounts: [{ ...me, is_self: true }, { id: 'm1', name: 'Alex', color: '#2e9e6b', role: 'member' }], max_accounts: 5 }
+    render(<AccountsTable data={data} me={me} onAdd={() => {}} onChanged={onChanged} push={push} />)
+    fireEvent.click(screen.getByLabelText('Rename or recolour Alex'))
+    fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'Alexandra' } })
+    fireEvent.click(screen.getAllByRole('radio')[3])
+    fireEvent.click(screen.getByText('Save', { selector: '[role="button"], button' }))
+    await flush()
+    expect(api.patch).toHaveBeenCalledWith('/accounts/m1', { name: 'Alexandra', color: '#e0912b' })
+    expect(onChanged).toHaveBeenCalled()
+    expect(push).toHaveBeenCalledWith({ kind: 'success', msg: 'Saved Alexandra' })
+  })
+})
+
+describe('EditAccountModal', () => {
+  it('Save stays off until something changes, then sends only what changed', async () => {
+    api.patch.mockResolvedValue({ data: {} })
+    const onSaved = vi.fn()
+    render(<EditAccountModal account={{ id: 'o1', name: 'Viktor', color: '#2f6fed' }} self onClose={() => {}} onSaved={onSaved} />)
+    const save = screen.getByText('Save', { selector: '[role="button"], button' })
+    expect(save.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(screen.getAllByRole('radio')[1])
+    fireEvent.click(save)
+    await flush()
+    expect(api.patch).toHaveBeenCalledWith('/accounts/o1', { color: '#d9534f' })
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ color: '#d9534f', name: 'Viktor' }))
+  })
+})
+
+describe('PolicyToggle (T7-06)', () => {
+  it("is labelled as the member's policy", () => {
+    render(<PolicyToggle memberName="Alex" mode="inherit" sectionTitle="Feed" onChange={() => {}} />)
+    expect(screen.getByText('Alex’s policy:')).toBeTruthy()
   })
 })

@@ -423,8 +423,8 @@ def check_switch(accounts: list, target: dict, pin) -> str:
     """Raise SwitchDenied unless `pin` lets the caller into `target`. Returns how:
     'no_pin' | 'own_pin' | 'owner_pin'.
 
-    * owner target: its PIN when one is set; none set yet -> allowed (MT-11/12 make the
-      owner set one).
+    * owner target: its PIN when one is set; without one -> allowed (QA F2 / D3: every
+      PIN is optional, the owner's too).
     * member target without a PIN -> allowed.
     * member target with a PIN -> its PIN, or the owner's PIN (when the owner has one and
       is not cooling down)."""
@@ -453,8 +453,9 @@ def check_switch(accounts: list, target: dict, pin) -> str:
 
 
 def check_owner_pin(accounts: list, pin) -> None:
-    """For the 15-minute owner unlock: the owner's PIN (none set yet -> allowed), with
-    the owner's cooldown."""
+    """For the 15-minute owner unlock: the owner's PIN, with the owner's cooldown. An
+    owner without a PIN -> allowed with no PIN (QA F2 / D3: a plain "Unlock", so the
+    owner sections are only a privacy latch on such an install)."""
     owner = _owner_of(accounts)
     if owner is None:
         raise SwitchDenied(404, "no_owner")

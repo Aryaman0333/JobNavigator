@@ -8,10 +8,10 @@ import {
 
 // Settings › Accounts (owner) and Settings › Your account (member) — MT-13.
 //
-// With one account none of this shows except one row at the end of System ›
-// Advanced ("Accounts — add people to this install", `AddPeopleRow`), which is
-// the owner's way in to the first member. From two accounts on the owner gets a
-// full "Accounts" section first in the page and a member gets "Your account".
+// QA F2 / D2: the owner always gets an "Accounts" section first in the page — with
+// one account it holds the owner's own row and "+ Add account", from two on the
+// full table. A member gets "Your account" first. PINs are optional everywhere
+// (D3), the owner's included.
 //
 // Every account change dispatches `jn:accounts-changed` (the rail switcher and
 // the Settings page reload their lists) and `jn:counts-changed` (rail badges).
@@ -49,7 +49,6 @@ export const accountsChanged = () => {
 // The MT-11 error bodies are `{detail: code, message}`; PIN answers carry their own numbers.
 const CODE_TEXT = {
   account_limit: 'This install already has 5 accounts — remove one first.',
-  owner_pin_required: 'Set your own PIN first.',
   name_taken: 'Another account already has that name.',
   account_busy: 'That account has background work running — try again when it finishes.',
   backup_failed: 'The database backup failed, so nothing was removed. See the server log.',
@@ -164,11 +163,10 @@ export function PinDialog({ title, who, needCurrent, mode = 'set', intro, onSubm
       style={{ padding: '22px 24px 18px', gap: 12 }}>
       <Heading size={19} className="v2-dialogtitle">{title}</Heading>
       {intro && <Helper style={{ textWrap: 'pretty' }}>{intro}</Helper>}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '6px 0 2px' }}>
-        <Helper>{prompt}</Helper>
-        <PinPad key={name} onComplete={complete} busy={busy} error={error} resetKey={attempt}
-          cooldown={cooldown} onCooldownEnd={() => setCooldown(0)} ariaLabel={prompt} />
-      </div>
+      {/* T7-07: the prompt is the pad's own status line (it used to sit above the boxes and
+          leave that line empty, ~50 px of dead space before Cancel) */}
+      <PinPad key={name} onComplete={complete} busy={busy} error={error} resetKey={attempt} hint={prompt}
+        cooldown={cooldown} onCooldownEnd={() => setCooldown(0)} ariaLabel={prompt} style={{ paddingTop: 4 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {onRemove && <Link onClick={onRemove}>Remove PIN instead</Link>}
         <Button variant="secondary" size="sm" onClick={onClose} disabled={busy} style={{ marginLeft: 'auto' }}>Cancel</Button>
@@ -179,11 +177,9 @@ export function PinDialog({ title, who, needCurrent, mode = 'set', intro, onSubm
 
 // ── Add account ─────────────────────────────────────────────────────────────
 // Name, colour, optional member PIN, "Start from a copy of…" with the items to
-// copy. While the owner has no PIN (409 owner_pin_required otherwise) the dialog
-// opens on a step that sets it first, entered twice on the PIN pad.
-export function AddAccountModal({ accounts, me, onClose, onCreated }) {
+// copy. QA F2 / D3: no owner PIN is needed first (PINs are optional throughout).
+export function AddAccountModal({ accounts, onClose, onCreated }) {
   const taken = accounts.map((a) => (a.color || '').toLowerCase())
-  const [needOwnerPin, setNeedOwnerPin] = useState(!me?.has_pin)
   const [name, setName] = useState('')
   const [color, setColor] = useState(() => ACCOUNT_SWATCHES.find((c) => !taken.includes(c)) || ACCOUNT_SWATCHES[0])
   const [pin, setPin] = useState('')
@@ -206,23 +202,9 @@ export function AddAccountModal({ accounts, me, onClose, onCreated }) {
       const { data } = await api.post('/accounts', body)
       onCreated(data?.account || { name: body.name }, data?.copied || {})
     } catch (err) {
-      if (err?.response?.data?.detail === 'owner_pin_required') { setNeedOwnerPin(true); setBusy(false); return }
       setError(errorText(err, 'Could not add the account — try again.'))
       setBusy(false)
     }
-  }
-
-  if (needOwnerPin) {
-    return (
-      <PinDialog title="Set your PIN first" who={null} mode="set"
-        intro={`With a second account, the picker asks for a PIN before it opens ${me?.name || 'your account'}. Choose four digits — you can change them later here.`}
-        onSubmit={async (b) => {
-          await api.patch(`/accounts/${me.id}`, { pin: b.pin })
-          setNeedOwnerPin(false)
-          accountsChanged()
-        }}
-        onClose={onClose} />
-    )
   }
 
   const sources = [['', 'Nothing — start empty'], ...accounts.map((a) => [a.id, a.role === 'owner' ? `${a.name} (owner)` : a.name])]
@@ -358,29 +340,81 @@ export function ApiTokenButton({ account, push, size = 'sm' }) {
   )
 }
 
-// ── one-account entry row (System › Advanced) ───────────────────────────────
-export function AddPeopleRow({ onAdd }) {
-  return <Pill onClick={onAdd} ariaLabel="Add an account to this install">Add account…</Pill>
+// ── Edit an account's name and colour (owner: any row; R6-07) ───────────────
+export function EditAccountModal({ account, self = false, taken = [], onClose, onSaved }) {
+  const [name, setName] = useState(account.name || '')
+  const [color, setColor] = useState((account.color || '').toLowerCase())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const n = name.trim()
+  const nameChanged = n !== account.name
+  const colorChanged = color !== (account.color || '').toLowerCase()
+  const ready = n.length > 0 && (nameChanged || colorChanged) && !busy
+  const save = async () => {
+    if (!ready) return
+    setBusy(true); setError('')
+    const body = {}
+    if (nameChanged) body.name = n
+    if (colorChanged) body.color = color
+    try {
+      await api.patch(`/accounts/${account.id}`, body)
+      onSaved({ ...account, ...body })
+    } catch (err) {
+      setError(errorText(err, 'Could not save — try again.'))
+      setBusy(false)
+    }
+  }
+  const title = self ? 'Your name and colour' : `Edit ${account.name}`
+  return (
+    <ModalPanel width={440} title={title} onClose={busy ? undefined : onClose} zIndex={70}
+      style={{ padding: '22px 24px 18px', gap: 14 }}>
+      <Heading size={19} className="v2-dialogtitle">{title}</Heading>
+      <Field label="Name">
+        <Input value={name} onChange={setName} ariaLabel="Account name" autoFocus width="100%"
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
+      </Field>
+      <Field label="Colour"><ColorPicker name={n} value={color} onPick={setColor} taken={taken} ariaLabel="Account colour" /></Field>
+      {error && <Helper style={{ color: 'var(--bad)' }}>{error}</Helper>}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
+        <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button size="sm" onClick={save} disabled={!ready} busy={busy}>Save</Button>
+      </div>
+    </ModalPanel>
+  )
 }
 
-// ── owner: the Accounts table ───────────────────────────────────────────────
+// ── owner: the Accounts section ─────────────────────────────────────────────
+// QA F2 / D2: always shown to the owner, first in Settings — one account = the
+// owner's own row + "+ Add account"; more = every account.
 export function AccountsTable({ data, me, onAdd, onChanged, push }) {
-  const accounts = data?.accounts || []
+  const accounts = data?.accounts?.length ? data.accounts : (me ? [{ ...me, is_self: true }] : [])
   const max = data?.max_accounts || 5
-  const [pinFor, setPinFor] = useState(null)      // account whose PIN dialog is up
+  const [pinFor, setPinFor] = useState(null)      // { account, mode: 'set' | 'remove' } whose PIN dialog is up
   const [removing, setRemoving] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const selfRow = accounts.find((a) => a.id === me?.id)
+  const others = accounts.length > 1
 
   const pinDialog = pinFor && (() => {
-    const self = pinFor.id === me.id
+    const acc = pinFor.account
+    const self = acc.id === me.id
     const done = (msg) => { setPinFor(null); push({ kind: 'success', msg }); onChanged() }
+    if (self && pinFor.mode === 'remove') {
+      return (
+        <PinDialog title="Remove your PIN" mode="remove" needCurrent
+          intro={others ? 'Without your PIN anyone at a browser opens your account with one click, and a member’s Unlock of the shared settings needs no PIN.' : undefined}
+          onSubmit={async (b) => { await api.patch(`/accounts/${acc.id}`, b); done('PIN removed') }}
+          onClose={() => setPinFor(null)} />
+      )
+    }
     return (
-      <PinDialog title={self ? (pinFor.has_pin ? 'Change your PIN' : 'Set your PIN') : `Reset ${pinFor.name}’s PIN`}
-        who={self ? null : pinFor.name} mode="set" needCurrent={self && pinFor.has_pin}
-        intro={self ? undefined : `${pinFor.name} uses the new PIN from now on; your own PIN keeps opening their account.`}
-        onSubmit={async (b) => { await api.patch(`/accounts/${pinFor.id}`, b); done(self ? 'PIN changed' : `${pinFor.name}’s PIN reset`) }}
-        onRemove={!self && pinFor.has_pin ? async () => {
-          try { await api.patch(`/accounts/${pinFor.id}`, { pin: null }); done(`${pinFor.name} opens without a PIN now`) } catch (err) { push({ kind: 'error', msg: errorText(err) }) }
-        } : undefined}
+      <PinDialog title={self ? (acc.has_pin ? 'Change your PIN' : 'Set your PIN') : `Reset ${acc.name}’s PIN`}
+        who={self ? null : acc.name} mode="set" needCurrent={self && acc.has_pin}
+        intro={self ? undefined : `${acc.name} uses the new PIN from now on; your own PIN keeps opening their account.`}
+        onSubmit={async (b) => { await api.patch(`/accounts/${acc.id}`, b); done(self ? (acc.has_pin ? 'PIN changed' : 'PIN set') : `${acc.name}’s PIN reset`) }}
+        onRemove={acc.has_pin ? (self ? () => setPinFor({ account: acc, mode: 'remove' }) : async () => {
+          try { await api.patch(`/accounts/${acc.id}`, { pin: null }); done(`${acc.name} opens without a PIN now`) } catch (err) { push({ kind: 'error', msg: errorText(err) }) }
+        }) : undefined}
         onClose={() => setPinFor(null)} />
     )
   })()
@@ -389,7 +423,10 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 10px' }}>
         <Helper style={{ flex: 1, minWidth: 0, textWrap: 'pretty' }}>
-          Everyone on this install has their own jobs, résumés, applications and settings; scraping is shared. {accounts.length} of {max} accounts.
+          {others
+            ? `Everyone on this install has their own jobs, résumés, applications and settings; scraping is shared. ${accounts.length} of ${max} accounts.`
+            : `Just you. Add people to this install — each gets their own jobs, résumés, applications and settings; scraping stays shared. Up to ${max} accounts.`}
+          {others && selfRow && !selfRow.has_pin && ' Your account has no PIN, so the shared settings are only a privacy latch.'}
         </Helper>
         <Button size="sm" onClick={onAdd} disabled={accounts.length >= max}
           title={accounts.length >= max ? `At most ${max} accounts` : undefined}>+ Add account</Button>
@@ -411,8 +448,10 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
               </div>
               <span role="cell" style={{ flex: '0 0 74px' }}><Tag tone={owner ? 'accent' : 'neutral'}>{owner ? 'Owner' : 'Member'}</Tag></span>
               <span role="cell" style={{ flex: '0 0 96px' }}><Helper title={a.last_active_at || ''}>{self ? 'now' : ago(a.last_active_at)}</Helper></span>
-              <span role="cell" style={{ flex: '0 0 auto', display: 'flex', gap: 6, justifyContent: 'flex-end', minWidth: 190 }}>
-                <Pill size="sm" onClick={() => setPinFor(a)} ariaLabel={`${self ? 'Change your PIN' : `Reset ${a.name}’s PIN`}`}>
+              <span role="cell" style={{ flex: '0 0 auto', display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end', minWidth: 190 }}>
+                <Pill size="sm" onClick={() => setEditing(a)} ariaLabel={self ? 'Rename or recolour your account' : `Rename or recolour ${a.name}`}>Edit</Pill>
+                <Pill size="sm" onClick={() => setPinFor({ account: a, mode: 'set' })}
+                  ariaLabel={self ? (a.has_pin ? 'Change your PIN' : 'Set your PIN') : (a.has_pin ? `Reset ${a.name}’s PIN` : `Set ${a.name}’s PIN`)}>
                   {self ? (a.has_pin ? 'Change PIN' : 'Set PIN') : (a.has_pin ? 'Reset PIN' : 'Set PIN')}
                 </Pill>
                 {self && <ApiTokenButton account={a} push={push} />}
@@ -425,6 +464,12 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
         })}
       </div>
       {pinDialog}
+      {editing && (
+        <EditAccountModal account={editing} self={editing.id === me?.id}
+          taken={accounts.filter((x) => x.id !== editing.id).map((x) => (x.color || '').toLowerCase())}
+          onClose={() => setEditing(null)}
+          onSaved={(acc) => { setEditing(null); push({ kind: 'success', msg: `Saved ${acc.name}` }); onChanged() }} />
+      )}
       {removing && (
         <RemoveAccountModal account={removing} onClose={() => setRemoving(null)}
           onRemoved={(acc, res) => {
@@ -585,11 +630,12 @@ export function ScopeTag({ tag }) {
   return <Tag tone={tag.tone}>{tag.label}</Tag>
 }
 
-// Owner: "<member>: Inherit | Own" for one policy section.
+// Owner: "<member>'s policy: Inherit | Own" for one policy section (T7-06: it sets the
+// member's policy, never the owner's own state).
 export function PolicyToggle({ memberName, mode, onChange, sectionTitle }) {
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: 7, marginLeft: 'auto', flex: '0 0 auto' }}>
-      <Helper size="xs">{memberName}:</Helper>
+    <span data-policy-for={memberName} style={{ display: 'flex', alignItems: 'center', gap: 7, marginLeft: 'auto', flex: '0 0 auto' }}>
+      <Helper size="xs">{memberName}’s policy:</Helper>
       <Segmented variant="inset" grow={false} value={mode} onChange={onChange}
         ariaLabel={`${sectionTitle} for ${memberName}`}
         options={[{ value: 'inherit', label: 'Inherit', hint: `${memberName} sees your values, read-only` },
@@ -637,8 +683,43 @@ export function OwnerPinPad({ ownerName, onUnlocked, autoFocus = false }) {
   )
 }
 
+// QA F2 / D3: when the owner has no PIN the unlock is a plain button (POST
+// /auth/verify-owner-pin with no PIN); the owner sections are then only a privacy latch.
+export function PlainUnlockButton({ ownerName, onUnlocked }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const go = async () => {
+    setBusy(true); setError('')
+    try { const until = await verifyOwnerPin(); setBusy(false); onUnlocked(until) } catch (e) { setBusy(false); setError(e.message) }
+  }
+  return (
+    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flex: '0 0 auto' }}>
+      <Button size="sm" onClick={go} busy={busy} ariaLabel={`Unlock the shared settings as ${ownerName}`}>Unlock</Button>
+      {error && <Helper size="xs" style={{ color: 'var(--bad)' }}>{error}</Helper>}
+    </span>
+  )
+}
+
+export const NO_OWNER_PIN_NOTE = 'Without an owner PIN this is only a privacy latch.'
+
 // After the last row of a section a member cannot edit.
-export function LockCard({ ownerName, inherited, sectionTitle, onUnlocked }) {
+export function LockCard({ ownerName, inherited, sectionTitle, onUnlocked, ownerHasPin = true }) {
+  if (!ownerHasPin) {
+    return (
+      <Surface radius="card" pad="12px 14px" data-lock-card={sectionTitle}
+        style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 12 }}>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <span style={{ fontSize: 12.5, lineHeight: '18px', fontWeight: 500 }}>
+            {inherited ? `Inherited from ${ownerName}` : `Shared by everyone on this install`}
+          </span>
+          <Helper style={{ textWrap: 'pretty' }}>
+            {inherited ? `You see ${ownerName}’s values. ` : ''}Unlock to change the shared values as {ownerName} for 15 minutes. {NO_OWNER_PIN_NOTE}
+          </Helper>
+        </div>
+        <PlainUnlockButton ownerName={ownerName} onUnlocked={onUnlocked} />
+      </Surface>
+    )
+  }
   return (
     <Surface radius="card" pad="12px 14px" data-lock-card={sectionTitle}
       style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 12 }}>
@@ -658,7 +739,7 @@ export function LockCard({ ownerName, inherited, sectionTitle, onUnlocked }) {
 }
 
 // Header pill: "🔒 Owner sections locked · Unlock as X" ↔ "Unlocked as X · until HH:MM · Lock".
-export function UnlockPill({ ownerName, unlockedUntil, onUnlocked, onLock }) {
+export function UnlockPill({ ownerName, unlockedUntil, onUnlocked, onLock, ownerHasPin = true }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   if (unlockedUntil) {
@@ -680,10 +761,14 @@ export function UnlockPill({ ownerName, unlockedUntil, onUnlocked, onLock }) {
           style={{ padding: '22px 24px 18px', gap: 12 }}>
           <Heading size={19} className="v2-dialogtitle">Unlock as {ownerName}</Heading>
           <Helper style={{ textWrap: 'pretty' }}>
-            {ownerName} enters their PIN; for 15 minutes this browser can change the shared settings as {ownerName}.
+            {ownerHasPin
+              ? `${ownerName} enters their PIN; for 15 minutes this browser can change the shared settings as ${ownerName}.`
+              : `For 15 minutes this browser can change the shared settings as ${ownerName}. ${NO_OWNER_PIN_NOTE}`}
           </Helper>
           <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
-            <OwnerPinPad ownerName={ownerName} autoFocus onUnlocked={(t) => { setOpen(false); onUnlocked(t) }} />
+            {ownerHasPin
+              ? <OwnerPinPad ownerName={ownerName} autoFocus onUnlocked={(t) => { setOpen(false); onUnlocked(t) }} />
+              : <PlainUnlockButton ownerName={ownerName} onUnlocked={(t) => { setOpen(false); onUnlocked(t) }} />}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
