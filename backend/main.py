@@ -156,9 +156,23 @@ _PUBLIC_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/cv", "/api/
 _ACCOUNT_OPTIONAL = ("/api/auth/accounts", "/api/auth/switch", "/api/auth/verify-pin")
 
 
-def _account_required_response(detail: str) -> JSONResponse:
+def _account_required_response(detail: str, clear_cookie: bool = False) -> JSONResponse:
     headers = {acct_auth.AUTH_HEADER: "account"} if detail == acct_auth.ACCOUNT_REQUIRED else None
-    return JSONResponse(status_code=401, content={"detail": detail}, headers=headers)
+    resp = JSONResponse(status_code=401, content={"detail": detail}, headers=headers)
+    if clear_cookie:
+        # QA F3 / R2-03: a stale jn_account (removed account, changed PIN) is dropped.
+        acct_auth.clear_account_cookie(resp)
+    return resp
+
+
+def _secret_eq(given, expected) -> bool:
+    """Constant-time compare that never raises: `hmac.compare_digest(str, str)` raises
+    TypeError on non-ASCII text (a latin-1 header or cookie byte, QA F3 / R2-07), so both
+    sides are compared as UTF-8 bytes; anything that is not a string is not the secret."""
+    if not isinstance(given, str) or not isinstance(expected, str):
+        return False
+    return _hmac_mw.compare_digest(given.encode("utf-8", "surrogatepass"),
+                                   expected.encode("utf-8", "surrogatepass"))
 
 
 @app.middleware("http")
@@ -214,7 +228,7 @@ async def _api_key_auth(request: Request, call_next):
             # Key configured → require match (timing-safe compare)
             if not api_key:
                 return JSONResponse(status_code=401, content={"detail": "API key required"})
-            if not _hmac_mw.compare_digest(api_key, expected):
+            if not _secret_eq(api_key, expected):
                 return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
 
         # Tests that drive the app on their own throwaway engine run unscoped (system
@@ -239,13 +253,15 @@ async def _api_key_auth(request: Request, call_next):
 
     optional = path in _ACCOUNT_OPTIONAL
     if res is not None and res.error and not (optional and res.error == acct_auth.ACCOUNT_REQUIRED):
-        return _account_required_response(res.error)
+        return _account_required_response(res.error, clear_cookie=res.clear_cookie)
     if res is None or res.account is None:
         request.state.account_id = None
         request.state.owner_unlocked_until = 0
+        request.state.owner_unlock_id = None
         return await _as_owner(request, call_next)
     request.state.account_id = res.account["id"]
     request.state.owner_unlocked_until = res.unlocked_until
+    request.state.owner_unlock_id = res.unlock_id
     unlocked = bool(res.unlocked_until) and res.unlocked_until > acct_auth._now()
     with use_account(res.account["id"]), owner_unlocked(unlocked):
         return await call_next(request)
@@ -324,7 +340,7 @@ async def verify_api_key(body: dict, request: Request):
         expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
         if not expected:
             return {"ok": True, "first_run": True}
-        if not api_key or not _hmac.compare_digest(api_key, expected):
+        if not api_key or not _secret_eq(api_key, expected):
             _auth_record_failure(request)
             raise HTTPException(status_code=401, detail="Invalid API key")
         _auth_clear_failures(request)
@@ -346,7 +362,7 @@ async def set_session(body: dict, response: _Response, request: Request):
     db = SessionLocal()
     try:
         expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
-        if expected and (not api_key or not _hmac.compare_digest(api_key, expected)):
+        if expected and (not api_key or not _secret_eq(api_key, expected)):
             _auth_record_failure(request)
             raise HTTPException(status_code=401, detail="Invalid API key")
         _auth_clear_failures(request)
@@ -366,8 +382,9 @@ async def set_session(body: dict, response: _Response, request: Request):
 
 
 @app.post("/api/auth/logout", tags=["auth"], summary="Clear session cookie")
-async def logout(response: _Response):
-    """Clear the install session cookie and this browser's account cookie."""
+async def logout(request: Request, response: _Response):
+    """Clear the install session cookie and this browser's account cookie (ending its owner unlock)."""
+    _revoke_cookie_unlock(request)
     response.delete_cookie(key="jn_session", samesite="strict", httponly=True)
     acct_auth.clear_account_cookie(response)
     return {"ok": True}
@@ -389,6 +406,19 @@ def _epoch_iso(ts) -> Optional[str]:
     return _dt_auth.fromtimestamp(ts, _tz_auth.utc).isoformat() if ts else None
 
 
+def _revoke_cookie_unlock(request: Request) -> None:
+    """QA F3 / R2-06: end the owner unlock carried by this browser's jn_account cookie
+    (Lock, switching away, logout), so a copy of the old value no longer unlocks."""
+    value = request.cookies.get(acct_auth.COOKIE_NAME)
+    if not value:
+        return
+    db = SessionLocal()
+    try:
+        acct_auth.revoke_cookie_unlock(db, value)
+    finally:
+        db.close()
+
+
 @app.get("/api/auth/accounts", tags=["auth"], summary="Accounts for the picker")
 def auth_accounts():
     """Every account as {id, name, color, role, has_pin}, owner first; nothing else. Needs the install password but no account."""
@@ -400,8 +430,8 @@ def auth_accounts():
 
 
 @app.post("/api/auth/switch", tags=["auth"], summary="Switch this browser to an account")
-def auth_switch(body: dict, response: _Response):
-    """Body {account_id, pin?}. Sets the signed httpOnly `jn_account` cookie for this browser only. The owner's PIN is required once it has one; a member's PIN is optional, and the owner's PIN also opens a PIN'd member. Errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown` (+ Retry-After) after 5 wrong tries for that account (30 s)."""
+def auth_switch(body: dict, request: Request, response: _Response):
+    """Body {account_id, pin?}. Sets the signed httpOnly `jn_account` cookie for this browser only (ending any owner unlock of the previous one). The owner's PIN is required once it has one; a member's PIN is optional, and the owner's PIN also opens a PIN'd member. Errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown` (+ Retry-After) after 5 wrong tries for that account from this client (30 s, doubling for repeated cooldowns up to 15 min), or while the account's global ceiling is cooling."""
     body = body or {}
     pin = body.get("pin")
     if pin is not None and not isinstance(pin, str):
@@ -413,10 +443,11 @@ def auth_switch(body: dict, response: _Response):
         if target is None:
             raise HTTPException(status_code=404, detail="Account not found")
         try:
-            how = acct_auth.check_switch(accounts, target, pin)
+            how = acct_auth.check_switch(accounts, target, pin, client=_auth_client_ip(request))
         except acct_auth.SwitchDenied as e:
             logger.info("account switch denied: account=%s reason=%s", target["id"], e.detail)
             return _switch_denied(e)
+        acct_auth.revoke_cookie_unlock(db, request.cookies.get(acct_auth.COOKIE_NAME))
         acct_auth.touch_last_active(db, target["id"], force=True)
         acct_auth.set_account_cookie(response, db, target)
         return {"ok": True, "via": how, "account": acct_auth.public_account(target)}
@@ -425,7 +456,7 @@ def auth_switch(body: dict, response: _Response):
 
 
 @app.post("/api/auth/verify-pin", tags=["auth"], summary="Check an account PIN and issue its API token")
-def auth_verify_pin(body: dict):
+def auth_verify_pin(body: dict, request: Request):
     """Body {account_id, pin?}. Same PIN rules, cooldown counters and owner-covers-member as /api/auth/switch (an account without a PIN needs none), but sets no cookie and changes nothing. Returns {ok, via, account, token}: `token` is the account's signed API token, sent back as the `X-Account-Token` header (the extension stores it; valid 1 year, dies with a PIN change or the account). Errors: 404 unknown account, 401 `pin_required` / `wrong_pin` (+ `tries_left`), 429 `pin_cooldown`. Needs the install key; no account needed."""
     body = body or {}
     pin = body.get("pin")
@@ -438,7 +469,7 @@ def auth_verify_pin(body: dict):
         if target is None:
             raise HTTPException(status_code=404, detail="Account not found")
         try:
-            how = acct_auth.check_switch(accounts, target, pin)
+            how = acct_auth.check_switch(accounts, target, pin, client=_auth_client_ip(request))
         except acct_auth.SwitchDenied as e:
             logger.info("pin check denied: account=%s reason=%s", target["id"], e.detail)
             return _switch_denied(e)
@@ -478,12 +509,16 @@ def auth_verify_owner_pin(body: dict, request: Request, response: _Response):
     try:
         accounts = acct_auth.load_accounts(db)
         try:
-            acct_auth.check_owner_pin(accounts, pin)
+            acct_auth.check_owner_pin(accounts, pin, client=_auth_client_ip(request))
         except acct_auth.SwitchDenied as e:
             return _switch_denied(e)
         acc = acct_auth._find(accounts, current_account.get()) or acct_auth._owner_of(accounts)
         until = int(acct_auth._now() + acct_auth.OWNER_UNLOCK_SECONDS)
-        acct_auth.set_account_cookie(response, db, acc, unlocked_until=until)
+        # QA F3 / R2-06: the unlock lives in the server allowlist; a previous one of this
+        # browser is replaced.
+        acct_auth.revoke_unlock(getattr(request.state, "owner_unlock_id", None))
+        acct_auth.set_account_cookie(response, db, acc, unlocked_until=until,
+                                     unlock_id=acct_auth.grant_unlock(until))
         return {"ok": True, "unlocked_until": _epoch_iso(until)}
     finally:
         db.close()
@@ -491,10 +526,11 @@ def auth_verify_owner_pin(body: dict, request: Request, response: _Response):
 
 @app.post("/api/auth/owner-lock", tags=["auth"], summary="End the owner unlock in this browser")
 def auth_owner_lock(request: Request, response: _Response):
-    """MT-14 "Lock": re-issues this browser's `jn_account` cookie for the same account with no owner unlock. Returns {ok, locked}. A browser with no account cookie (one account, or the API path) has nothing to lock: {ok, locked: false}."""
+    """MT-14 "Lock": re-issues this browser's `jn_account` cookie for the same account with no owner unlock, and drops the unlock from the server allowlist so a copied cookie value stops unlocking too (QA F3 / R2-06). Returns {ok, locked}. A browser with no account cookie (one account, or the API path) has nothing to lock: {ok, locked: false}."""
     from backend.accounts.context import current_account
     if not request.cookies.get(acct_auth.COOKIE_NAME):
         return {"ok": True, "locked": False}
+    acct_auth.revoke_unlock(getattr(request.state, "owner_unlock_id", None))
     db = SessionLocal()
     try:
         accounts = acct_auth.load_accounts(db)

@@ -232,22 +232,15 @@ def update_account(account_id: str, request: Request, response: Response,
             if current is not None and not isinstance(current, str):
                 current = str(current)
             try:
-                acct_auth._deny_cooling(target["id"])
-                if not current:
-                    raise acct_auth.SwitchDenied(401, "pin_required")
-                if not acct_auth.verify_pin(current, target["pin_hash"]):
-                    left = acct_auth._record_failure(target["id"])
-                    if left == 0:
-                        raise acct_auth.SwitchDenied(429, "pin_cooldown",
-                                                     retry_after=int(acct_auth.PIN_COOLDOWN_SECONDS))
-                    raise acct_auth.SwitchDenied(401, "wrong_pin", tries_left=left)
+                # QA F3: the same per-(account, client) counters as the switch.
+                from backend.main import _auth_client_ip
+                acct_auth.check_pin(target, current or None, client=_auth_client_ip(request))
             except acct_auth.SwitchDenied as e:
                 content = {"detail": e.detail}
                 if e.tries_left is not None:
                     content["tries_left"] = e.tries_left
                 headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
                 return JSONResponse(status_code=e.status, content=content, headers=headers)
-            acct_auth._clear(target["id"])
         changes["pin_hash"] = None if removing else acct_auth.hash_pin(new_pin)
         pin_changed = True
 
@@ -255,12 +248,22 @@ def update_account(account_id: str, request: Request, response: Response,
         setattr(row, k, v)
     db.commit()
 
+    if pin_changed:
+        # R2-14: a reset PIN starts with fresh counters (also when the owner resets it).
+        acct_auth._clear(target["id"])
+        if target["role"] == "owner":
+            # QA F3 / R2-06: any owner PIN change ends every owner unlock already issued.
+            acct_auth.revoke_all_unlocks()
+
     accounts = _accounts(db)
     updated = acct_auth._find(accounts, target["id"])
     if pin_changed and is_self:
         until = getattr(request.state, "owner_unlocked_until", 0) or 0
+        unlock_id = getattr(request.state, "owner_unlock_id", None)
+        live = until > acct_auth._now() and acct_auth.unlock_live(unlock_id)
         acct_auth.set_account_cookie(response, db, updated,
-                                     unlocked_until=until if until > acct_auth._now() else 0)
+                                     unlocked_until=until if live else 0,
+                                     unlock_id=unlock_id if live else None)
     if pin_changed:
         logger.info("PIN %s for account %s by %s", "set" if changes["pin_hash"] else "removed",
                     target["id"], "itself" if is_self else "the owner")
@@ -295,20 +298,40 @@ def delete_account(account_id: str, body: dict = Body(None), db: Session = Depen
     if body.get("confirm_name") != target["name"]:
         return _error(400, "confirm_name_mismatch", "Type the account's name exactly to confirm.")
 
+    # QA F3 / R2-08: busy = any run that writes into this account: its own runs, the
+    # scheduled scrape_all fan-out and other all-account runs, and per-account sweeps that
+    # include it. Checked before the pg_dump and again after it; meanwhile the account is
+    # marked as being removed, so nothing new starts for it (job_monitor.begin_removal).
     import backend.job_monitor as jm
-    if any(r.account_id == target["id"] for r in list(jm._running.values())):
-        return _error(409, "account_busy",
-                      "This account has background work running; try again when it finishes.")
 
+    def _busy():
+        runs = jm.runs_touching(target["id"])
+        if runs:
+            logger.info("account %s removal refused, busy: %s", target["id"], runs)
+            return _error(409, "account_busy",
+                          "This account has background work running; try again when it finishes.",
+                          runs=sorted(set(runs)))
+        return None
+
+    busy = _busy()
+    if busy is not None:
+        return busy
+    jm.begin_removal(target["id"])
     try:
-        backup = backup_before_remove(target)
-    except Exception as e:
-        logger.error("pre-removal backup failed for account %s: %s", target["id"], e)
-        return _error(503, "backup_failed",
-                      "The database backup failed, so nothing was removed. See the server log.")
-
-    deleted = admin.delete_account_rows(db, target["id"])
+        try:
+            backup = backup_before_remove(target)
+        except Exception as e:
+            logger.error("pre-removal backup failed for account %s: %s", target["id"], e)
+            return _error(503, "backup_failed",
+                          "The database backup failed, so nothing was removed. See the server log.")
+        busy = _busy()
+        if busy is not None:
+            return busy
+        deleted = admin.delete_account_rows(db, target["id"])
+    finally:
+        jm.end_removal(target["id"])
     acct_auth._clear(target["id"])
+    acct_auth._touched.pop(str(target["id"]), None)
     logger.warning("account removed: %s (%s) after backup %s: %s",
                    target["id"], target["name"], backup, deleted)
     return {"deleted": deleted, "backup": backup, "account": {"id": str(target["id"]), "name": target["name"]}}

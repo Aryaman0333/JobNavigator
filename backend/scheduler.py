@@ -211,7 +211,9 @@ async def run_all_scrapes():
     per account."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
-        async with tracked_run("scrape_all", "scheduler") as run:
+        # all_accounts (QA F3 / R2-08): it ingests into every subscribing account, so an
+        # account removal treats it as busy and it does not start during one.
+        async with tracked_run("scrape_all", "scheduler", all_accounts=True) as run:
             logger.info("Running all scrapes...")
             started = datetime.now(timezone.utc)
             from backend.scraper.orchestrator import run_all

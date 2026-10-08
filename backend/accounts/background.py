@@ -90,18 +90,25 @@ async def for_each_account(
     failure is re-raised so APScheduler still logs the job as failed. The settings the
     body reads are read inside the loop, so account-scoped settings (MT-9) need no change
     here."""
+    import backend.job_monitor as jm
     ids = list(account_ids) if account_ids is not None else all_account_ids()
     first_error: Optional[BaseException] = None
-    for acc in ids:
-        try:
-            with acting_as(acc):
-                await body()
-        except Exception as e:
-            # The first failure is re-raised below (and logged with its traceback by
-            # APScheduler); later ones only exist here, so they carry their own.
-            logger.error("%s failed for account %s: %s", label, acc or "owner", e,
-                         exc_info=first_error is not None)
-            if first_error is None:
-                first_error = e
+    # QA F3 / R2-08: the sweep registers the accounts it will visit, so an account
+    # removal sees it as busy for them; an account being removed is skipped.
+    with jm.fanning_out(ids):
+        for acc in ids:
+            if jm.is_removing(acc):
+                logger.info("%s skipped for account %s: it is being removed", label, acc)
+                continue
+            try:
+                with acting_as(acc):
+                    await body()
+            except Exception as e:
+                # The first failure is re-raised below (and logged with its traceback by
+                # APScheduler); later ones only exist here, so they carry their own.
+                logger.error("%s failed for account %s: %s", label, acc or "owner", e,
+                             exc_info=first_error is not None)
+                if first_error is None:
+                    first_error = e
     if first_error is not None:
         raise first_error

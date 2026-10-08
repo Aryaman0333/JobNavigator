@@ -88,9 +88,13 @@ def test_single_account_acts_as_owner_without_cookie(browser, test_db, owner):
     assert "jn_account" not in browser.cookies
 
 
-def test_single_account_ignores_a_bad_cookie(browser, owner):
+def test_single_account_bad_cookie_gets_the_picker(browser, owner):
+    """QA F3 / R2-03: only a browser with no jn_account cookie at all is the one-account
+    owner; a bad one gets account_required (and is cleared)."""
     browser.cookies.set("jn_account", "garbage.value")
-    assert _me(browser).json()["account"]["id"] == str(owner.id)
+    r = _me(browser)
+    assert (r.status_code, r.json()) == (401, {"detail": "account_required"})
+    assert r.headers.get("set-cookie", "").startswith("jn_account=")
 
 
 def test_jn_session_cookie_alone_still_works_with_one_account(client, owner):

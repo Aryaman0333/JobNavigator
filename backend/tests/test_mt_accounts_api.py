@@ -571,8 +571,10 @@ def test_deleted_account_cookie_stops_working(client, test_db, owner, owner_pin)
     assert client.request("DELETE", f"/api/accounts/{m.id}", json={"confirm_name": "Partner"}).status_code == 200
     client.headers.pop("X-Test-Act-As", None)
     client.cookies.set("jn_account", cookie)
-    # one account left: the install falls back to the owner, not to the removed member
-    assert client.get("/api/auth/me").json()["account"]["id"] == str(owner.id)
+    # QA F3 / R2-03: one account left, but this browser presented a stale cookie, so it
+    # gets the picker (owner PIN), never the owner and never the removed member
+    r = client.get("/api/auth/me")
+    assert (r.status_code, r.json()) == (401, {"detail": "account_required"})
 
 
 # ── GET /api/accounts/{id}/export ────────────────────────────────────────────

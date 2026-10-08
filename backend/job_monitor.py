@@ -4,7 +4,7 @@ import contextvars
 import logging
 import re
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -154,6 +154,9 @@ class RunningJob:
     # The account the run acts for (MT-6). None = the owner (entries made before MT-6,
     # and install-wide system runs).
     account_id: Optional[uuid.UUID] = None
+    # QA F3 / R2-08: the run writes into every account (the scheduled scrape_all fan-out,
+    # the H-1B refresh), whatever its account_id says.
+    all_accounts: bool = False
 
 
 # Keyed by dedup key (e.g. "scrape_all" or "company_scrape:<uuid>"); a member's runs
@@ -163,6 +166,55 @@ _running: dict[str, RunningJob] = {}
 # Runs that act on the whole install: one at a time for everyone, keyed and shown as
 # the owner's. Everything else is per account.
 INSTALL_WIDE_JOB_TYPES = frozenset({"db_backup", "h1b_refresh"})   # LinkedIn session refresh is per account since MT-16
+
+
+# Job types whose run writes into every account's rows (R2-08).
+ALL_ACCOUNT_JOB_TYPES = frozenset({"h1b_refresh"})
+
+
+# ── Account removal guard (QA F3 / R2-08) ──────────────────────────────────
+# DELETE /accounts/{id} asks `runs_touching(id)` before its pg_dump and again after it.
+# Meanwhile the account is marked as being removed: no run starts for it, no all-account
+# run starts at all, and `for_each_account` skips it. `for_each_account` also registers
+# the accounts it is about to visit (`fanning_out`), so a scheduled per-account sweep
+# counts as busy for an account it has not reached yet.
+_removing: set = set()
+_fanouts: dict = {}          # id(token) -> frozenset of account ids still to visit or visiting
+
+
+def begin_removal(account_id) -> None:
+    _removing.add(account_id)
+
+
+def end_removal(account_id) -> None:
+    _removing.discard(account_id)
+
+
+def is_removing(account_id) -> bool:
+    return account_id is not None and account_id in _removing
+
+
+@contextmanager
+def fanning_out(account_ids):
+    token = object()
+    _fanouts[id(token)] = frozenset(a for a in account_ids if a is not None)
+    try:
+        yield
+    finally:
+        _fanouts.pop(id(token), None)
+
+
+def runs_touching(account_id) -> list:
+    """Descriptions of in-memory work that writes (or is about to write) into
+    `account_id`: its own runs, every all-account run, every per-account sweep that
+    includes it."""
+    out = []
+    for r in list(_running.values()):
+        if r.account_id == account_id or r.all_accounts:
+            out.append(r.job_type)
+    if any(account_id in ids for ids in list(_fanouts.values())):
+        out.append("scheduled per-account job")
+    return out
 
 
 def _owner_id() -> Optional[uuid.UUID]:
@@ -260,6 +312,20 @@ class JobAlreadyRunningError(Exception):
         super().__init__(
             f"{job_type} is already running ({elapsed_seconds:.0f}s elapsed)"
         )
+
+
+class AccountBeingRemovedError(JobAlreadyRunningError):
+    """A run would write into an account that is being removed (R2-08). A subclass of
+    JobAlreadyRunningError so every caller's 409 / "Scheduler skipped" path handles it."""
+    def __init__(self, job_type: str):
+        Exception.__init__(self, f"{job_type} not started: an account is being removed")
+        self.job_type = job_type
+        self.elapsed_seconds = 0.0
+
+
+def _refuse_during_removal(job_type: str, account, all_accounts: bool) -> None:
+    if is_removing(account) or (all_accounts and _removing):
+        raise AccountBeingRemovedError(job_type)
 
 
 def is_running(job_type: str, scope_key: Optional[str] = None) -> Optional[RunningJob]:
@@ -372,20 +438,26 @@ async def tracked_run(
     meta: Optional[dict] = None,
     target_job_id: Optional[uuid.UUID] = None,
     company_id: Optional[str] = None,
+    all_accounts: bool = False,
 ):
-    """Async context manager: tracks a job run in-memory + DB. Raises JobAlreadyRunningError on duplicate."""
+    """Async context manager: tracks a job run in-memory + DB. Raises JobAlreadyRunningError on duplicate.
+    `all_accounts=True` marks a run that writes into every account (R2-08)."""
     # Per-account scheduler jobs enter here under acting_as(account) (MT-7), so the run,
     # its dedup key and its rows belong to that account; with no context (install-level
     # jobs, direct calls) it acts for the owner.
     with owner_context():
-        async with _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id) as rj:
+        async with _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id,
+                                all_accounts) as rj:
             yield rj
 
 
 @asynccontextmanager
-async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id):
+async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, company_id,
+                       all_accounts=False):
     account = _run_account(job_type)
     key = _make_key(job_type, scope_key, account)
+    all_accounts = all_accounts or job_type in ALL_ACCOUNT_JOB_TYPES
+    _refuse_during_removal(job_type, current_account.get(), all_accounts)
 
     existing = _running.get(key)
     if existing:
@@ -405,6 +477,7 @@ async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, compan
         company_id=company_id,
         meta=meta,
         account_id=account,
+        all_accounts=all_accounts,
     )
     _running[key] = running_job
 
@@ -438,6 +511,8 @@ def launch_background(
     """Launch a coroutine as a background asyncio.Task with tracking; returns run_id immediately, raising JobAlreadyRunningError if the current account already runs it."""
     account = _run_account(job_type)
     key = _make_key(job_type, scope_key, account)
+    all_accounts = job_type in ALL_ACCOUNT_JOB_TYPES
+    _refuse_during_removal(job_type, current_account.get(), all_accounts)
 
     existing = _running.get(key)
     if existing:
@@ -491,6 +566,7 @@ def launch_background(
         company_id=company_id,
         meta=meta,
         account_id=account,
+        all_accounts=all_accounts,
     )
 
     return str(run_id)
