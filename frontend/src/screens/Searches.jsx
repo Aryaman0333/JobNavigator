@@ -544,6 +544,12 @@ export default function Searches() {
     if (running[s.id]) return
     setRunning((m) => ({ ...m, [s.id]: true }))
     try { await api.post(`/searches/${s.id}/run`) } catch (e) {
+      // The scheduled scrape is running: nothing was started, so drop the spinner.
+      if (e.response?.data?.detail === 'scheduled_scrape_running') {
+        pushToast({ kind: 'error', msg: 'The scheduled scrape is running — try again when it finishes' })
+        setRunning((m) => { const n = { ...m }; delete n[s.id]; return n })
+        return
+      }
       // 409 means the run is genuinely in flight — keep the spinner, the
       // /monitor/active poll clears it when the run finishes.
       if (e.response?.status === 409) { pushToast({ kind: 'progress', msg: `“${s.name}” is already running` }); return }

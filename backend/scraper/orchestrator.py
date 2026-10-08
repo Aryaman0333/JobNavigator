@@ -237,6 +237,10 @@ def _record_search_log(db, search: Search, result: dict, run_id=None) -> ScrapeL
     found nothing is a warning (same rule company scrapes use) so /health/entities can flag
     a search that quietly stopped returning results."""
     breakdown = result.get("source_breakdown") or None
+    # QA F6 / R4-06: every finished attempt stamps last_run_at, also an empty or failed
+    # one (the source modules stamp only after a non-empty ingest), so a search with its
+    # own interval is not re-run on every tick. The error / warning lives on this row.
+    search.last_run_at = datetime.now(timezone.utc)
     log = ScrapeLog(
         search_id=search.id,
         source=_source_for_search(search),
@@ -254,7 +258,7 @@ def _record_search_log(db, search: Search, result: dict, run_id=None) -> ScrapeL
     return log
 
 
-async def run_all(force: bool = False, account_ids=None):
+async def run_all(force: bool = False, account_ids=None, skip=None):
     """Scheduled fan-out over all active searches + companies: marks existing jobs seen on a first run, skips due/invalid/extension-mode searches, logs + optionally scores each search, then runs the Playwright company sweep.
 
     MT-8: `account_ids=None` covers every account (the scheduler); the manual run-all passes
@@ -262,7 +266,12 @@ async def run_all(force: bool = False, account_ids=None):
     (`backend.scraper.targets.search_key`): a due target is fetched once and each
     subscribing search ingests it under its own account, writing its own ScrapeLog row
     (rows of one fetch share a `run_id`). One subscriber failing does not stop the others.
-    The post-search scoring sweep and the first-run "mark seen" are per account."""
+    The post-search scoring sweep and the first-run "mark seen" are per account.
+
+    QA F6: `skip` (a `job_monitor.ManualScrapeScopes`) names the searches and companies a
+    manual scrape is fetching right now; the scheduled run leaves them out. A search
+    deleted mid-run is skipped. Errors outside a source's own result (an ingest crash, a
+    scoring sweep) come back in `errors` ({"account", "where", "error"}) for the summary."""
     import uuid
     from backend.accounts.background import acting_as
     from backend.accounts.context import current_account
@@ -271,10 +280,15 @@ async def run_all(force: bool = False, account_ids=None):
         search_fetch_params, search_key, search_target_due,
     )
     db = SessionLocal()
+    errors: list = []
+    skip_search_ids = set(getattr(skip, "search_ids", None) or ())
+    skip_company_ids = set(getattr(skip, "company_ids", None) or ())
     try:
         searches = load_active(db, Search, account_ids)
         from backend.models.db import Company
         companies = load_active(db, Company, account_ids)
+        # Plain (id, name, account) per search: later commits expire the rows (T5-01).
+        ident = {id(s): (s.id, s.name, s.account_id) for s in searches}
 
         # First run, per account: an account with no ScrapeLog yet gets its existing jobs
         # marked seen afterwards, so only truly new ones trigger alerts.
@@ -298,6 +312,9 @@ async def run_all(force: bool = False, account_ids=None):
             # skip silently to keep logs clean.
             if search.search_mode in ("linkedin_extension", "extension"):
                 continue
+            if str(search.id) in skip_search_ids:
+                logger.info(f"Search '{search.name}' skipped: a manual run of it is in progress")
+                continue
             # Skip invalid configs — logged and skipped rather than raising.
             if not _search_mode_is_valid(search):
                 logger.warning(f"Search '{search.name}' has invalid config, skipping")
@@ -311,7 +328,13 @@ async def run_all(force: bool = False, account_ids=None):
         sweep_accounts = []
 
         now = datetime.now(timezone.utc)
+        from backend.scraper.sources.company_pages import _row_still_there
         for target in targets:
+            # T5-01: drop subscribers deleted since the load before reading their attributes.
+            alive = [s for s in target.subscribers if _row_still_there(db, s)]
+            if not alive:
+                continue
+            target.subscribers = alive
             # Interval check (skipped for manual triggers): due when any subscriber is due.
             if not force:
                 due, _effective = search_target_due(target, now)
@@ -325,44 +348,60 @@ async def run_all(force: bool = False, account_ids=None):
             shared = (SharedFetch(target.key, search_fetch_params(target.subscribers))
                       if target.shared else None)
             for search in target.subscribers:
-                with acting_as(search.account_id):
+                sid, sname, account = ident[id(search)]
+                with acting_as(account):
                     try:
+                        # QA F6 / T5-01: a search (or account) deleted mid-run is skipped.
+                        if db.query(Search.id).filter(Search.id == sid).first() is None:
+                            logger.info(f"Search '{sname}' was deleted during the run, skipped")
+                            continue
                         try:
                             kwargs = {"shared": shared} if shared is not None else {}
                             result = await run_search(search, proxy_url=proxy_url, **kwargs)
                         except ValueError as e:
                             # Unknown search_mode — log and skip, don't abort the whole batch
-                            logger.warning(f"Search '{search.name}': {e}, skipping")
+                            logger.warning(f"Search '{sname}': {e}, skipping")
                             continue
                         except Exception as e:
-                            logger.exception(f"Search '{search.name}' failed: {e}")
+                            logger.exception(f"Search '{sname}' failed: {e}")
                             result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
 
+                        auto_depth = search.auto_scoring_depth
                         _record_search_log(db, search, result, run_id=run_id)
                         breakdown = result.get("source_breakdown") or None
                         if source_errors(breakdown):
                             logger.warning(
-                                f"Search '{search.name}': {describe_source_errors(breakdown)}"
+                                f"Search '{sname}': {describe_source_errors(breakdown)}"
                             )
 
                         logger.info(
-                            f"Search '{search.name}': found={result.get('jobs_found', 0)}, "
+                            f"Search '{sname}': found={result.get('jobs_found', 0)}, "
                             f"new={result.get('new_jobs', 0)}, duration={result.get('duration', 0):.1f}s"
                             + (f" (shared fetch, {len(target.subscribers)} subscribers)" if shared else "")
                         )
 
                         # Auto CV-score: mark the account for one pool sweep after all searches
                         # (the sweep is a common pool — per-search invocations re-walked it N times).
-                        if (search.auto_scoring_depth in ("light", "full") and result.get("new_jobs", 0) > 0
-                                and search.account_id not in sweep_accounts):
-                            sweep_accounts.append(search.account_id)
+                        if (auto_depth in ("light", "full") and result.get("new_jobs", 0) > 0
+                                and account not in sweep_accounts):
+                            sweep_accounts.append(account)
                     except Exception as e:
-                        # e.g. the ScrapeLog write failed: this subscriber only
-                        logger.exception(f"Search '{search.name}' ingest failed, others continue: {e}")
+                        # e.g. the ScrapeLog write failed: this subscriber only. Roll back
+                        # before anything else touches the session (T5-01).
                         try:
                             db.rollback()
                         except Exception:
                             pass
+                        try:
+                            gone = db.query(Search.id).filter(Search.id == sid).first() is None
+                        except Exception:
+                            gone = False
+                        if gone:
+                            logger.info(f"Search '{sname}' was deleted during the run, skipped: {e}")
+                            continue
+                        logger.exception(f"Search '{sname}' ingest failed, others continue: {e}")
+                        errors.append({"account": account, "where": f"search {sname}",
+                                       "error": f"{type(e).__name__}: {e}"})
 
         for acc in sweep_accounts:
             # Contained: a scoring failure must not abort the rest of scrape_all
@@ -373,26 +412,37 @@ async def run_all(force: bool = False, account_ids=None):
                     await analyze_unscored_jobs(status="new")
                 except Exception as e:
                     logger.exception(f"Post-search scoring sweep failed (scrape continues): {e}")
+                    errors.append({"account": acc, "where": "search scoring sweep",
+                                   "error": f"{type(e).__name__}: {e}"})
 
         from backend.scraper.sources import company_pages
-        if account_ids is None:
-            company_summary = await company_pages.scrape_career_pages(force=force) or {}
-        else:
-            company_summary = await company_pages.scrape_career_pages(
-                force=force, account_ids=account_ids) or {}
+        cp_kwargs = {"force": force}
+        if account_ids is not None:
+            cp_kwargs["account_ids"] = account_ids
+        if skip_company_ids:
+            cp_kwargs["skip_company_ids"] = skip_company_ids
+        company_summary = await company_pages.scrape_career_pages(**cp_kwargs) or {}
+        errors.extend(company_summary.get("errors") or [])
 
         # First-run: mark all jobs as seen so only truly new ones trigger alerts
         for acc in first_run_accounts:
             with acting_as(acc):
-                unseen = db.query(Job).filter(Job.seen == False).all()
-                for j in unseen:
-                    j.seen = True
-                db.commit()
-                logger.info(f"First run: marked {len(unseen)} existing jobs as seen")
+                try:
+                    unseen = db.query(Job).filter(Job.seen == False).all()
+                    for j in unseen:
+                        j.seen = True
+                    db.commit()
+                    logger.info(f"First run: marked {len(unseen)} existing jobs as seen")
+                except Exception as e:   # one account's bookkeeping, never the run (R4-03)
+                    db.rollback()
+                    logger.exception(f"First-run mark-seen failed: {e}")
+                    errors.append({"account": acc, "where": "first-run mark seen",
+                                   "error": f"{type(e).__name__}: {e}"})
 
         # Handed to the caller so a manual run's summary can say what did not run
-        # (companies with no URLs, or — scheduler only — companies not yet due).
-        return {"companies": company_summary}
+        # (companies with no URLs, or — scheduler only — companies not yet due), and the
+        # scheduled run's summary which accounts hit errors.
+        return {"companies": company_summary, "errors": errors}
     finally:
         db.close()
 

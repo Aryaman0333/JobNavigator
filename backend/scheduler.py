@@ -136,11 +136,12 @@ def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1
 # the run itself just wrote, so a summary can never disagree with the log.
 
 
-def _scrape_summary(since, all_accounts: bool = False) -> str:
+def _scrape_summary(since, all_accounts: bool = False, exclude_accounts=()) -> str:
     """The Run-history line of a scrape run. `all_accounts=True` (the scheduled scrape_all,
     one install-level run since MT-8) reads every account's ScrapeLog rows and, when more
     than one account ran, appends per-account new counts; with one account the line is
-    exactly the single-account one."""
+    exactly the single-account one. `exclude_accounts`: accounts this run left out (their
+    manual run's rows are not this run's)."""
     from contextlib import nullcontext
     from backend.accounts.context import unscoped
     from backend.models.db import Account, ScrapeLog, Search, Company
@@ -149,6 +150,8 @@ def _scrape_summary(since, all_accounts: bool = False) -> str:
         from backend.scraper.orchestrator import empty_sources, source_errors
         with (unscoped() if all_accounts else nullcontext()):
             rows = db.query(ScrapeLog).filter(ScrapeLog.ran_at >= since).all()
+            if exclude_accounts:
+                rows = [r for r in rows if r.account_id not in set(exclude_accounts)]
             # A paused search / inactive company is not a problem to report — it was switched off
             # deliberately. Its row still counts toward "N sources ran" but not toward attention counts.
             off_searches = {s.id for s in db.query(Search).filter(Search.active == False).all()}
@@ -222,25 +225,109 @@ async def run_all_scrapes():
     fan-out over every account — one fetch per target, ingest per subscribing account
     (MT-8) — and the summary carries per-account counts. The saved-job scoring pass runs
     per account."""
-    from backend.job_monitor import tracked_run, JobAlreadyRunningError
+    from backend.job_monitor import (
+        tracked_run, JobAlreadyRunningError, SCHEDULED_SCRAPE_SCOPE, manual_scrape_scopes,
+        mark_run_failed,
+    )
+    from backend.accounts.background import all_account_ids
     try:
         # all_accounts (QA F3 / R2-08): it ingests into every subscribing account, so an
         # account removal treats it as busy and it does not start during one.
-        async with tracked_run("scrape_all", "scheduler", all_accounts=True) as run:
+        # QA F6 / R4-02: its own scope key, so the owner's manual Run all ("scrape_all")
+        # no longer makes every member's tick skip; while it is live, manual scrapes are
+        # refused with 409 scheduled_scrape_running (R4-01).
+        async with tracked_run("scrape_all", "scheduler", scope_key=SCHEDULED_SCRAPE_SCOPE,
+                               all_accounts=True) as run:
             logger.info("Running all scrapes...")
             started = datetime.now(timezone.utc)
+            # Manual scrapes already in flight: their accounts (Run all) / companies /
+            # searches are left out of this tick and named in the summary.
+            busy = manual_scrape_scopes()
+            ids = all_account_ids()
+            # (ids == [None] when no accounts are readable: the owner fallback.)
+            skipped_accounts = [a for a in ids if a in busy.accounts]
+            run_ids = [a for a in ids if a not in skipped_accounts] if skipped_accounts else None
+            errors: list = []
+            fatal = None
             from backend.scraper.orchestrator import run_all
-            await run_all()
+            try:
+                if run_ids is None:
+                    outcome = await (run_all(skip=busy) if busy else run_all())
+                elif run_ids:
+                    outcome = await run_all(account_ids=run_ids, skip=busy)
+                else:
+                    outcome = {}
+                errors.extend((outcome or {}).get("errors") or [])
+            except Exception as e:
+                # Not one account's error: the fan-out itself broke. Still score, check
+                # health and write the summary below, then mark the run failed.
+                logger.exception(f"Scheduled scrape fan-out failed: {e}")
+                fatal = e
             # CV scoring happens per-search/company based on their auto_scoring_depth setting
-            # Also score any saved-but-unscored jobs (from manual saves), for every account
-            await for_each_account("saved-job scoring", _score_saved_jobs)
+            # Also score any saved-but-unscored jobs (from manual saves), for every account.
+            # R4-03: one account's failure is collected, never re-raised.
+            if run_ids is None or run_ids:
+                await for_each_account("saved-job scoring", _score_saved_jobs, run_ids,
+                                       errors=errors)
             # Install-level system alert to the owner's chat; reads the owner's ScrapeLog
             # rows (one row per subscribing account since MT-8). TODO(MT-13): owner-sees-all
             # view of every account's scrape health.
-            await check_scrape_health(since=started)
-            run.summary = _scrape_summary(started, all_accounts=True)
+            try:
+                await check_scrape_health(since=started)
+            except Exception as e:
+                logger.exception(f"Scrape health check failed: {e}")
+                errors.append({"account": "install", "where": "scrape health check",
+                               "error": f"{type(e).__name__}: {e}"})
+            run.summary = _scheduled_scrape_summary(started, skipped_accounts, errors)
+            if fatal is not None:
+                mark_run_failed(f"{type(fatal).__name__}: {fatal}")
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
+
+
+def _account_names() -> dict:
+    from backend.accounts.context import unscoped
+    from backend.models.db import Account
+    db = SessionLocal()
+    try:
+        with unscoped():
+            return {a.id: a.name for a in db.query(Account).all()}
+    except Exception:
+        return {}
+    finally:
+        db.close()
+
+
+def _scheduled_scrape_summary(started, skipped_accounts: list, errors: list) -> str:
+    """The scheduled scrape_all line: the usual summary, then the accounts left out
+    because their manual Run all was in flight (R4-02), then "completed with errors" with
+    each account's failure (R4-03). A summary must never break the run."""
+    try:
+        summary = _scrape_summary(started, all_accounts=True, exclude_accounts=skipped_accounts)
+    except Exception as e:
+        logger.exception(f"Scrape summary failed: {e}")
+        summary = "Summary unavailable"
+    if not skipped_accounts and not errors:
+        return summary
+    names = _account_names()
+
+    def _name(acc):
+        if acc == "install":
+            return "install"
+        if acc is None:
+            return "owner"
+        return names.get(acc, "unknown account")
+
+    if skipped_accounts:
+        summary += " - skipped (manual run in progress): " + ", ".join(
+            _name(a) for a in skipped_accounts)
+    if errors:
+        shown = "; ".join(f"{_name(e.get('account'))}: {e.get('where')}: {e.get('error')}"
+                          for e in errors[:5])
+        if len(errors) > 5:
+            shown += f"; +{len(errors) - 5} more"
+        summary += f" - completed with errors ({len(errors)}): {shown}"
+    return summary
 
 
 async def _score_saved_jobs():

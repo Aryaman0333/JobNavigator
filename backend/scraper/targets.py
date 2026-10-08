@@ -100,28 +100,23 @@ class SharedFetch:
 
 def target_url(url: str) -> str:
     """A list/board URL in comparable form: trimmed, scheme and host lowercased, no
-    fragment, no trailing slash, tracking params (utm_* and the `dedup_tracking_params`
-    setting) dropped, remaining query params sorted. Path case and every other query
-    param (a city filter, a department) are kept: they change what is fetched."""
+    trailing slash on the path, query params sorted. Nothing else is dropped (QA F6 /
+    R4-04): the fetch uses the first subscriber's raw URL, so anything removed here
+    could make two different lists collapse into one target. The fragment stays (a
+    hash-routed SPA board, `#/jobs?location=Berlin`, is a different list), and so does
+    every query param, tracking-looking or not (`from=20`, `mode=location`, `source=`
+    are real list filters on some boards; `dedup_tracking_params` is for posting URLs)."""
     raw = (url or "").strip()
     if not raw:
         return ""
     if not raw.lower().startswith(("http://", "https://")):
         return raw   # a request spec such as "POST|https://…|{json}": compared verbatim
     try:
-        from backend.scraper._shared.dedup import _get_tracking_params
-        tracking = _get_tracking_params()
-    except Exception:
-        tracking = set()
-    try:
         parts = urlsplit(raw)
-        query = sorted(
-            (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-            if not k.lower().startswith("utm_") and k.lower() not in tracking
-        )
+        query = sorted(parse_qsl(parts.query, keep_blank_values=True))
         path = parts.path.rstrip("/")
         return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path,
-                           urlencode(query, doseq=True), ""))
+                           urlencode(query, doseq=True), parts.fragment))
     except Exception:
         return raw
 

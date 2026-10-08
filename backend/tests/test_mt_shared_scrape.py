@@ -103,8 +103,9 @@ async def test_same_company_url_one_fetch_two_ingests_with_own_filters(test_db, 
     calls = _handler(monkeypatch)
     _company(test_db, title_include_expr="Product", title_exclude_keywords=["intern"])
     with use_account(b):
-        # B spells the URL with a trailing slash and a tracking param: still the same target
-        _company(test_db, name="ACME Inc", url="https://jobs.lever.co/acme/?utm_source=x",
+        # B spells the URL with an upper-case host and a trailing slash: still the same
+        # target (QA F6 / R4-04: query params, tracking-looking or not, now count)
+        _company(test_db, name="ACME Inc", url="https://Jobs.Lever.co/acme/",
                  title_include_expr="Engineer")
 
     summary = await scrape_career_pages(force=True)
@@ -362,7 +363,7 @@ async def test_levels_fyi_url_query_param_makes_a_separate_target(test_db, accou
     from backend.scraper.targets import search_key
     a, b = accounts
     s1 = _search(test_db, search_mode="levels_fyi", direct_url="https://www.levels.fyi/jobs?location=berlin")
-    s2 = _search(test_db, search_mode="levels_fyi", direct_url="https://www.levels.fyi/jobs/?location=berlin&utm_source=x")
+    s2 = _search(test_db, search_mode="levels_fyi", direct_url="HTTPS://WWW.levels.fyi/jobs/?location=berlin")
     s3 = _search(test_db, search_mode="levels_fyi", direct_url="https://www.levels.fyi/jobs?location=paris")
     assert search_key(s1) == search_key(s2) != search_key(s3)
 

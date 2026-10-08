@@ -264,7 +264,7 @@ export default function Stats() {
     } catch (e) {
       console.error('trigger', e)
       clear()
-      pushToast({ kind: 'error', msg: e.response?.status === 409 ? `${job.name} is already running.` : `Could not start ${job.name}` + errSuffix(e) })
+      pushToast({ kind: 'error', msg: e.response?.data?.detail === 'scheduled_scrape_running' ? 'The scheduled scrape is running — try again when it finishes.' : e.response?.status === 409 ? `${job.name} is already running.` : `Could not start ${job.name}` + errSuffix(e) })
     }
   }
 

@@ -740,11 +740,10 @@ async def trigger_all_scrapes():
         run_id = launch_background("scrape_all", _do, trigger="manual")
         return {"run_id": run_id, "status": "running"}
     except JobAlreadyRunningError as e:
-        logger.info("Duplicate trigger rejected for job_type=%s", e.job_type)
-        return JSONResponse(
-            status_code=409,
-            content={"detail": f"{e.job_type} is already running"},
-        )
+        logger.info("Duplicate trigger rejected for job_type=%s: %s", e.job_type, e)
+        # QA F6 / R4-01: refused while the scheduled scrape is live (`scheduled_scrape_running`).
+        from backend.job_monitor import scheduled_scrape_conflict_response
+        return scheduled_scrape_conflict_response(e)
 
 
 @app.post("/api/email/check-now", tags=["triggers"], summary="Check Gmail now", status_code=202)
@@ -1047,17 +1046,19 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
             c = db2.query(C).filter(C.id == company_id).first()
             if c:
                 result = await scrape_single_career_page(c)
+                if result and result.get("deleted"):   # QA F6 / T5-04
+                    return f"{company_name} - deleted during the run, nothing saved"
                 # Same audit row the batch path writes, so a manual run also shows
                 # up in /api/scrape-log, is_warning and /health/entities.
                 # A manual run feeds only this account (MT-8): its own run_id, no fan-out.
                 import uuid as _uuid
-                record_company_scrape_log(c.id, c.name, result or {}, db=db2, run_id=_uuid.uuid4())
                 should_score = auto_score if auto_score is not None else (c.auto_scoring_depth in ("light", "full"))
+                record_company_scrape_log(c.id, c.name, result or {}, db=db2, run_id=_uuid.uuid4())
                 if should_score and result and result.get("new_jobs", 0) > 0:
                     from backend.analyzer.cv_scorer import analyze_unscored_jobs
                     await analyze_unscored_jobs(status="new")
                 if result:
-                    return f"{c.name} - {result.get('jobs_found', 0)} seen, +{result.get('new_jobs', 0)} new"
+                    return f"{company_name} - {result.get('jobs_found', 0)} seen, +{result.get('new_jobs', 0)} new"
         finally:
             db2.close()
 
@@ -1069,11 +1070,9 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
         )
         return {"run_id": run_id, "status": "running", "company": company_name}
     except JobAlreadyRunningError as e:
-        logger.info("Duplicate trigger rejected for job_type=%s", e.job_type)
-        return JSONResponse(
-            status_code=409,
-            content={"detail": f"{e.job_type} is already running"},
-        )
+        logger.info("Duplicate trigger rejected for job_type=%s: %s", e.job_type, e)
+        from backend.job_monitor import scheduled_scrape_conflict_response
+        return scheduled_scrape_conflict_response(e)
 
 
 @app.post("/api/telegram/webhook", tags=["telegram"], summary="Telegram webhook")

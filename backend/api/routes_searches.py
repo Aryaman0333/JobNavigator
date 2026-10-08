@@ -256,14 +256,17 @@ async def trigger_search(search_id: str, auto_score: bool = None, db: Session = 
         from backend.scraper.orchestrator import summarize_search_run
         return summarize_search_run(search_name, result)
 
-    from backend.job_monitor import launch_background, JobAlreadyRunningError
+    from backend.job_monitor import (
+        launch_background, JobAlreadyRunningError, scheduled_scrape_conflict_response,
+    )
     try:
         run_id = launch_background("search_run", _do, trigger="manual",
                                    scope_key=search_id, meta={"search": search_name})
         return {"run_id": run_id, "status": "running", "search_id": search_id, "search": search_name}
     except JobAlreadyRunningError as e:
-        logger.info("Duplicate search run rejected for %s", search_id)
-        return JSONResponse(status_code=409, content={"detail": f"{e.job_type} is already running"})
+        logger.info("Search run rejected for %s: %s", search_id, e)
+        # QA F6 / R4-01: `scheduled_scrape_running` while the scheduled scrape is live.
+        return scheduled_scrape_conflict_response(e)
 
 
 @router.post("/{search_id}/test")

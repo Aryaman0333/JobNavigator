@@ -504,6 +504,19 @@ def unscored_filter():
     return (Job.cv_scores == None) | (cast(Job.cv_scores, Text) == "{}")
 
 
+# QA F6 / R4-01: job ids a running sweep has picked and not yet finished with. Two sweeps
+# can overlap (a manual run's sweep and the scheduled one, or the saved-job pass and the
+# new-job pass of one account); each takes only jobs nobody holds, so a job is never sent
+# to the LLM twice. The claim is taken in the same synchronous step as the batch query (no
+# await in between), which is atomic on the one event loop, and released when the sweep
+# ends. Job ids are UUIDs, unique across accounts, so one set serves every account.
+_sweep_claims: set = set()
+
+
+def claimed_jobs() -> frozenset:
+    return frozenset(_sweep_claims)
+
+
 async def analyze_unscored_jobs(status: str = "saved"):
     """Score all unscored jobs against uploaded CVs in batches of 20; status='saved' scores saved jobs, status='new' scores new jobs from auto_scoring_depth != 'off' entities only.
 
@@ -512,17 +525,27 @@ async def analyze_unscored_jobs(status: str = "saved"):
     A batch used to hold one connection from the first query to the last commit,
     LLM calls included, so a slow provider pinned a pooled connection for the
     whole run.
+
+    A job another sweep is scoring right now is left to that sweep (`_sweep_claims`).
     """
+    # Jobs this pass has already handled. A transient LLM failure leaves
+    # cv_scores NULL on purpose (so the next pass retries), which without this
+    # would make the `while True` loop re-select the same batch forever. These are
+    # also exactly the claims this pass holds.
+    attempted: set = set()
+    try:
+        await _analyze_unscored_jobs(status, attempted)
+    finally:
+        _sweep_claims.difference_update(attempted)
+
+
+async def _analyze_unscored_jobs(status: str, attempted: set):
     from types import SimpleNamespace
     from sqlalchemy import or_, func
     from backend.models.db import Search, Company as CompanyModel
 
     batch_size = 20
     total_scored = 0
-    # Jobs this pass has already handled. A transient LLM failure leaves
-    # cv_scores NULL on purpose (so the next pass retries), which without this
-    # would make the `while True` loop re-select the same batch forever.
-    attempted: set = set()
 
     # -- Phase 0: per-run constants (short session, no network) --------------
     db = SessionLocal()
@@ -577,17 +600,22 @@ async def analyze_unscored_jobs(status: str = "saved"):
                 q = q.filter(Job.status == status)
                 if auto_score_filter is not None:
                     q = q.filter(auto_score_filter)
-            if attempted:
-                q = q.filter(Job.id.notin_(list(attempted)))
+            # Our own handled jobs plus everything another sweep holds right now.
+            skip = attempted | _sweep_claims
+            if skip:
+                q = q.filter(Job.id.notin_(list(skip)))
 
             unscored = q.limit(batch_size).all()
             if not unscored:
                 break
+            # Claim the batch before anything is awaited (R4-01).
+            for job in unscored:
+                attempted.add(job.id)
+                _sweep_claims.add(job.id)
 
             logger.info(f"Analyzing batch of {len(unscored)} unscored jobs (total so far: {total_scored})")
 
             for job in unscored:
-                attempted.add(job.id)
                 company = _find_company_for_job(db, job)
                 cv_texts = _get_resume_texts_for_company(db, company) if company else default_cv_texts
 

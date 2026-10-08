@@ -300,6 +300,12 @@ export default function Companies() {
     setScraping((m) => ({ ...m, [id]: true }))
     try { await api.post(`/scrape/company/${id}`) }
     catch (e) {
+      // The scheduled scrape is running: nothing was started, so drop the spinner.
+      if (e.response?.data?.detail === 'scheduled_scrape_running') {
+        pushToast({ kind: 'error', msg: 'The scheduled scrape is running — try again when it finishes' })
+        setScraping((m) => { const n = { ...m }; delete n[id]; return n })
+        return
+      }
       // 409 means the run is genuinely in flight — keep the spinner, the
       // /monitor/active poll clears it when the run finishes.
       if (e.response?.status === 409) { pushToast({ kind: 'progress', msg: 'That company is already being scraped' }); return }

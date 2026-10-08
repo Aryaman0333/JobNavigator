@@ -109,6 +109,15 @@ def record_company_scrape_log(company_id, company_name: str, result: dict, db=No
     if own_db:
         db = SessionLocal()
     try:
+        # QA F6 / R4-06, T3-03: every finished attempt stamps last_scraped_at, also an empty
+        # board or a failed one; otherwise the company stays due and is fetched on every
+        # scheduler tick whatever its interval. The error / warning lives on this row.
+        comp = db.query(Company).filter(Company.id == company_id).first()
+        if comp is None:
+            # Deleted while it was being scraped (T5-01): no row to log against.
+            logger.info(f"'{company_name}' no longer exists, no scrape log written")
+            return
+        comp.last_scraped_at = datetime.now(timezone.utc)
         is_warning = (
             result.get("jobs_found", 0) == 0
             and not result.get("error")
@@ -200,6 +209,9 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
     copy of the same postings. Everything after the fetch (filters, dedup, H-1B, salary,
     location) is this company's own ingest, under the current account."""
     start_time = time.time()
+    # Plain values: the row may be deleted (and expired) while the board is fetched.
+    company_id = company.id
+    company_name = company.name
 
     target_urls = company.scrape_urls or []
 
@@ -290,6 +302,15 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
             else:
                 desc_map = {}
 
+            # QA F6 / T5-04: the description fetch is the long await; a company deleted
+            # meanwhile gets nothing inserted. (The locked re-check before the commit
+            # covers the rest of the ingest.)
+            if jobs_needing_desc and db.query(Company.id).filter(Company.id == company_id).first() is None:
+                db.rollback()
+                logger.info(f"{company_name} was deleted during its scrape; ingest discarded")
+                return {"jobs_found": len(unique_jobs), "new_jobs": 0, "error": None,
+                        "duration": time.time() - start_time, "deleted": True}
+
             for j in jobs_needing_desc:
                 ext_id = j["_ext_id"]
                 content_hash = j["_content_hash"]
@@ -373,13 +394,22 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
 
             refreshed = _refresh_known_jobs(db, known_here) if known_here else 0
 
-            comp = db.query(Company).filter(Company.id == company.id).first()
-            if comp:
-                comp.last_scraped_at = datetime.now(timezone.utc)
+            # QA F6 / T5-04: the company (or its account) may have been deleted while the
+            # board was fetched. Re-read it with a row lock just before the commit: gone →
+            # throw this ingest away, so a deleted company's postings never reappear; there
+            # → a concurrent DELETE waits for this commit (Postgres; SQLite has no FOR UPDATE).
+            comp = (db.query(Company).filter(Company.id == company_id)
+                    .with_for_update().first())
+            if comp is None:
+                db.rollback()
+                logger.info(f"{company_name} was deleted during its scrape; ingest discarded")
+                return {"jobs_found": len(unique_jobs), "new_jobs": 0, "error": None,
+                        "duration": time.time() - start_time, "deleted": True}
+            comp.last_scraped_at = datetime.now(timezone.utc)
 
             db.commit()
             if refreshed:
-                logger.info(f"{company.name}: location/arrangement filled on {refreshed} existing job(s)")
+                logger.info(f"{company_name}: location/arrangement filled on {refreshed} existing job(s)")
         finally:
             db.close()
 
@@ -387,7 +417,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
 
         from backend.activity import log_activity
         ats_label = _ats_labels_for(target_urls)
-        log_activity("scrape", f"{company.name} ({ats_label}): {new_jobs} new / {len(unique_jobs)} found in {duration:.1f}s", company=company.name)
+        log_activity("scrape", f"{company_name} ({ats_label}): {new_jobs} new / {len(unique_jobs)} found in {duration:.1f}s", company=company_name)
 
         return {
             "jobs_found": len(unique_jobs),
@@ -399,10 +429,10 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
     except Exception as e:
         duration = time.time() - start_time
         ats_label = _ats_labels_for(target_urls)
-        logger.error(f"{company.name} ({ats_label}) scrape failed: {e}")
+        logger.error(f"{company_name} ({ats_label}) scrape failed: {e}")
 
         from backend.activity import log_activity
-        log_activity("scrape", f"{company.name} ({ats_label}) failed: {e}", company=company.name)
+        log_activity("scrape", f"{company_name} ({ats_label}) failed: {e}", company=company_name)
 
         return {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": duration}
     finally:
@@ -415,14 +445,39 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
 
 # ── Batch scraper ────────────────────────────────────────────────────────────
 
-async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
+def _row_still_there(db, row) -> bool:
+    """False when `row` was deleted since it was loaded (refreshing an expired row then
+    raises ObjectDeletedError). Rolls back a session left in a failed state first."""
+    from sqlalchemy.orm.exc import ObjectDeletedError
+    from sqlalchemy.exc import PendingRollbackError
+    try:
+        row.id   # an expired row reloads here (a column load, not account-filtered)
+        return True
+    except ObjectDeletedError:
+        return False
+    except PendingRollbackError:
+        db.rollback()
+        try:
+            row.id
+            return True
+        except ObjectDeletedError:
+            return False
+
+
+async def scrape_career_pages(force: bool = False, account_ids=None,
+                              skip_company_ids=None) -> dict:
     """Scrape career pages for every active company with a scrape URL (gated only on `active` and having a URL, deliberately not `playwright_enabled`), honoring per-company or global scrape_interval_minutes unless force=True skips interval checks; one company's failure is logged to its own ScrapeLog row without ending the batch, and one shared Playwright browser serves all companies that need it.
 
     MT-8: the companies of every account (`account_ids=None`) or of the listed accounts are
     grouped into targets (`backend.scraper.targets.company_key`). A due target is fetched
     once and ingested per subscribing company under its own account (`acting_as`), with
     that account's dedup set; each ingest writes its own ScrapeLog row, and the rows of one
-    fetch share a `run_id`. One subscriber failing does not stop the others."""
+    fetch share a `run_id`. One subscriber failing does not stop the others.
+
+    QA F6: `skip_company_ids` are left out (a manual scrape of that company is in flight);
+    a company deleted mid-run is skipped (T5-01/T5-04); errors that are not the company's
+    own scrape result (an ingest crash, a scoring sweep) are returned in `errors` as
+    {"account", "where", "error"} for the run summary."""
     import uuid
     from backend.accounts.settings import get_setting
     from backend.accounts.background import acting_as
@@ -433,15 +488,23 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
     shared_pw = None
     shared_browser = None
     skipped: list[dict] = []
+    errors: list[dict] = []
     scraped = 0
     failed = 0
+    skip_ids = {str(i) for i in (skip_company_ids or ())}
     try:
         global_interval = int(get_setting(db, "scrape_interval_minutes", "60"))
 
         active = load_active(db, Company, account_ids)
+        # Plain (id, name, account) per row, taken now: later commits expire the rows, and
+        # a row deleted meanwhile raises on any attribute access (T5-01).
+        ident = {id(c): (c.id, c.name, c.account_id) for c in active}
 
         companies = []
         for c in active:
+            if str(c.id) in skip_ids:
+                skipped.append({"name": c.name, "reason": "manual scrape in progress"})
+                continue
             if c.scrape_urls and any((u or "").strip() for u in c.scrape_urls):
                 companies.append(c)
             else:
@@ -465,6 +528,17 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
         now = datetime.now(timezone.utc)
         sweep_accounts: list = []   # accounts that need the post-batch scoring sweep
         for target in group_targets(companies, company_key):
+            # T5-01: the rows were loaded before earlier targets committed; drop subscribers
+            # deleted since then before anything reads their attributes.
+            alive = []
+            for company in target.subscribers:
+                if _row_still_there(db, company):
+                    alive.append(company)
+                else:
+                    skipped.append({"name": ident[id(company)][1], "reason": "deleted during the run"})
+            if not alive:
+                continue
+            target.subscribers = alive
             # Interval check; a manual run (force=True) runs every active company with URLs —
             # the interval only paces the scheduler. A shared target is due when any
             # subscriber is (effective interval = the shortest), and then feeds them all.
@@ -483,46 +557,72 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
             run_id = uuid.uuid4()
             shared = SharedFetch(target.key) if target.shared else None
             for company in target.subscribers:
-                account = company.account_id
+                cid, cname, account = ident[id(company)]
                 # One company's failure must never take the batch down: the scraper's own errors come
-                # back as a result dict, and anything else (browser death, a DB error while logging)
-                # is recorded as this company's failure so the loop carries on.
+                # back as a result dict, and anything else (browser death, a DB error while logging,
+                # the company deleted mid-run) is handled here so the loop carries on.
                 with acting_as(account):
                     try:
+                        # QA F6 / T5-01: re-read the row (fresh, under its account). A company
+                        # or account deleted since the batch loaded is skipped, never touched.
+                        fresh = db.query(Company).filter(Company.id == cid).first()
+                        if fresh is None:
+                            skipped.append({"name": cname, "reason": "deleted during the run"})
+                            continue
+                        company = fresh
                         if account not in external_ids_by_account:
                             external_ids_by_account[account] = get_existing_external_ids(db)
                         kwargs = {"shared_fetch": shared} if shared is not None else {}
                         result = await scrape_single_career_page(
                             company, shared_browser=shared_browser,
                             known_external_ids=external_ids_by_account[account], **kwargs)
-                        record_company_scrape_log(company.id, company.name, result, db=db, run_id=run_id)
+                        if result.get("deleted"):
+                            skipped.append({"name": cname, "reason": "deleted during the run"})
+                            continue
+                        auto_depth = company.auto_scoring_depth
+                        record_company_scrape_log(cid, cname, result, db=db, run_id=run_id)
                         scraped += 1
                         if result.get("error"):
                             failed += 1
 
                         logger.info(
-                            f"Playwright {company.name}: found={result['jobs_found']}, new={result['new_jobs']}"
+                            f"Playwright {cname}: found={result['jobs_found']}, new={result['new_jobs']}"
                             + (f" (shared fetch, {len(target.subscribers)} subscribers)" if shared else "")
                         )
 
                         # Mark for one pool sweep per account at batch end rather than per company — the
                         # sweep picks up all unscored auto-score jobs (including retries), so per-company
                         # would re-walk it N times.
-                        if (company.auto_scoring_depth in ("light", "full") and result.get("new_jobs", 0) > 0
+                        if (auto_depth in ("light", "full") and result.get("new_jobs", 0) > 0
                                 and account not in sweep_accounts):
                             sweep_accounts.append(account)
                     except Exception as e:
-                        failed += 1
-                        logger.exception(f"Company '{company.name}' failed, batch continues: {e}")
+                        # Roll back first: after a failed flush every ORM attribute access
+                        # raises PendingRollbackError (T5-01), so nothing below reads `company`.
                         try:
                             db.rollback()
+                        except Exception:
+                            logger.exception("Rollback failed")
+                        try:
+                            gone = db.query(Company.id).filter(Company.id == cid).first() is None
+                        except Exception:
+                            gone = False
+                        if gone:
+                            logger.info(f"Company '{cname}' was deleted during the run, skipped: {e}")
+                            skipped.append({"name": cname, "reason": "deleted during the run"})
+                            continue
+                        failed += 1
+                        logger.exception(f"Company '{cname}' failed, batch continues: {e}")
+                        errors.append({"account": account, "where": f"company {cname}",
+                                       "error": f"{type(e).__name__}: {e}"})
+                        try:
                             record_company_scrape_log(
-                                company.id, company.name,
+                                cid, cname,
                                 {"jobs_found": 0, "new_jobs": 0, "error": f"{type(e).__name__}: {e}", "duration": 0},
                                 run_id=run_id,
                             )
                         except Exception:
-                            logger.exception(f"Could not record the failure of '{company.name}'")
+                            logger.exception(f"Could not record the failure of '{cname}'")
 
             await asyncio.sleep(2)
 
@@ -533,13 +633,15 @@ async def scrape_career_pages(force: bool = False, account_ids=None) -> dict:
                     await analyze_unscored_jobs(status="new")
                 except Exception as e:
                     logger.exception(f"Post-batch scoring sweep failed (scrape results are saved): {e}")
+                    errors.append({"account": account, "where": "company scoring sweep",
+                                   "error": f"{type(e).__name__}: {e}"})
 
         if skipped:
             logger.info(
                 "Company scrapes skipped: "
                 + ", ".join(f"{s['name']} ({s['reason']})" for s in skipped)
             )
-        return {"scraped": scraped, "failed": failed, "skipped": skipped}
+        return {"scraped": scraped, "failed": failed, "skipped": skipped, "errors": errors}
     finally:
         if shared_browser:
             await shared_browser.close()

@@ -85,13 +85,18 @@ async def for_each_account(
     label: str,
     body: Callable[[], Awaitable[None]],
     account_ids: Optional[Iterable[Optional[uuid.UUID]]] = None,
+    errors: Optional[list] = None,
 ) -> None:
     """Await `body()` once per account (default: every account) under `acting_as(id)`.
 
     A failure is logged with its account and the loop goes on; afterwards the first
     failure is re-raised so APScheduler still logs the job as failed. The settings the
     body reads are read inside the loop, so account-scoped settings (MT-9) need no change
-    here."""
+    here.
+
+    QA F6 / R4-03: inside a larger run (the saved-job pass of scrape_all) pass an `errors`
+    list instead: every failure is appended as {"account", "where", "error"} and nothing
+    is re-raised, so one account cannot fail the whole run."""
     import backend.job_monitor as jm
     ids = list(account_ids) if account_ids is not None else all_account_ids()
     first_error: Optional[BaseException] = None
@@ -109,7 +114,11 @@ async def for_each_account(
                 # The first failure is re-raised below (and logged with its traceback by
                 # APScheduler); later ones only exist here, so they carry their own.
                 logger.error("%s failed for account %s: %s", label, acc or "owner", e,
-                             exc_info=first_error is not None)
+                             exc_info=first_error is not None or errors is not None)
+                if errors is not None:
+                    errors.append({"account": acc, "where": label,
+                                   "error": f"{type(e).__name__}: {e}"})
+                    continue
                 if first_error is None:
                     first_error = e
     if first_error is not None:

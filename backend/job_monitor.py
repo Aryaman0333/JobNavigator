@@ -328,6 +328,83 @@ def _refuse_during_removal(job_type: str, account, all_accounts: bool) -> None:
         raise AccountBeingRemovedError(job_type)
 
 
+# ── Scrape overlap (QA F6 / R4-01, R4-02) ──────────────────────────────────
+# The scheduled scrape_all is one install-wide run that ingests into every account. A
+# manual scrape (Run all, one company, one search) started while it is live would fetch
+# and ingest the same targets for the same account a second time, so it is refused with
+# 409 `scheduled_scrape_running`. The reverse is not refused: a scheduled tick that finds
+# manual scrapes in flight runs for everything else and leaves those out
+# (`manual_scrape_scopes`), recording them in its summary.
+SCRAPE_JOB_TYPES = frozenset({"scrape_all", "company_scrape", "search_run"})
+# The scheduled run's scope key: it never collides with the owner's manual Run all
+# ("scrape_all"), so that manual run no longer makes the whole tick skip (R4-02).
+SCHEDULED_SCRAPE_SCOPE = "scheduled"
+
+
+class ScheduledScrapeRunningError(JobAlreadyRunningError):
+    """A manual scrape was asked for while the scheduled scrape_all is live (R4-01)."""
+    code = "scheduled_scrape_running"
+
+    def __init__(self, job_type: str, elapsed_seconds: float):
+        Exception.__init__(
+            self, f"{job_type} not started: the scheduled scrape is running "
+                  f"({elapsed_seconds:.0f}s elapsed); try again when it finishes")
+        self.job_type = job_type
+        self.elapsed_seconds = elapsed_seconds
+
+
+def scheduled_scrape_run() -> Optional[RunningJob]:
+    """The live scheduled scrape_all, if any."""
+    for r in list(_running.values()):
+        if r.job_type == "scrape_all" and r.trigger == "scheduler":
+            return r
+    return None
+
+
+def _refuse_during_scheduled_scrape(job_type: str, trigger: str) -> None:
+    if job_type not in SCRAPE_JOB_TYPES or trigger == "scheduler":
+        return
+    live = scheduled_scrape_run()
+    if live is not None:
+        elapsed = (datetime.now(timezone.utc) - live.started_at).total_seconds()
+        raise ScheduledScrapeRunningError(job_type, elapsed)
+
+
+def scheduled_scrape_conflict_response(e: JobAlreadyRunningError):
+    """The 409 body of a refused manual scrape: `scheduled_scrape_running` for the R4-01
+    case (the dashboard tells the user to wait), the usual text otherwise."""
+    from fastapi.responses import JSONResponse
+    if isinstance(e, ScheduledScrapeRunningError):
+        return JSONResponse(status_code=409, content={
+            "detail": ScheduledScrapeRunningError.code, "message": str(e)})
+    return JSONResponse(status_code=409, content={"detail": f"{e.job_type} is already running"})
+
+
+@dataclass
+class ManualScrapeScopes:
+    """What manual scrapes are fetching right now, for the scheduled tick to leave out."""
+    accounts: set            # accounts with a manual Run all in flight (owner = its real id)
+    company_ids: set         # companies with a manual single-company scrape in flight
+    search_ids: set          # searches with a manual single-search run in flight
+
+    def __bool__(self):
+        return bool(self.accounts or self.company_ids or self.search_ids)
+
+
+def manual_scrape_scopes() -> ManualScrapeScopes:
+    out = ManualScrapeScopes(set(), set(), set())
+    for r in list(_running.values()):
+        if r.trigger == "scheduler" or r.job_type not in SCRAPE_JOB_TYPES:
+            continue
+        if r.job_type == "scrape_all":
+            out.accounts.add(r.account_id if r.account_id is not None else _owner_id())
+        elif r.job_type == "company_scrape" and r.scope_key:
+            out.company_ids.add(str(r.scope_key))
+        elif r.job_type == "search_run" and r.scope_key:
+            out.search_ids.add(str(r.scope_key))
+    return out
+
+
 def is_running(job_type: str, scope_key: Optional[str] = None) -> Optional[RunningJob]:
     """The current account's run of this job type and scope, if one is going."""
     return _running.get(_make_key(job_type, scope_key, _run_account(job_type)))
@@ -466,6 +543,7 @@ async def _tracked_run(job_type, trigger, scope_key, meta, target_job_id, compan
     key = _make_key(job_type, scope_key, account)
     all_accounts = all_accounts or job_type in ALL_ACCOUNT_JOB_TYPES
     _refuse_during_removal(job_type, current_account.get(), all_accounts)
+    _refuse_during_scheduled_scrape(job_type, trigger)
 
     existing = _running.get(key)
     if existing:
@@ -521,6 +599,7 @@ def launch_background(
     key = _make_key(job_type, scope_key, account)
     all_accounts = job_type in ALL_ACCOUNT_JOB_TYPES
     _refuse_during_removal(job_type, current_account.get(), all_accounts)
+    _refuse_during_scheduled_scrape(job_type, trigger)
 
     existing = _running.get(key)
     if existing:
