@@ -55,6 +55,10 @@ class _PerAccountProgress(MutableMapping):
     def __repr__(self):
         return repr(self._by_account.get(self._key(), {}))
 
+    def forget(self, account_id) -> None:
+        """Drop a removed account's entry (QA F8 / R5-10)."""
+        self._by_account.pop(str(account_id), None)
+
     def reset_all(self) -> None:
         """Tests: forget every account's progress."""
         self._by_account.clear()
@@ -181,7 +185,7 @@ async def enrich(linkedin_ids: list[str], db=None):
         session_cookies = _load_session_cookies()
         if not session_cookies:
             logger.error("LinkedIn import: no session cookies at %s — run "
-                         "`python -m backend.refresh_linkedin_session` first", _session_path())
+                         "`python -m backend.refresh_linkedin_session [--account <name>]` first", _session_path())
             _linkedin_import_progress["status"] = "error"
             _linkedin_import_progress["error_details"] = [{"stage": "session",
                 "error": "no LinkedIn session — refresh it in Settings › LinkedIn"}]
@@ -220,7 +224,7 @@ async def enrich(linkedin_ids: list[str], db=None):
                     "}")
                 if me_status != 200:
                     logger.error("LinkedIn import: session invalid (me=%s) — run "
-                                 "`python -m backend.refresh_linkedin_session`", me_status)
+                                 "`python -m backend.refresh_linkedin_session [--account <name>]`", me_status)
                     _linkedin_import_progress["status"] = "error"
                     _linkedin_import_progress["error_details"] = [{"stage": "session",
                         "error": f"session invalid (me={me_status}) — refresh it in Settings › LinkedIn"}]

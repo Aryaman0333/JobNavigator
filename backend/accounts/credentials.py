@@ -9,6 +9,8 @@ so they get per-account homes by the same rule:
 - Claude Code: the `claude_code_oauth_token` setting (models section, a secret). The
   owner's install value when set, else today's `CLAUDE_CODE_OAUTH_TOKEN` env var; a member
   on 'own' with its own token uses that. The CLI is handed it as CLAUDE_CODE_OAUTH_TOKEN.
+  A member on 'own' also runs it with `HOME=~/.claude-accounts/<account id>` and
+  `CLAUDE_CONFIG_DIR=<that>/.claude`, so its transcripts stay out of the owner's ~/.claude.
 - Codex CLI: `CODEX_HOME=~/.codex/accounts/<account id>` (in the codex_auth volume) for a
   member whose models section is 'own'; owner and 'inherit' keep the default ~/.codex.
 - Antigravity CLI: `HOME=~/.gemini/accounts/<account id>` (in the antigravity_auth
@@ -32,6 +34,12 @@ MODELS_SECTION = "models"
 # owner's logins, so a member's login survives a rebuild too. Tests point them at tmp.
 CODEX_ACCOUNTS_ROOT = "~/.codex/accounts"
 AGY_ACCOUNTS_ROOT = "~/.gemini/accounts"
+# QA F8 / R5-08: `claude -p` keeps a transcript of every prompt under its config dir; a
+# member on its own models section runs with HOME and CLAUDE_CONFIG_DIR of its own here,
+# so its résumé/JD prompts never land in the owner's ~/.claude. The token stays a setting,
+# so this needs no volume (a rebuild only drops old transcripts).
+CLAUDE_ACCOUNTS_ROOT = "~/.claude-accounts"
+CLAUDE_CONFIG_SUBDIR = ".claude"
 AGY_STATE_SUBDIR = os.path.join(".gemini", "antigravity-cli")
 
 
@@ -41,11 +49,21 @@ def _expand(path: str) -> str:
 
 def account_roots() -> list:
     """Every per-account root; removal deletes `<root>/<account id>` in each."""
-    return [_expand(CODEX_ACCOUNTS_ROOT), _expand(AGY_ACCOUNTS_ROOT), LI_ACCOUNTS_ROOT]
+    return [_expand(CODEX_ACCOUNTS_ROOT), _expand(AGY_ACCOUNTS_ROOT), _expand(CLAUDE_ACCOUNTS_ROOT),
+            LI_ACCOUNTS_ROOT]
 
 
 def codex_home(account_id) -> str:
     return os.path.join(_expand(CODEX_ACCOUNTS_ROOT), str(account_id))
+
+
+def claude_home(account_id) -> str:
+    """HOME for an account's `claude -p` (config dir `<this>/.claude`, R5-08)."""
+    return os.path.join(_expand(CLAUDE_ACCOUNTS_ROOT), str(account_id))
+
+
+def claude_config_dir(account_id) -> str:
+    return os.path.join(claude_home(account_id), CLAUDE_CONFIG_SUBDIR)
 
 
 def agy_home(account_id) -> str:
@@ -186,5 +204,10 @@ def linkedin_pin_file(db=None) -> str:
     member = session_member(db)
     if member is None:
         return LI_PIN_OWNER
+    return member_pin_file(member)
+
+
+def member_pin_file(account_id) -> str:
+    """A member's PIN drop file (/tmp/li_pin_<id>.txt); removal deletes it (R5-10)."""
     root, ext = os.path.splitext(LI_PIN_OWNER)
-    return f"{root}_{member}{ext}"
+    return f"{root}_{account_id}{ext}"

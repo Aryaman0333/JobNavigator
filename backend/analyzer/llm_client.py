@@ -422,6 +422,15 @@ async def _call_claude_code(prompt: str, system: str, model: str, max_tokens: in
     token = _claude_code_token()
     if token:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    # QA F8 / R5-08: a member on its own models section keeps its transcripts in a HOME and
+    # config dir of its own (like CODEX_HOME / agy HOME); owner and 'inherit' unchanged.
+    account = _own_login_account()
+    if account is not None:
+        from backend.accounts.credentials import claude_config_dir, claude_home
+        config_dir = claude_config_dir(account)
+        os.makedirs(config_dir, exist_ok=True)
+        env["HOME"] = claude_home(account)
+        env["CLAUDE_CONFIG_DIR"] = config_dir
 
     rc, stdout, stderr = await _run_cli(cmd, full_prompt.encode(), env=env)
 
@@ -471,10 +480,15 @@ class NonRetryableLLMError(RuntimeError):
 CLI_TIMEOUT = 300   # seconds one subscription-CLI completion may take before it is killed
 # codex exec processes share one auth.json and rewrite it on token refresh; OpenAI's docs say not
 # to run many against the same file, so at most two at a time whatever the scoring limiter allows.
+# QA F8 / R5-12 (decision, no change): the gates stay process-wide although members on own
+# models have homes of their own. Within one account the login is shared, so the limit is
+# still needed there, and across accounts it doubles as a CPU cap for the CLI processes; one
+# account's backlog delaying another's CLI calls is accepted for a household install.
 _codex_gate = asyncio.Semaphore(2)
 _CODEX_LOGIN_HINT = "run `docker compose exec backend codex login --device-auth`"
 _QUOTA_RE = re.compile(r"usage limit|rate limit|quota|too many requests|\b429\b", re.I)
-# agy refreshes one shared OAuth token file, so hold the same limit codex gets.
+# agy refreshes one shared OAuth token file (per account home), so hold the same limit codex
+# gets; process-wide on purpose, see R5-12 above.
 _agy_gate = asyncio.Semaphore(2)
 _AGY_LOGIN_HINT = "run `docker compose exec -it backend agy` and sign in"
 _AGY_AUTH_RE = re.compile(r"authentication (required|failed)|not logged in|sign in", re.I)

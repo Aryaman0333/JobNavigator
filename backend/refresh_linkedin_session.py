@@ -167,13 +167,58 @@ async def run_refresh() -> int:
     return code
 
 
-def main() -> int:
+def _run() -> int:
     email, password, missing, use_mock = _creds()
     if not email or not password:
         print(missing)
         return 2
     print(f"Logging in as {email} via Playwright...", flush=True)
     return asyncio.run(_login_and_save(email, password, fresh=use_mock))
+
+
+def resolve_account(ref: str):
+    """(account id, name, note) for `--account <name|id>`, or None when no single account
+    matches. The note explains which session a member on 'inherit' refreshes."""
+    from backend.models.db import SessionLocal
+    from backend.scripts.cli_login import find_account
+    from backend.accounts.context import use_account
+    db = SessionLocal()
+    try:
+        acc = find_account(db, ref)
+        if acc is None:
+            return None
+        note = ""
+        if acc.role != "owner":
+            with use_account(acc.id):
+                if _cred.linkedin_shared_from_owner(db):
+                    note = (f"{acc.name}'s LinkedIn section inherits the owner's, so this refreshes "
+                            "the owner's session.")
+        return acc.id, acc.name, note
+    finally:
+        db.close()
+
+
+def main(argv=None) -> int:
+    """`python -m backend.refresh_linkedin_session [--account <name|id>]` (QA F8 / R5-09):
+    without --account the owner's session, as before; with it, that account's session
+    (its own jar when its LinkedIn section is 'own', else the owner's)."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Refresh a logged-in LinkedIn browser session.")
+    parser.add_argument("--account", help="account name (case-insensitive) or id; default: the owner")
+    args = parser.parse_args(argv)
+    if not args.account:
+        return _run()
+    found = resolve_account(args.account)
+    if found is None:
+        print(f"No single account named or with id {args.account!r}.", file=sys.stderr)
+        return 1
+    account_id, name, note = found
+    from backend.accounts.context import use_account
+    print(f"Refreshing the LinkedIn session of {name}.", flush=True)
+    if note:
+        print(note, flush=True)
+    with use_account(account_id):
+        return _run()
 
 
 if __name__ == "__main__":

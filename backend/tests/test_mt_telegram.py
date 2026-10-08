@@ -27,11 +27,9 @@ def accounts(test_db):
 
 @pytest.fixture(autouse=True)
 def _fresh_codes():
-    tg._link_codes.clear()
-    tg._link_failures.clear()
+    tg.reset_link_state()
     yield
-    tg._link_codes.clear()
-    tg._link_failures.clear()
+    tg.reset_link_state()
 
 
 @pytest.fixture

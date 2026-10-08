@@ -731,8 +731,11 @@ export default function Settings() {
     const p = new URLSearchParams(loc.search)
     const g = p.get('gmail')
     if (!ready || !hasS || !g) return
+    const reason = p.get('reason') || 'error'
     if (g === 'connected') push({ kind: 'success', msg: 'Gmail connected' })
-    else push({ kind: 'error', msg: `Gmail was not connected (${p.get('reason') || 'error'}) — try Connect Gmail again` })
+    // QA F8 / R5-06: the consent must finish in the browser (and account) that pressed Connect Gmail
+    else if (reason === 'browser_mismatch' || reason === 'account_mismatch') push({ kind: 'error', msg: 'Gmail was not connected — finish the Google consent in the same browser and account that pressed Connect Gmail' })
+    else push({ kind: 'error', msg: `Gmail was not connected (${reason}) — try Connect Gmail again` })
     setActive('emailclass')
     requestAnimationFrame(() => {
       const c = scrollRef.current

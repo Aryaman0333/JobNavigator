@@ -64,6 +64,8 @@ const CODE_TEXT = {
   account_changed: 'This tab was switched to another account — reload it.',
   invalid_account_token: 'That account token is no longer valid — create a new one.',
   account_required: 'Pick an account first.',
+  // QA F8 / R5-03
+  chat_in_use: 'That Telegram chat is already linked to another account — use another chat, or your own bot.',
   'No account to link': 'Pick an account first — there is no account to link this chat to.',
 }
 export function errorText(err, fallback = 'Something went wrong — try again.') {

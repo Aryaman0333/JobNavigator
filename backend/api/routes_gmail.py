@@ -5,7 +5,12 @@
 - GET  /gmail/connect     {url}: Google's consent URL (gmail.readonly, offline, prompt=consent)
                           with a signed single-use `state` bound to the caller's account
                           (10 min). 503 `gmail_not_configured` without the .env client.
-- GET  /gmail/callback    public (Google redirects the browser here): checks the state,
+                          Also sets the httpOnly `jn_gmail_state` cookie (the state's nonce,
+                          path /api/gmail/callback, SameSite=Lax, 10 min) in this browser.
+- GET  /gmail/callback    public (Google redirects the browser here): checks the state and
+                          that this browser holds its nonce (`browser_mismatch`) and, when
+                          it sends jn_account, that it is the state's account
+                          (`account_mismatch`) (QA F8 / R5-06),
                           exchanges the code, stores the refresh token on the state's account,
                           then 303 → /settings?gmail=connected#gmail, or
                           /settings?gmail=error&reason=<code>#gmail.
@@ -21,9 +26,10 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from backend.accounts import auth as acct_auth
 from backend.accounts.context import current_account, unscoped
 from backend.accounts.settings import _account_row, install_row, member_account
 from backend.email_monitor import gmail_auth
@@ -62,15 +68,27 @@ def gmail_connect(request: Request, db: Session = Depends(get_db)):
     if not gmail_auth.is_configured():
         raise HTTPException(status_code=503, detail="gmail_not_configured")
     redirect_uri = gmail_auth.redirect_uri(request)
-    state = gmail_auth.make_state(db, _caller_id(db), redirect_uri)
-    return {"url": gmail_auth.consent_url(client_id, redirect_uri, state), "redirect_uri": redirect_uri}
+    state, nonce = gmail_auth.new_state(db, _caller_id(db), redirect_uri)
+    body = {"url": gmail_auth.consent_url(client_id, redirect_uri, state), "redirect_uri": redirect_uri}
+    response = JSONResponse(body)
+    # QA F8 / R5-06: only this browser can finish the flow (see gmail_auth.BROWSER_COOKIE)
+    gmail_auth.set_browser_cookie(response, nonce, secure=redirect_uri.startswith("https://"))
+    return response
 
 
 @router.get("/callback", summary="Google OAuth redirect target (public)", include_in_schema=False)
-async def gmail_callback(code: str = None, state: str = None, error: str = None,
+async def gmail_callback(request: Request, code: str = None, state: str = None, error: str = None,
                          db: Session = Depends(get_db)):
+    response = await _callback(request, code, state, error, db)
+    gmail_auth.clear_browser_cookie(response)
+    return response
+
+
+async def _callback(request: Request, code, state, error, db) -> RedirectResponse:
     try:
         payload = gmail_auth.read_state(db, state)
+        gmail_auth.check_browser(db, payload, request.cookies.get(gmail_auth.BROWSER_COOKIE),
+                                 request.cookies.get(acct_auth.COOKIE_NAME))
     except gmail_auth.StateError as e:
         logger.warning("Gmail connect refused: %s", e.reason)
         return _back(False, e.reason)

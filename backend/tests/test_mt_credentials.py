@@ -253,7 +253,7 @@ async def test_claude_code_member_inherit_uses_the_owner_token(test_db, accounts
 
 
 @pytest.mark.asyncio
-async def test_claude_code_member_own_uses_its_token(test_db, accounts, monkeypatch):
+async def test_claude_code_member_own_uses_its_token(test_db, accounts, cli_roots, monkeypatch):
     a, b = accounts
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-owner-token")
     set_setting(test_db, "claude_code_oauth_token", "install-token")
@@ -295,6 +295,7 @@ def test_new_account_settings_copy_never_carries_the_token(test_db, accounts):
 def cli_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "CODEX_ACCOUNTS_ROOT", str(tmp_path / "codex" / "accounts"))
     monkeypatch.setattr(C, "AGY_ACCOUNTS_ROOT", str(tmp_path / "gemini" / "accounts"))
+    monkeypatch.setattr(C, "CLAUDE_ACCOUNTS_ROOT", str(tmp_path / "claude" / "accounts"))
     monkeypatch.setattr(C, "LI_ACCOUNTS_ROOT", str(tmp_path / "li" / "accounts"))
     return tmp_path
 
@@ -433,6 +434,7 @@ def test_account_dirs_lists_the_cli_homes_and_the_session_dir(cli_roots, account
     a, b = accounts
     assert account_dirs(b) == [str(cli_roots / "codex" / "accounts" / str(b)),
                                str(cli_roots / "gemini" / "accounts" / str(b)),
+                               str(cli_roots / "claude" / "accounts" / str(b)),
                                str(cli_roots / "li" / "accounts" / str(b))]
 
 

@@ -13,10 +13,12 @@ Per account (MT-17):
   (`household_chat_account`) and inline buttons act only on that account's jobs. A member's
   own bot posts to /api/telegram/webhook/<account_id> with its own secret.
 """
+import html
 import json
 import logging
 import re
 import secrets
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -381,11 +383,26 @@ async def send_test_message():
 LINK_CODE_TTL = 600            # seconds a code stays valid
 LINK_MAX_FAILURES = 5          # wrong codes per chat ...
 LINK_FAILURE_WINDOW = 600      # ... within this many seconds, then the chat is ignored
+# QA F8 / R5-04: a new group chat is a new chat id, so the per-chat limit alone does not
+# bound guessing. Every live code also has a budget: each wrong code the bot it can be
+# redeemed on receives (household: every household code; own bot: that member's code)
+# counts against it, and after LINK_CODE_MAX_WRONG the code is void (ask for a new one).
+# Over LINK_GLOBAL_MAX_FAILURES wrong codes in the window from all chats together, every
+# live code is voided and no code is accepted until the window has aged.
+LINK_CODE_MAX_WRONG = 20
+LINK_GLOBAL_MAX_FAILURES = 50
+LINK_MAX_TRACKED_CHATS = 256   # memory bound of the per-chat counters
 _CODE_RE = re.compile(r"^(?:/start(?:@\w+)?\s+)?(\d{6})$")
-# code -> (account id, expires at epoch seconds); one live code per account. In memory:
-# a restart forgets pending codes (the user asks for a new one).
+# code -> [account id, expires at epoch seconds, wrong guesses seen]; one live code per
+# account. In memory: a restart forgets pending codes (the user asks for a new one).
 _link_codes: dict = {}
 _link_failures: dict = {}      # chat id -> [epoch seconds of wrong codes]
+_link_global_failures: list = []   # epoch seconds of every wrong code (all chats)
+# QA F8 / T5-02: the link-code route runs in the threadpool while the webhook consumes on
+# the event loop; every read and write of the three stores above happens under this lock.
+_link_lock = threading.Lock()
+
+GLOBAL_LOCKOUT = "global"
 
 
 def _now() -> float:
@@ -393,22 +410,28 @@ def _now() -> float:
 
 
 def _purge_codes(now: float) -> None:
-    for code in [c for c, (_a, exp) in _link_codes.items() if exp <= now]:
+    """Drop expired codes and aged failure counters (caller holds `_link_lock`)."""
+    for code in [c for c, entry in _link_codes.items() if entry[1] <= now]:
         _link_codes.pop(code, None)
+    for chat in [c for c, ts in _link_failures.items()
+                 if not ts or now - ts[-1] >= LINK_FAILURE_WINDOW]:
+        _link_failures.pop(chat, None)
+    _link_global_failures[:] = [t for t in _link_global_failures if now - t < LINK_FAILURE_WINDOW]
 
 
 def create_link_code(account_id) -> dict:
     """A fresh 6-digit code for `account_id` (replaces its previous one)."""
-    now = _now()
-    _purge_codes(now)
-    for code in [c for c, (a, _e) in _link_codes.items() if a == account_id]:
-        _link_codes.pop(code, None)
-    while True:
-        code = f"{secrets.randbelow(10 ** 6):06d}"
-        if code not in _link_codes:
-            break
-    expires = now + LINK_CODE_TTL
-    _link_codes[code] = (account_id, expires)
+    with _link_lock:
+        now = _now()
+        _purge_codes(now)
+        for code in [c for c, entry in _link_codes.items() if entry[0] == account_id]:
+            _link_codes.pop(code, None)
+        while True:
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            if code not in _link_codes:
+                break
+        expires = now + LINK_CODE_TTL
+        _link_codes[code] = [account_id, expires, 0]
     return {"code": code, "ttl_seconds": LINK_CODE_TTL,
             "expires_at": datetime.fromtimestamp(expires, timezone.utc).isoformat()}
 
@@ -416,24 +439,71 @@ def create_link_code(account_id) -> dict:
 def consume_link_code(code: str, account_id=None):
     """The account a valid code belongs to (the code is used up), else None. With
     `account_id` (a member's own bot) only that account's code is accepted."""
-    now = _now()
-    _purge_codes(now)
-    entry = _link_codes.get(code)
-    if entry is None or (account_id is not None and entry[0] != account_id):
-        return None
-    _link_codes.pop(code, None)
-    return entry[0]
+    with _link_lock:
+        _purge_codes(_now())
+        entry = _link_codes.get(code)
+        if entry is None or (account_id is not None and entry[0] != account_id):
+            return None
+        _link_codes.pop(code, None)
+        return entry[0]
 
 
-def _locked_out(chat_id: str) -> bool:
-    now = _now()
-    recent = [t for t in _link_failures.get(chat_id, []) if now - t < LINK_FAILURE_WINDOW]
-    _link_failures[chat_id] = recent
-    return len(recent) >= LINK_MAX_FAILURES
+def forget_link_codes(account_id) -> None:
+    """Drop `account_id`'s live code (the account was removed, R5-10)."""
+    with _link_lock:
+        for code in [c for c, entry in _link_codes.items() if str(entry[0]) == str(account_id)]:
+            _link_codes.pop(code, None)
 
 
-def _record_failure(chat_id: str) -> None:
-    _link_failures.setdefault(chat_id, []).append(_now())
+def reset_link_state() -> None:
+    """Tests: forget every code and counter."""
+    with _link_lock:
+        _link_codes.clear()
+        _link_failures.clear()
+        _link_global_failures.clear()
+
+
+def _locked_out(chat_id: str):
+    """False, True (this chat sent too many wrong codes) or GLOBAL_LOCKOUT."""
+    with _link_lock:
+        now = _now()
+        _purge_codes(now)
+        if len(_link_global_failures) >= LINK_GLOBAL_MAX_FAILURES:
+            return GLOBAL_LOCKOUT
+        recent = [t for t in _link_failures.get(chat_id, []) if now - t < LINK_FAILURE_WINDOW]
+        if recent:
+            _link_failures[chat_id] = recent
+        else:
+            _link_failures.pop(chat_id, None)
+        return len(recent) >= LINK_MAX_FAILURES
+
+
+def _record_failure(chat_id: str, bot_account=None) -> None:
+    """A wrong code from `chat_id` on the household bot (`bot_account` None) or a member's
+    own bot: counts against the chat, every code redeemable on that bot, and the global cap."""
+    with _link_lock:
+        now = _now()
+        _purge_codes(now)
+        _link_failures.setdefault(chat_id, []).append(now)
+        if len(_link_failures) > LINK_MAX_TRACKED_CHATS:
+            oldest = sorted(_link_failures, key=lambda c: _link_failures[c][-1])
+            for chat in oldest[:len(_link_failures) - LINK_MAX_TRACKED_CHATS]:
+                _link_failures.pop(chat, None)
+        _link_global_failures.append(now)
+        if len(_link_global_failures) >= LINK_GLOBAL_MAX_FAILURES:
+            if _link_codes:
+                logger.warning("Telegram link codes: %d wrong codes in %ds from all chats; "
+                               "every live code voided", len(_link_global_failures), LINK_FAILURE_WINDOW)
+            _link_codes.clear()
+            return
+        for code, entry in list(_link_codes.items()):
+            if bot_account is not None and entry[0] != bot_account:
+                continue
+            entry[2] += 1
+            if entry[2] >= LINK_CODE_MAX_WRONG:
+                logger.warning("Telegram link code of account %s voided after %d wrong codes",
+                               entry[0], entry[2])
+                _link_codes.pop(code, None)
 
 
 # ── Which account a chat belongs to ──────────────────────────────────────────
@@ -507,33 +577,61 @@ def own_bot_chat_account(account_id, chat_id):
     return account_id if chat_id not in (None, "") and mine == str(chat_id) else NOT_LINKED
 
 
+def chat_in_use_by(db, account_id, chat_id, on_own_bot: bool):
+    """The name of another account the household bot already routes `chat_id` to, else
+    None. The rule linking and PATCH /api/settings share (QA F8 / R5-03): a chat on the
+    household bot belongs to one account. `on_own_bot`: `account_id` (a member) sends
+    through its own bot, whose webhook routes separately, so nothing clashes."""
+    from backend.models.db import Account
+    if chat_id in (None, "") or on_own_bot:
+        return None
+    others = [a for a in household_chat_accounts(db, str(chat_id)) if a != account_id]
+    if not others:
+        return None
+    other = db.query(Account.name).filter(Account.id == others[0]).first()
+    return other[0] if other and other[0] else "another account"
+
+
 def link_chat(account_id, chat_id) -> tuple:
-    """Store `chat_id` as the account's chat. (True, account name) or (False, reason).
-    A chat already linked to another account on the household bot is refused (routing
-    must stay unambiguous). A member with no notification switch of its own gets it on."""
+    """Store `chat_id` as the account's chat. (True, account name, previous chat id or None)
+    or (False, reason, None). A chat already linked to another account on the household
+    bot is refused (routing must stay unambiguous). A member with no notification switch
+    of its own gets it on. The previous chat is returned when this replaced a different one
+    (R5-04: a relink is never silent)."""
     from backend.models.db import Account, get_owner_id
     db = SessionLocal()
     try:
         acc = db.query(Account).filter(Account.id == account_id).first()
         if acc is None:
-            return False, "That code belongs to an account that no longer exists."
+            return False, "That code belongs to an account that no longer exists.", None
         owner = get_owner_id(db)
         is_owner = acc.id == owner
-        if is_owner or member_own_bot(db, acc.id) is None:
-            others = [a for a in household_chat_accounts(db, chat_id) if a != acc.id]
-            if others:
-                other = db.query(Account.name).filter(Account.id == others[0]).first()
-                return False, (f"This chat is already linked to {other[0] if other else 'another account'}. "
-                               "Clear its Chat ID in Settings first.")
+        on_own_bot = not is_owner and member_own_bot(db, acc.id) is not None
+        other = chat_in_use_by(db, acc.id, chat_id, on_own_bot)
+        if other:
+            return False, (f"This chat is already linked to {other}. "
+                           "Clear its Chat ID in Settings first."), None
         target = None if is_owner else acc.id
+        if is_owner:
+            previous = (get_install_setting(db, "telegram_chat_id") or "").strip()
+        else:
+            previous = _account_value(db, acc.id, "telegram_chat_id")
         put_setting(db, "telegram_chat_id", str(chat_id), account_id=target)
         if not is_owner and not _account_value(db, acc.id, "telegram_enabled"):
             put_setting(db, "telegram_enabled", "true", account_id=acc.id)
         db.commit()
-        logger.info("Telegram chat linked to account %s", acc.id)
-        return True, acc.name
+        replaced = previous if previous and previous != str(chat_id) else None
+        logger.info("Telegram chat linked to account %s%s", acc.id,
+                    " (replaced a previous chat)" if replaced else "")
+        return True, acc.name, replaced
     finally:
         db.close()
+
+
+REPLACED_TEXT = "Replaced previous chat."
+UNLINKED_NOTICE = ("This chat is no longer linked to the JobNavigator account {name}: another "
+                   "chat was linked with a code from Settings. If that was not you, open Settings › "
+                   "Notifications and link this chat again.")
 
 
 async def handle_message(message: dict, bot_account=None, token: str = None) -> str:
@@ -554,12 +652,19 @@ async def handle_message(message: dict, bot_account=None, token: str = None) -> 
         else:
             account = consume_link_code(m.group(1), bot_account)
             if account is None:
-                _record_failure(chat_id)
+                _record_failure(chat_id, bot_account)
                 reply = ("That code is not valid or has expired. "
                          "Get a new one in Settings › Notifications › Link Telegram.")
             else:
-                ok, detail = link_chat(account, chat_id)
+                ok, detail, replaced = link_chat(account, chat_id)
                 reply = f"Linked to {detail}." if ok else detail
+                if ok and replaced:
+                    reply += " " + REPLACED_TEXT
+                    try:     # tell the old chat; best effort (it may have blocked the bot)
+                        await _send_message(replaced, UNLINKED_NOTICE.format(name=html.escape(detail)),
+                                            None, "HTML", **_bot(token))
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Telegram: could not notify the replaced chat: %s", e)
     else:
         linked = (household_chat_account(chat_id) if bot_account is None
                   else own_bot_chat_account(bot_account, chat_id))

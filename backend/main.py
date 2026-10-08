@@ -1107,7 +1107,6 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
 async def telegram_webhook(update: dict, request: Request):
     """Handle a Telegram webhook update of the household bot (callback queries from inline buttons, link codes); validates X-Telegram-Bot-Api-Secret-Token against the telegram_webhook_secret setting.
     The chat names the account (MT-17): buttons act only on that account's jobs, an unlinked chat acts on nothing."""
-    import hmac as _hmac
     db = SessionLocal()
     try:
         expected = (get_install_setting(db, "telegram_webhook_secret") or "").strip()
@@ -1119,7 +1118,7 @@ async def telegram_webhook(update: dict, request: Request):
         logger.warning("telegram_webhook rejected: webhook secret not configured")
         raise HTTPException(status_code=503, detail="Telegram webhook secret not configured")
     received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not received or not _hmac.compare_digest(received, expected):
+    if not received or not _secret_eq(received, expected):   # QA F8 / R5-07: never a 500
         logger.warning("telegram_webhook rejected: invalid secret token")
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
@@ -1163,7 +1162,6 @@ async def telegram_member_webhook(bot_account_id: str, update: dict, request: Re
     """Webhook of a member's own bot (MT-17): validates X-Telegram-Bot-Api-Secret-Token
     against that member's own webhook secret; buttons act only when pressed in the
     member's own chat, on the member's jobs; text messages carry link codes."""
-    import hmac as _hmac
     import uuid as _uuid
     import backend.notifier.telegram as tg
     try:
@@ -1181,7 +1179,7 @@ async def telegram_member_webhook(bot_account_id: str, update: dict, request: Re
     if not expected:
         raise HTTPException(status_code=503, detail="Telegram webhook secret not configured")
     received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not received or not _hmac.compare_digest(received, expected):
+    if not received or not _secret_eq(received, expected):   # QA F8 / R5-07: never a 500
         logger.warning("telegram_member_webhook rejected: invalid secret token")
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     await _telegram_update(update, lambda chat: tg.own_bot_chat_account(acc, chat), token, bot_account=acc)
@@ -1231,17 +1229,24 @@ async def telegram_register_webhook(body: dict):
     try:
         member = member_account(db)
         own = tg.member_own_bot(db, member) if member is not None else None
-        if own is not None:
-            secret = _secrets.token_urlsafe(32)
-            put_setting(db, tg.OWN_WEBHOOK_SECRET_KEY, secret, account_id=member,
-                        description="Secret of this account's own Telegram bot webhook.")
-            db.commit()
-        else:
+        if own is None:
             _telegram_owner_check(db)
     finally:
         db.close()
     if own is not None:
-        return await tg.register_webhook(f"{public_url}/api/telegram/webhook/{member}", token=own[0], secret=secret)
+        # QA F8 / R5-05: the fresh secret is stored only once Telegram accepted the webhook
+        # that carries it; on any failure the old secret (and the old webhook) keep working.
+        secret = _secrets.token_urlsafe(32)
+        result = await tg.register_webhook(f"{public_url}/api/telegram/webhook/{member}", token=own[0], secret=secret)
+        if isinstance(result, dict) and result.get("ok") is True:
+            db = SessionLocal()
+            try:
+                put_setting(db, tg.OWN_WEBHOOK_SECRET_KEY, secret, account_id=member,
+                            description="Secret of this account's own Telegram bot webhook.")
+                db.commit()
+            finally:
+                db.close()
+        return result
     full_url = f"{public_url}/api/telegram/webhook"
     result = await tg.register_webhook(full_url)
     return result

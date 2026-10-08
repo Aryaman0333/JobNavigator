@@ -38,6 +38,9 @@ def _clean_auth_throttle():
         if auth is not None:
             auth.reset_pin_cooldowns()   # MT-10 per-account PIN cooldowns
             auth.forget_touches()        # MT-11 last_active_at throttle
+        tg = sys.modules.get("backend.notifier.telegram")
+        if tg is not None:
+            tg.reset_link_state()        # QA F8: link codes + per-chat/global wrong-code counters
 
     _reset()
     yield

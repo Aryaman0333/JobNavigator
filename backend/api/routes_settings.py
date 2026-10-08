@@ -75,6 +75,47 @@ def _check_default_resume(db, value) -> None:
         raise HTTPException(status_code=422, detail="default_resume_id must be \"\", \"persona\" or the id of one of your base résumés")
 
 
+_CHAT_KEYS = ("telegram_chat_id", "telegram_bot_mode", "telegram_bot_token")
+
+
+def _check_telegram_chat(db, updates: dict, targets: dict) -> None:
+    """R5-03: a chat on the household bot belongs to one account, whether it was linked
+    with a code or typed into Settings. A write that would leave the account's chat id
+    (new or current) on the household bot while another account already has it there is a
+    409 `chat_in_use` (nothing written). Clearing the chat id is always allowed."""
+    if not any(k in updates for k in _CHAT_KEYS):
+        return
+    from backend.models.db import get_owner_id
+    import backend.notifier.telegram as tg
+    # Every key of the notifications section has the same target: the owner's (install,
+    # also for a member with the owner unlock writing install values) or the member's own.
+    target = next((targets.get(k) for k in _CHAT_KEYS if k in updates), None)
+    account = target if target is not None else get_owner_id(db)
+    if account is None:
+        return
+
+    def current(key):
+        if target is None:
+            return (acct_settings.get_install_setting(db, key) or "").strip()
+        row = acct_settings._account_row(db, target, key)
+        return (row.value or "").strip() if row is not None else ""
+
+    def after(key):
+        if key in updates:
+            v = updates[key]
+            return "" if v is None else str(v).strip()
+        return current(key)
+
+    chat = after("telegram_chat_id")
+    if not chat:
+        return
+    on_own_bot = (target is not None and after("telegram_bot_mode").lower() == tg.OWN_BOT
+                  and bool(after("telegram_bot_token")))
+    other = tg.chat_in_use_by(db, account, chat, on_own_bot)
+    if other:
+        raise HTTPException(status_code=409, detail="chat_in_use")
+
+
 @router.get("")
 def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key section, source, editable); always on for members"),
                  db: Session = Depends(get_db)):
@@ -156,6 +197,7 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
 
     if "default_resume_id" in checkable:
         _check_default_resume(db, checkable["default_resume_id"])
+    _check_telegram_chat(db, checkable, targets)
 
     warnings: list[str] = []
     updated = []

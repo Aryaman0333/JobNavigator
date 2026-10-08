@@ -439,7 +439,35 @@ def delete_account_rows(db, account_id) -> dict:
             removed_dirs.append(path)
     counts["dirs"] = len(removed_dirs)
     counts["files"] = 0   # PDFs are never stored (rendered on demand)
+    forget_account_memory(account_id)
     return counts
+
+
+def forget_account_memory(account_id) -> None:
+    """QA F8 / R5-10: everything in memory or /tmp keyed by a removed account goes with it:
+    its LinkedIn PIN drop file, refresh phase and import progress, a live Telegram link code,
+    PIN cooldown buckets and the last-active throttle. Modules that were never imported hold
+    nothing, so they are looked up in sys.modules instead of being imported here."""
+    import sys
+    from backend.accounts import auth as acct_auth
+    from backend.accounts.credentials import member_pin_file
+    key = str(account_id)
+    try:
+        os.remove(member_pin_file(account_id))
+    except OSError:
+        pass
+    acct_auth._clear(account_id)
+    acct_auth._touched.pop(key, None)
+    refresh = sys.modules.get("backend.refresh_linkedin_session")
+    if refresh is not None:
+        for k in [k for k in refresh._MEMBER_STATES if str(k) == key]:
+            refresh._MEMBER_STATES.pop(k, None)
+    li = sys.modules.get("backend.scraper.sources.linkedin_extension")
+    if li is not None:
+        li._linkedin_import_progress.forget(account_id)
+    tg = sys.modules.get("backend.notifier.telegram")
+    if tg is not None:
+        tg.forget_link_codes(account_id)
 
 
 # ── Export ───────────────────────────────────────────────────────────────────

@@ -155,7 +155,9 @@ def _state_key(db) -> bytes:
     return hmac.new(cookie_secret(db), b"jobnavigator gmail oauth state", hashlib.sha256).digest()
 
 
-def make_state(db, account_id, redirect_uri: str) -> str:
+def new_state(db, account_id, redirect_uri: str) -> tuple:
+    """(signed state, its nonce). /connect puts the nonce into the BROWSER_COOKIE of the
+    browser that asked, and the callback requires it there (QA F8 / R5-06)."""
     from backend.accounts.auth import sign_cookie
     now = _now()
     for n, exp in list(_pending_nonces.items()):
@@ -164,8 +166,51 @@ def make_state(db, account_id, redirect_uri: str) -> str:
     nonce = secrets.token_urlsafe(16)
     exp = int(now + STATE_TTL)
     _pending_nonces[nonce] = exp
-    return sign_cookie(_state_key(db), {"k": "gmail", "a": str(account_id), "n": nonce,
-                                        "e": exp, "r": redirect_uri})
+    state = sign_cookie(_state_key(db), {"k": "gmail", "a": str(account_id), "n": nonce,
+                                         "e": exp, "r": redirect_uri})
+    return state, nonce
+
+
+def make_state(db, account_id, redirect_uri: str) -> str:
+    return new_state(db, account_id, redirect_uri)[0]
+
+
+# ── Browser binding (QA F8 / R5-06) ──────────────────────────────────────────
+#
+# The state names the account, but the callback is public: a consent URL minted by
+# member B and opened in the owner's browser stored the OWNER's Google token on B. So
+# /connect also sets a short-lived httpOnly cookie holding the state's nonce in the browser
+# that asked, and the callback refuses a state whose nonce that browser does not hold.
+# SameSite=Lax because Google's redirect back is a cross-site top-level GET (a Strict
+# cookie would not be sent); the path limits it to the callback. When the browser also
+# sends its jn_account cookie (SameSite=Strict, so usually not on Google's redirect), that
+# account must be the state's account.
+BROWSER_COOKIE = "jn_gmail_state"
+
+
+def set_browser_cookie(response, nonce: str, secure: bool = False) -> None:
+    response.set_cookie(key=BROWSER_COOKIE, value=nonce, max_age=STATE_TTL, path=CALLBACK_PATH,
+                        httponly=True, samesite="lax", secure=secure)
+
+
+def clear_browser_cookie(response) -> None:
+    response.delete_cookie(key=BROWSER_COOKIE, path=CALLBACK_PATH, httponly=True, samesite="lax")
+
+
+def check_browser(db, payload: dict, browser_nonce: Optional[str], account_cookie: Optional[str]) -> None:
+    """StateError('browser_mismatch') unless this browser started the flow (it holds the
+    state's nonce); StateError('account_mismatch') when its jn_account cookie is present
+    and does not resolve to the state's account."""
+    expected = str(payload.get("n") or "")
+    given = browser_nonce if isinstance(browser_nonce, str) else ""
+    if not expected or not given or not hmac.compare_digest(
+            given.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass")):
+        raise StateError("browser_mismatch")
+    if account_cookie:
+        from backend.accounts import auth as acct_auth
+        acc, _payload = acct_auth.account_from_cookie(db, acct_auth.load_accounts(db), account_cookie)
+        if acc is None or str(acc["id"]) != str(payload.get("a")):
+            raise StateError("account_mismatch")
 
 
 def read_state(db, state: Optional[str]) -> dict:

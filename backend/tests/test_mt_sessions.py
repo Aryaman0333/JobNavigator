@@ -35,6 +35,7 @@ def roots(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "LI_PIN_OWNER", str(tmp_path / "tmp" / "li_pin.txt"))
     monkeypatch.setattr(C, "CODEX_ACCOUNTS_ROOT", str(tmp_path / "codex" / "accounts"))
     monkeypatch.setattr(C, "AGY_ACCOUNTS_ROOT", str(tmp_path / "gemini" / "accounts"))
+    monkeypatch.setattr(C, "CLAUDE_ACCOUNTS_ROOT", str(tmp_path / "claude" / "accounts"))
     return tmp_path
 
 
