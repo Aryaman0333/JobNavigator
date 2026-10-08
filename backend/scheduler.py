@@ -19,7 +19,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from backend.accounts.background import for_each_account, gmail_account_ids
-from backend.accounts.context import as_owner
+from backend.accounts.context import as_owner, run_in_clean_context, scheduled_job
 from backend.models.db import SessionLocal
 from backend.accounts.settings import get_setting as _get_setting
 
@@ -65,9 +65,21 @@ def configure_scheduler():
     finally:
         db.close()
 
-    def _add_cron_job(func, job_id, cron_expr, install_level=False):
+    # QA F4 / R1-01: add_job() wakes the scheduler with call_soon_threadsafe, which
+    # captures the caller's contextvars, and every later fire inherits them. The caller
+    # may be a member's settings PATCH (unscoped, owner-unlocked), so the jobs are
+    # registered from an empty Context. (Each entry point also resets the account
+    # context itself, see `scheduled_job`.)
+    run_in_clean_context(
+        _register_jobs, scrape_interval, email_interval,
+        backup_cron, digest_cron, h1b_cron, cleanup_cron, reject_cron)
+
+
+def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1b_cron,
+                   cleanup_cron, reject_cron):
+    def _add_cron_job(func, job_id, cron_expr):
         """Parse a 5-field cron expression and add to scheduler. Empty = skip.
-        install_level=True runs the job once as the owner; per-account jobs set their own
+        Install-level jobs carry `as_owner` themselves; per-account jobs set their own
         account context for each account."""
         if not cron_expr:
             return
@@ -75,7 +87,7 @@ def configure_scheduler():
             parts = cron_expr.split()
             if len(parts) == 5:
                 scheduler.add_job(
-                    as_owner(func) if install_level else func,
+                    func,
                     CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
                     id=job_id,
                     replace_existing=True,
@@ -107,9 +119,9 @@ def configure_scheduler():
         )
 
     # Cron-based jobs (empty = disabled)
-    _add_cron_job(run_db_backup, "db_backup", backup_cron, install_level=True)
+    _add_cron_job(run_db_backup, "db_backup", backup_cron)                   # install-level
     _add_cron_job(send_daily_digest, "daily_digest", digest_cron)            # per account
-    _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron, install_level=True)
+    _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron)                 # install-level
     _add_cron_job(run_job_cleanup_auto, "job_cleanup", cleanup_cron)         # per account
     _add_cron_job(run_auto_reject, "auto_reject", reject_cron)               # per account
 
@@ -203,6 +215,7 @@ def _activity_summary(since, log_type: str, noun: str, plural: str = None) -> st
 
 
 # ── Scheduled jobs ──────────────────────────────────────────────────────────
+@scheduled_job
 @as_owner
 async def run_all_scrapes():
     """One install-level run (its JobRun is the owner's): run_all() is the shared-scrape
@@ -235,6 +248,7 @@ async def _score_saved_jobs():
     await analyze_unscored_jobs(status="saved")
 
 
+@scheduled_job
 async def run_email_check():
     """The owner plus every member with a connected Gmail token (MT-19), each with its own
     credentials and processed-id state; an invalid_grant marks only that account expired."""
@@ -254,6 +268,7 @@ async def _email_check_for_account():
         logger.warning(f"Scheduler skipped: {e}")
 
 
+@scheduled_job
 async def send_daily_digest():
     """Per account: each account's digest counts only its own jobs and applications and
     goes to that account's own chat, on its own bot or the household bot (MT-17); an
@@ -274,6 +289,8 @@ async def _digest_for_account():
         logger.warning(f"Scheduler skipped: {e}")
 
 
+@scheduled_job
+@as_owner
 async def refresh_h1b_data():
     """Install-level: one run (owner's JobRun); refresh_all_h1b reads every account's
     companies and jobs, and VisaCache is shared."""
@@ -297,6 +314,7 @@ async def refresh_h1b_data():
         logger.warning(f"Scheduler skipped: {e}")
 
 
+@scheduled_job
 async def run_auto_reject():
     """Move old non-rejected/non-offer applications to rejected after X days, per account."""
     await for_each_account("auto_reject", _auto_reject_for_account)
@@ -335,6 +353,7 @@ async def _auto_reject_for_account():
         logger.warning(f"Scheduler skipped: {e}")
 
 
+@scheduled_job
 async def run_job_cleanup_auto():
     """Auto-delete old skipped jobs if job_archive_after_days > 0, per account."""
     await for_each_account("job_cleanup", _job_cleanup_for_account)
@@ -403,6 +422,8 @@ async def check_scrape_health(since=None):
         db.close()
 
 
+@scheduled_job
+@as_owner
 async def run_db_backup():
     """Install-level: run pg_dump of the whole database and keep max 5 backup files."""
     from backend.job_monitor import tracked_run, JobAlreadyRunningError

@@ -176,6 +176,17 @@ def test_db(request):
 
 
 @pytest.fixture
+def no_account_ctx(test_db):
+    """QA F4 / R1-09: `test_db`, but the test body runs with NO account context (not the
+    owner, not unscoped, no owner unlock) — exactly what APScheduler or a fresh task sees.
+    In strict mode any query on account-owned rows that its entry point did not scope
+    raises, so background entry points tested here must set their own context."""
+    from backend.accounts.context import no_account_context
+    with no_account_context():
+        yield test_db
+
+
+@pytest.fixture
 def api_client(test_db, monkeypatch):
     """FastAPI TestClient for endpoint tests; test_db already rebound SessionLocal, so this only stubs lifespan deps and the scheduler."""
     from fastapi.testclient import TestClient

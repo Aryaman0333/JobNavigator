@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Awaitable, Callable, Iterable, Optional
 
-from backend.accounts.context import _unscoped, owner_context, unscoped, use_account
+from backend.accounts.context import _unscoped, owner_account_id, unscoped, use_account
 
 logger = logging.getLogger("jobnavigator.accounts")
 
@@ -66,13 +66,15 @@ def gmail_account_ids() -> list[Optional[uuid.UUID]]:
 @contextmanager
 def acting_as(account_id: Optional[uuid.UUID]):
     """Run the block as `account_id`, scoped even when the caller was `unscoped()`.
-    None = the owner fallback (no accounts readable)."""
-    if account_id is None:
-        with owner_context():
-            yield
-        return
+    None = the owner (no accounts readable, or a row with no account): QA F4 / R1-06 —
+    it also clears `unscoped()` and sets the owner explicitly, so the body never runs
+    over every account. With no owner at all (no accounts table yet) the block runs
+    with no account context: the non-strict fallback then reads unfiltered, which is
+    the pre-migration single-user behaviour."""
     token = _unscoped.set(False)
     try:
+        if account_id is None:
+            account_id = owner_account_id()
         with use_account(account_id):
             yield
     finally:

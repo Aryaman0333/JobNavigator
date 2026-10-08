@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.accounts.context import current_account, owner_account_id, owner_context
+from backend.accounts.context import current_account, owner_account_id, owner_context, owner_unlocked
 from backend.models.db import SessionLocal, JobRun
 from backend.accounts.settings import get_setting
 
@@ -373,6 +373,9 @@ def _insert_job_run(
     meta: Optional[dict],
     target_job_id: Optional[uuid.UUID] = None,
 ) -> None:
+    # QA F4 / R1-07: an install-wide run (backup, H-1B refresh) is the owner's, whoever
+    # triggered it (a member with the owner unlock); other runs take the context's account.
+    account = _owner_id() if job_type in INSTALL_WIDE_JOB_TYPES else None
     db = SessionLocal()
     try:
         run = JobRun(
@@ -383,6 +386,8 @@ def _insert_job_run(
             meta=meta,
             target_job_id=target_job_id,
         )
+        if account is not None:
+            run.account_id = account
         db.add(run)
         db.commit()
     finally:
@@ -392,7 +397,10 @@ def _insert_job_run(
 def _finish_job_run(run_id: uuid.UUID, status: str, result_summary: Optional[str], error: Optional[str]) -> None:
     db = SessionLocal()
     try:
-        run = db.query(JobRun).filter(JobRun.id == run_id).first()
+        # By its own (random, unique) id: an install-wide run belongs to the owner even
+        # when a member's context finishes it (R1-07).
+        run = (db.query(JobRun).filter(JobRun.id == run_id)
+               .execution_options(jn_unscoped=True).first())
         if run:
             now = datetime.now(timezone.utc)
             run.status = status
@@ -528,7 +536,10 @@ def launch_background(
     started_at = datetime.now(timezone.utc)
 
     async def _wrapper():
-        with owner_context():
+        # QA F4 / R1-08: the owner unlock is a 15-minute browser grant checked when the
+        # job was launched; it must not ride along for the task's whole (hours-long)
+        # lifetime.
+        with owner_unlocked(False), owner_context():
             await _run()
 
     async def _run():

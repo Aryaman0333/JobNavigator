@@ -160,29 +160,38 @@ def main():
         parser.error("pass --dry-run or --apply")
     dry_run = args.dry_run
 
-    db = SessionLocal()
-    try:
-        rows = fetch_all_rows(db)
-        computed = compute_new_ids(rows)
-        updates, skipped, unchanged = resolve_updates(computed)
+    # QA F4 / R1-10: every account's jobs, one account at a time (external_id is unique
+    # per account, so collisions are grouped per account too).
+    from backend.accounts.background import acting_as, all_account_ids
+    all_skipped, all_computed = [], {}
+    for account in all_account_ids():
+        db = SessionLocal()
+        try:
+            with acting_as(account):
+                rows = fetch_all_rows(db)
+                computed = compute_new_ids(rows)
+                updates, skipped, unchanged = resolve_updates(computed)
 
-        update_label = "would update" if dry_run else "updated"
-        print(f"total jobs:          {len(rows)}")
-        print(f"unchanged:           {unchanged}")
-        print(f"{update_label}:{' ' * (21 - len(update_label))}{len(updates)}")
-        print(f"skipped-collisions:  {len(skipped)}")
+                update_label = "would update" if dry_run else "updated"
+                print(f"account {account or 'owner'}")
+                print(f"total jobs:          {len(rows)}")
+                print(f"unchanged:           {unchanged}")
+                print(f"{update_label}:{' ' * (21 - len(update_label))}{len(updates)}")
+                print(f"skipped-collisions:  {len(skipped)}")
+                all_skipped.extend(skipped)
+                all_computed.update({r[0]: r for r in computed})
 
-        write_collisions_report(skipped, {r[0]: r for r in computed}, dry_run)
-        print(f"collision list written to {COLLISIONS_REPORT}")
+                if not dry_run:
+                    apply_updates(db, updates)
+                    print(f"--apply: committed {len(updates)} updates in "
+                          f"{(len(updates) + BATCH_SIZE - 1) // BATCH_SIZE or 0} batch(es).")
+        finally:
+            db.close()
 
-        if dry_run:
-            print("\n--dry-run: no writes made.")
-        else:
-            apply_updates(db, updates)
-            print(f"\n--apply: committed {len(updates)} updates in "
-                  f"{(len(updates) + BATCH_SIZE - 1) // BATCH_SIZE or 0} batch(es).")
-    finally:
-        db.close()
+    write_collisions_report(all_skipped, all_computed, dry_run)
+    print(f"collision list written to {COLLISIONS_REPORT}")
+    if dry_run:
+        print("\n--dry-run: no writes made.")
 
 
 if __name__ == "__main__":

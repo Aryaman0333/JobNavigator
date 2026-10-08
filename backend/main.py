@@ -6,6 +6,7 @@ from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, Query, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from backend.models.db import create_tables, SessionLocal, JobRun
 from backend.accounts.settings import get_install_setting, install_row, put_setting
@@ -62,7 +63,9 @@ async def lifespan(app: FastAPI):
     # Start scheduler
     from backend.scheduler import scheduler, configure_scheduler
     configure_scheduler()
-    scheduler.start()
+    # QA F4 / R1-01: the scheduler's timers capture the context of whoever wakes it.
+    from backend.accounts.context import run_in_clean_context
+    run_in_clean_context(scheduler.start)
     logger.info("Database initialized, seeded, scheduler started.")
 
     # Warm the OpenRouter live-pricing cache used for LLM cost logging (non-fatal).
@@ -206,50 +209,15 @@ async def _api_key_auth(request: Request, call_next):
     header_key = request.headers.get("X-API-Key", "")
     api_key = header_key or request.cookies.get("jn_session", "")
 
-    # A middleware runs outside FastAPI's exception handlers, so a pool timeout
-    # here would surface as a bare connection error, not a status code. The
-    # connection is acquired lazily by the query, not by SessionLocal().
-    db = SessionLocal()
-    try:
-        try:
-            expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
-        except _PoolTimeout:
-            logger.warning("DB pool exhausted while authenticating %s", request.url.path)
-            return _pool_busy_response()
-        # First-run: no key configured → allow everything
-        if not expected:
-            # WARNING-level so operators see this in logs when they shouldn't (e.g.,
-            # dashboard_api_key setting cleared by a botched DB restore).
-            logger.warning(
-                "api key BYPASS (first-run mode): path=%s — dashboard_api_key setting is empty",
-                request.url.path,
-            )
-        else:
-            # Key configured → require match (timing-safe compare)
-            if not api_key:
-                return JSONResponse(status_code=401, content={"detail": "API key required"})
-            if not _secret_eq(api_key, expected):
-                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
-
-        # Tests that drive the app on their own throwaway engine run unscoped (system
-        # context); production requests never arrive unscoped.
-        if is_unscoped():
-            res = None
-        else:
-            try:
-                # QA F1 (R2-01): the signed X-Account-Token, else the jn_account cookie,
-                # else the one-account owner. A bare X-Account header is never read.
-                res = acct_auth.resolve_request(
-                    db, request.headers.get(acct_auth.TOKEN_HEADER, ""),
-                    request.cookies.get(acct_auth.COOKIE_NAME, ""))
-            except _PoolTimeout:
-                logger.warning("DB pool exhausted while resolving the account for %s", path)
-                return _pool_busy_response()
-            if res is not None and res.account is not None:
-                # MT-11: at most one UPDATE per account per minute (in-memory throttle).
-                acct_auth.touch_last_active(db, res.account["id"])
-    finally:
-        db.close()
+    # QA F4 / R1-11: the key check, the account lookup and the last-active write are
+    # blocking DB calls; they run in the threadpool (which copies the context), so a
+    # slow DB or a pool wait stalls this request only, not the event loop.
+    early, res = await run_in_threadpool(
+        _authenticate_sync, path, api_key,
+        request.headers.get(acct_auth.TOKEN_HEADER, ""),
+        request.cookies.get(acct_auth.COOKIE_NAME, ""))
+    if early is not None:
+        return early
 
     optional = path in _ACCOUNT_OPTIONAL
     if res is not None and res.error and not (optional and res.error == acct_auth.ACCOUNT_REQUIRED):
@@ -265,6 +233,52 @@ async def _api_key_auth(request: Request, call_next):
     unlocked = bool(res.unlocked_until) and res.unlocked_until > acct_auth._now()
     with use_account(res.account["id"]), owner_unlocked(unlocked):
         return await call_next(request)
+
+
+def _authenticate_sync(path: str, api_key: str, token: str, cookie: str):
+    """(early response or None, account resolution or None). Runs in the threadpool."""
+    # A middleware runs outside FastAPI's exception handlers, so a pool timeout
+    # here would surface as a bare connection error, not a status code. The
+    # connection is acquired lazily by the query, not by SessionLocal().
+    db = SessionLocal()
+    try:
+        try:
+            expected = get_install_setting(db, "dashboard_api_key", INITIAL_API_KEY)
+        except _PoolTimeout:
+            logger.warning("DB pool exhausted while authenticating %s", path)
+            return _pool_busy_response(), None
+        # First-run: no key configured → allow everything
+        if not expected:
+            # WARNING-level so operators see this in logs when they shouldn't (e.g.,
+            # dashboard_api_key setting cleared by a botched DB restore).
+            logger.warning(
+                "api key BYPASS (first-run mode): path=%s — dashboard_api_key setting is empty",
+                path,
+            )
+        else:
+            # Key configured → require match (timing-safe compare)
+            if not api_key:
+                return JSONResponse(status_code=401, content={"detail": "API key required"}), None
+            if not _secret_eq(api_key, expected):
+                return JSONResponse(status_code=401, content={"detail": "Invalid API key"}), None
+
+        # Tests that drive the app on their own throwaway engine run unscoped (system
+        # context); production requests never arrive unscoped.
+        if is_unscoped():
+            return None, None
+        try:
+            # QA F1 (R2-01): the signed X-Account-Token, else the jn_account cookie,
+            # else the one-account owner. A bare X-Account header is never read.
+            res = acct_auth.resolve_request(db, token, cookie)
+        except _PoolTimeout:
+            logger.warning("DB pool exhausted while resolving the account for %s", path)
+            return _pool_busy_response(), None
+        if res is not None and res.account is not None:
+            # MT-11: at most one UPDATE per account per minute (in-memory throttle).
+            acct_auth.touch_last_active(db, res.account["id"])
+        return None, res
+    finally:
+        db.close()
 
 
 # ── Auth endpoints (cookie session) ──────────────────────────────────────────

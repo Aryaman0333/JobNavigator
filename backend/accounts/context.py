@@ -100,13 +100,30 @@ def forget_owner_cache() -> None:
     _owner_ids.clear()
 
 
+class OwnerLookupFailed(RuntimeError):
+    """The owner account could not be read (DB error other than "no accounts table yet").
+    Raised instead of running unfiltered or stamping NULL (QA F4 / R1-03: fail closed)."""
+
+
+def _is_missing_table(exc: BaseException) -> bool:
+    """The accounts table does not exist yet (fresh DB before the migration, partial test
+    schemas): SQLite "no such table", Postgres UndefinedTable "does not exist"."""
+    text = str(getattr(exc, "orig", None) or exc).lower()
+    return "no such table" in text or ("relation" in text and "does not exist" in text) \
+        or type(getattr(exc, "orig", None)).__name__ == "UndefinedTable"
+
+
 def owner_id_for_session(session) -> Optional[uuid.UUID]:
     """The owner account of the database `session` talks to, or None before the migration
-    has created it. Uses a Core select on the session's connection, so no ORM events fire."""
+    has created it. Uses a Core select on the session's connection, so no ORM events fire.
+
+    QA F4 / R1-03: only a missing accounts table counts as "no owner yet"; any other
+    failure (aborted transaction, pool timeout, DB down) raises OwnerLookupFailed, so a
+    caller never runs a statement unfiltered or stamps a row with no account."""
     try:
         engine = _engine_of(session.get_bind())
-    except Exception:
-        return None
+    except Exception as e:
+        raise OwnerLookupFailed(f"owner lookup failed: no bind ({e})") from e
     cached = _owner_ids.get(engine)
     if cached is not None:
         return cached
@@ -117,9 +134,11 @@ def owner_id_for_session(session) -> Optional[uuid.UUID]:
         row = session.connection().execute(
             select(t.c.id).where(t.c.role == "owner").order_by(t.c.created_at).limit(1)
         ).first()
-    except Exception as e:  # accounts table missing (partial test schemas)
-        logger.debug("owner lookup failed: %s", e)
-        return None
+    except Exception as e:
+        if _is_missing_table(e):
+            logger.debug("owner lookup: no accounts table yet: %s", e)
+            return None
+        raise OwnerLookupFailed(f"owner lookup failed: {e}") from e
     owner = _as_uuid(row[0]) if row else None
     if owner is not None:
         _owner_ids[engine] = owner
@@ -158,11 +177,9 @@ def owner_context():
     `backend.accounts.background.for_each_account`)."""
     if current_account.get() is not None or is_unscoped():
         return nullcontext()
-    try:
-        owner = owner_account_id()
-    except Exception as e:
-        logger.warning("owner lookup failed, running without an account context: %s", e)
-        return nullcontext()
+    # QA F4 / R1-03: a failed lookup raises (OwnerLookupFailed) rather than letting the
+    # work run with no account context.
+    owner = owner_account_id()
     return use_account(owner) if owner is not None else nullcontext()
 
 
@@ -171,5 +188,45 @@ def as_owner(func):
     @functools.wraps(func)
     async def _wrapped(*args, **kwargs):
         with owner_context():
+            return await func(*args, **kwargs)
+    return _wrapped
+
+
+# ── Clean context (QA F4 / R1-01) ──────────────────────────────────────────
+# APScheduler captures the contextvars of whoever last called add_job()/wakeup() (a
+# settings PATCH from a member's browser, inside unscoped() and with the owner unlock)
+# and every later fire inherits them. Scheduled work therefore starts from a clean
+# context twice over: jobs are registered from an empty contextvars.Context, and each
+# job's entry point resets the three account variables itself.
+
+
+@contextmanager
+def no_account_context():
+    """Run the block with no account, not unscoped and no owner unlock, whatever the
+    caller had set."""
+    t_acc = current_account.set(None)
+    t_uns = _unscoped.set(False)
+    t_unl = _owner_unlocked.set(False)
+    try:
+        yield
+    finally:
+        _owner_unlocked.reset(t_unl)
+        _unscoped.reset(t_uns)
+        current_account.reset(t_acc)
+
+
+def run_in_clean_context(fn, *args, **kwargs):
+    """Call `fn` inside a brand-new, empty contextvars.Context (nothing the caller set
+    is visible, and nothing `fn` sets leaks back)."""
+    import contextvars
+    return contextvars.Context().run(fn, *args, **kwargs)
+
+
+def scheduled_job(func):
+    """Decorate a scheduler entry point: it starts from a clean account context (then
+    applies its own `as_owner` / `for_each_account`)."""
+    @functools.wraps(func)
+    async def _wrapped(*args, **kwargs):
+        with no_account_context():
             return await func(*args, **kwargs)
     return _wrapped

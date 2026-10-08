@@ -308,7 +308,13 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
             finally:
                 test_db.close()
 
-        asyncio.create_task(_run_test())
+        # QA F4 / R1-08: the browser's owner unlock does not ride along into the task.
+        from backend.accounts.context import owner_unlocked
+
+        async def _run_test_locked():
+            with owner_unlocked(False):
+                await _run_test()
+        asyncio.create_task(_run_test_locked())
         return JSONResponse(status_code=202, content={"run_id": run_id, "status": "running"})
 
     if search.search_mode != "keyword":
