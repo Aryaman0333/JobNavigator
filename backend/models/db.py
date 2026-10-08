@@ -216,7 +216,15 @@ class VisaCache(Base):
 class Job(AccountScoped, Base):
     __tablename__ = "jobs"
     # Dedup key unique per account (MT-4): the same posting can sit in two accounts' feeds.
-    __table_args__ = (UniqueConstraint("account_id", "external_id", name="uq_jobs_account_external_id"),)
+    # QA F9 / T6-01: composites for the per-account status counts and date/score sorts.
+    __table_args__ = (
+        UniqueConstraint("account_id", "external_id", name="uq_jobs_account_external_id"),
+        Index("ix_jobs_acct_status", "account_id", "status"),
+        Index("ix_jobs_acct_discovered", "account_id", text("discovered_at DESC")),
+        # NULLS LAST needs SQLite 3.30; the SQLite twin (tests) drops it.
+        Index("ix_jobs_acct_score", "account_id", text("best_cv_score DESC NULLS LAST")).ddl_if(dialect="postgresql"),
+        Index("ix_jobs_acct_score_sqlite", "account_id", text("best_cv_score DESC")).ddl_if(dialect="sqlite"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id = _account_fk()
@@ -368,6 +376,7 @@ del _col
 # ── Applications ─────────────────────────────────────────────────────────────
 class Application(AccountScoped, Base):
     __tablename__ = "applications"
+    __table_args__ = (Index("ix_applications_acct_status_updated", "account_id", "status", text("updated_at DESC")),)   # QA F9 / T6-01
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id = _account_fk()
@@ -443,6 +452,7 @@ def revert_transition(app, back_to: str) -> bool:
 # ── Scrape Log ───────────────────────────────────────────────────────────────
 class ScrapeLog(AccountScoped, Base):
     __tablename__ = "scrape_log"
+    __table_args__ = (Index("ix_scrape_log_acct_company", "account_id", "company_id"),)   # QA F9 / T6-01
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id = _account_fk()
@@ -472,6 +482,7 @@ class JobRun(AccountScoped, Base):
         Index("ix_job_runs_job_type", "job_type"),
         Index("ix_job_runs_started_at", "started_at"),
         Index("ix_job_runs_target_job_id", "target_job_id"),
+        Index("ix_job_runs_acct_started", "account_id", text("started_at DESC")),   # QA F9 / T6-01
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -496,6 +507,7 @@ class LlmCallLog(AccountScoped, Base):
         Index("ix_llm_call_log_created_at", "created_at"),
         Index("ix_llm_call_log_purpose", "purpose"),
         Index("ix_llm_call_log_job_id", "job_id"),
+        Index("ix_llm_call_log_acct_created", "account_id", "created_at"),   # QA F9 / T6-01
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

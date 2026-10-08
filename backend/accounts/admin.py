@@ -432,6 +432,8 @@ def delete_account_rows(db, account_id) -> dict:
             counts[label] = _rows_of(db, model, account_id).delete(synchronize_session=False)
         db.query(Account).filter(Account.id == account_id).delete(synchronize_session=False)
         db.commit()
+    from backend.accounts import auth as _acct_auth
+    _acct_auth.invalidate_accounts_cache()   # QA F9 / T6-02
     removed_dirs = []
     for path in account_dirs(account_id):
         if os.path.isdir(path):

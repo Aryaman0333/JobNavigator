@@ -176,6 +176,50 @@ def load_accounts(db) -> list:
     return out
 
 
+# QA F9 / T6-02: the per-request lookup (resolve_request) reads the account list from a
+# short cache instead of one SELECT per request. Account create / rename / PIN change /
+# delete invalidate it (mapper events on Account, plus explicit calls after bulk
+# deletes); the TTL bounds any write the events cannot see (another worker, raw SQL).
+ACCOUNTS_CACHE_TTL = 5.0
+_accounts_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()   # engine -> (monotonic time, [account dicts])
+_accounts_cache_lock = threading.Lock()
+
+
+def invalidate_accounts_cache() -> None:
+    with _accounts_cache_lock:
+        _accounts_cache.clear()
+
+
+def cached_accounts(db) -> list:
+    """load_accounts with a few seconds of caching, per engine. Callers get copies."""
+    engine = _engine_of(db)
+    now = time.monotonic()
+    if engine is not None and ACCOUNTS_CACHE_TTL > 0:
+        with _accounts_cache_lock:
+            hit = _accounts_cache.get(engine)
+        if hit is not None and now - hit[0] < ACCOUNTS_CACHE_TTL:
+            return [dict(a) for a in hit[1]]
+    accounts = load_accounts(db)
+    if engine is not None and ACCOUNTS_CACHE_TTL > 0:
+        with _accounts_cache_lock:
+            _accounts_cache[engine] = (now, accounts)
+    return [dict(a) for a in accounts]
+
+
+def _register_cache_events() -> None:
+    from sqlalchemy import event
+    from backend.models.db import Account
+
+    def _drop(_mapper, _connection, _target):
+        invalidate_accounts_cache()
+
+    for name in ("after_insert", "after_update", "after_delete"):
+        event.listen(Account, name, _drop)
+
+
+_register_cache_events()
+
+
 def public_account(acc: dict) -> dict:
     """What the picker may show: no hashes, no data."""
     return {"id": str(acc["id"]), "name": acc["name"], "color": acc["color"],
@@ -423,7 +467,7 @@ def resolve_request(db, token: Optional[str], cookie: Optional[str]) -> Resoluti
     QA F3 / R2-03: only a browser with no `jn_account` cookie at all gets the one-account
     owner; a present cookie that does not verify (removed account, changed PIN, other
     install secret, garbage) -> `account_required` with `clear_cookie`."""
-    accounts = load_accounts(db)
+    accounts = cached_accounts(db)   # QA F9 / T6-02
     if token:
         acc = account_from_token(db, accounts, token)
         if acc is None:

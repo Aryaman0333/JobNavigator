@@ -143,10 +143,18 @@ One install can hold up to five accounts, for a household or a couple of friends
 
 Settings › Pipeline › Scheduler holds every interval and cron: scraping, email polling, backups, cleanup of old unsaved jobs, auto-reject of stale applications. Each cron field explains itself and offers presets.
 
-Backups are `pg_dump` files written on the backup cron; you can trigger one from Settings › System. To restore:
+Backups are plain-SQL `pg_dump` files (`backups/jobnavigator_<timestamp>.sql`, newest 5 kept) written on the backup cron; you can trigger one from Settings › System. Removing an account takes one first (`backups/pre_remove_<timestamp>_<name>.sql`; the newest 5 are kept, older ones are deleted on the next removal). The files are made restorable on the bundled postgres:16 (the pg17-only `SET transaction_timeout` line is stripped). To restore into an empty database, strict mode:
+
+```bash
+docker compose exec -T db sh -c 'psql -U $POSTGRES_USER -d $POSTGRES_DB -v ON_ERROR_STOP=1 -q' < backups/<file>.sql
+```
+
+Dumps you take yourself in custom format (`pg_dump -Fc`, `*.dump`) restore with `pg_restore` instead:
 
 ```bash
 docker compose exec -T db sh -c 'pg_restore -U $POSTGRES_USER -d $POSTGRES_DB --clean --if-exists' < backups/<file>.dump
 ```
+
+To try a copy of your data elsewhere without it scraping, mailing or backing up as the real install, set `JN_SCHEDULER_DISABLED=1` in that copy's `.env`; the scheduler then does not start (manual runs still work).
 
 Update: `git pull && docker compose pull && docker compose up -d` (or `--build` if you build from source). Tables and settings migrate on startup; nothing to run by hand.

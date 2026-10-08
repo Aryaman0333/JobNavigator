@@ -311,13 +311,14 @@ async def send_email_alert(data: dict):
 
 
 async def send_digest():
-    """Send daily digest."""
+    """Send daily digest. Returns True when a message went out, False when it was skipped
+    (Telegram off, or this account has no chat id) - QA F9 / T3-02."""
     if not _is_enabled():
-        return
+        return False
 
     chat_id, token = resolve_target()
     if not chat_id:
-        return
+        return False
 
     db = SessionLocal()
     try:
@@ -358,6 +359,7 @@ async def send_digest():
         from backend.activity import log_activity
         log_activity("telegram", f"Daily digest sent: {new_jobs} new jobs, {strong} strong matches", db=db)
         db.commit()
+        return True
 
     finally:
         db.close()

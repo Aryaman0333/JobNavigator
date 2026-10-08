@@ -28,6 +28,14 @@ logger = logging.getLogger("jobnavigator.scheduler")
 scheduler = AsyncIOScheduler()
 
 
+def scheduler_disabled() -> bool:
+    """QA F9 / T2-01: env switch JN_SCHEDULER_DISABLED=1 (also true/yes/on) keeps the
+    scheduler from starting, so a throwaway copy of real data never scrapes, emails,
+    digests or backs up as the real install. Manual triggers still work."""
+    import os
+    return os.environ.get("JN_SCHEDULER_DISABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_setting(db, key, default=None):
     """Read a setting value from DB (as the current account sees it)."""
     return _get_setting(db, key, default)
@@ -363,6 +371,9 @@ async def send_daily_digest():
     await for_each_account("daily_digest", _digest_for_account)
 
 
+DIGEST_SKIPPED_SUMMARY = "Digest skipped (Telegram off / no chat)"
+
+
 async def _digest_for_account():
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
     try:
@@ -370,8 +381,11 @@ async def _digest_for_account():
             logger.info("Sending daily digest...")
             started = datetime.now(timezone.utc)
             from backend.notifier.telegram import send_digest
-            await send_digest()
-            run.summary = _activity_summary(started, "telegram", "alert") or "Digest sent"
+            sent = await send_digest()
+            if sent is False:      # QA F9 / T3-02: nothing went out for this account
+                run.summary = DIGEST_SKIPPED_SUMMARY
+            else:
+                run.summary = _activity_summary(started, "telegram", "alert") or "Digest sent"
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
 

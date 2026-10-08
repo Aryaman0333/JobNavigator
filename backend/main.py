@@ -61,12 +61,17 @@ async def lifespan(app: FastAPI):
         cleanup_stale_runs()
 
     # Start scheduler
-    from backend.scheduler import scheduler, configure_scheduler
-    configure_scheduler()
-    # QA F4 / R1-01: the scheduler's timers capture the context of whoever wakes it.
-    from backend.accounts.context import run_in_clean_context
-    run_in_clean_context(scheduler.start)
-    logger.info("Database initialized, seeded, scheduler started.")
+    from backend.scheduler import scheduler, configure_scheduler, scheduler_disabled
+    if scheduler_disabled():
+        # QA F9 / T2-01: JN_SCHEDULER_DISABLED=1 for throwaway/staging copies of real data.
+        logger.warning("JN_SCHEDULER_DISABLED is set: the scheduler is NOT started "
+                       "(no scrapes, email checks, digests or backups run).")
+    else:
+        configure_scheduler()
+        # QA F4 / R1-01: the scheduler's timers capture the context of whoever wakes it.
+        from backend.accounts.context import run_in_clean_context
+        run_in_clean_context(scheduler.start)
+        logger.info("Database initialized, seeded, scheduler started.")
 
     # Warm the OpenRouter live-pricing cache used for LLM cost logging (non-fatal).
     try:
@@ -77,7 +82,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
     logger.info("Shutting down JobNavigator backend...")
 
 
@@ -1035,7 +1041,10 @@ async def trigger_digest():
         from backend.scheduler import _activity_summary
         started = _dt.now(_tz.utc)
         from backend.notifier.telegram import send_digest
-        await send_digest()
+        sent = await send_digest()
+        if sent is False:      # QA F9 / T3-02
+            from backend.scheduler import DIGEST_SKIPPED_SUMMARY
+            return DIGEST_SKIPPED_SUMMARY
         return _activity_summary(started, "telegram", "alert") or "Digest sent"
 
     try:

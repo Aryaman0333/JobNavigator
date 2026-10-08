@@ -182,6 +182,7 @@ def create_account(response: Response, body: dict = Body(...), db: Session = Dep
     if source_id is not None and items:
         copied = admin.copy_from(db, source_id, new.id, items, owner_id=caller["id"])
     db.commit()
+    acct_auth.invalidate_accounts_cache()   # QA F9 / T6-02
     logger.info("account created: %s (%s), copied %s", new.id, name, copied or "nothing")
 
     accounts = _accounts(db)
@@ -247,6 +248,7 @@ def update_account(account_id: str, request: Request, response: Response,
     for k, v in changes.items():
         setattr(row, k, v)
     db.commit()
+    acct_auth.invalidate_accounts_cache()   # QA F9 / T6-02
 
     if pin_changed:
         # R2-14: a reset PIN starts with fresh counters (also when the owner resets it).
@@ -275,16 +277,16 @@ def update_account(account_id: str, request: Request, response: Response,
 # ── DELETE /accounts/{id} ────────────────────────────────────────────────────
 
 def backup_before_remove(account: dict) -> str:
-    """Whole-database pg_dump outside the 5-file rotation; returns the file name. Raises
+    """Whole-database pg_dump (newest 5 `pre_remove_` files kept); returns the file name. Raises
     RuntimeError when the dump fails (the removal is then aborted)."""
     from backend.db_backup import run_pg_dump
     slug = re.sub(r"[^a-z0-9]+", "-", account["name"].lower()).strip("-")[:20] or "account"
-    return run_pg_dump(prefix="pre_remove_", suffix=f"_{slug}", rotate=False)["file"]
+    return run_pg_dump(prefix="pre_remove_", suffix=f"_{slug}")["file"]
 
 
 @router.delete("/{account_id}")
 def delete_account(account_id: str, body: dict = Body(None), db: Session = Depends(get_db)):
-    """Owner only. Body `{confirm_name}` must equal the account's name exactly (400 `confirm_name_mismatch`). The owner and the caller cannot be removed (409 `cannot_remove_owner` / `cannot_remove_self`); an account with running background work is refused (409 `account_busy`). A whole-database pg_dump runs first (`backups/pre_remove_<timestamp>_<name>.sql`, kept outside the 5-file rotation); if it fails nothing is deleted (503 `backup_failed`). Then every row the account owns is deleted (no undo). Returns `{deleted: {table: rows, ...}, backup}`."""
+    """Owner only. Body `{confirm_name}` must equal the account's name exactly (400 `confirm_name_mismatch`). The owner and the caller cannot be removed (409 `cannot_remove_owner` / `cannot_remove_self`); an account with running background work is refused (409 `account_busy`). A whole-database pg_dump runs first (`backups/pre_remove_<timestamp>_<name>.sql`, the newest 5 `pre_remove_` files are kept, older ones deleted); if it fails nothing is deleted (503 `backup_failed`). Then every row the account owns is deleted (no undo). Returns `{deleted: {table: rows, ...}, backup}`."""
     body = body or {}
     accounts = _accounts(db)
     caller = _caller(accounts)

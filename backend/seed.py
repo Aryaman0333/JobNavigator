@@ -599,6 +599,20 @@ def run_migration_statements(db, statements) -> list:
 _ADD_COUNTRY_COLUMN = "ALTER TABLE searches ADD COLUMN IF NOT EXISTS country VARCHAR"
 
 
+# QA F9 / T6-01: composite indexes for the per-account filter (the scoped queries always
+# carry `account_id = ...`). Names match the Index(...) entries on the models, so a fresh
+# create_all() builds the same set. Idempotent.
+ACCOUNT_INDEX_STATEMENTS = [
+    "CREATE INDEX IF NOT EXISTS ix_jobs_acct_status ON jobs (account_id, status)",
+    "CREATE INDEX IF NOT EXISTS ix_jobs_acct_discovered ON jobs (account_id, discovered_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_jobs_acct_score ON jobs (account_id, best_cv_score DESC NULLS LAST)",
+    "CREATE INDEX IF NOT EXISTS ix_applications_acct_status_updated ON applications (account_id, status, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_llm_call_log_acct_created ON llm_call_log (account_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_job_runs_acct_started ON job_runs (account_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_scrape_log_acct_company ON scrape_log (account_id, company_id)",
+]
+
+
 def run_migrations(db):
     """Run ALTER TABLE migrations for columns that create_all() won't add to existing tables."""
     migrations = [
@@ -770,7 +784,7 @@ END $$;""",
         # applies to later inserts only, so the two statements are safe in this order.
         _ADD_COUNTRY_COLUMN,
         "ALTER TABLE searches ALTER COLUMN country SET DEFAULT 'usa'",
-    ]
+    ] + ACCOUNT_INDEX_STATEMENTS
     # The account_id columns go first: every ORM query below selects them, so on an
     # existing database they must exist before any model is loaded.
     run_migration_statements(db, _account_column_statements())
