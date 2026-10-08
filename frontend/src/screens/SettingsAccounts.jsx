@@ -56,6 +56,15 @@ const CODE_TEXT = {
   cannot_remove_owner: 'The owner account cannot be removed.',
   cannot_remove_self: 'You cannot remove the account you are using.',
   owner_only: 'Only the owner can do that.',
+  // QA F7 / R6-08: every code a Settings action can answer with reads as a sentence
+  own_account_only: 'You can only do that for your own account.',
+  no_account: 'Pick an account first — this browser has none selected.',
+  gmail_not_configured: 'Gmail is not set up on this install yet — the owner adds the Google OAuth client first.',
+  scheduled_scrape_running: 'The scheduled scrape is running — try again when it finishes.',
+  account_changed: 'This tab was switched to another account — reload it.',
+  invalid_account_token: 'That account token is no longer valid — create a new one.',
+  account_required: 'Pick an account first.',
+  'No account to link': 'Pick an account first — there is no account to link this chat to.',
 }
 export function errorText(err, fallback = 'Something went wrong — try again.') {
   const f = authFailure(err)
@@ -424,12 +433,13 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 10px' }}>
         <Helper style={{ flex: 1, minWidth: 0, textWrap: 'pretty' }}>
           {others
-            ? `Everyone on this install has their own jobs, résumés, applications and settings; scraping is shared. ${accounts.length} of ${max} accounts.`
+            ? `Everyone on this install has their own jobs, résumés, applications and settings; scraping is shared. ${accounts.length} of ${max} accounts${accounts.length >= max ? ' — remove one to add another' : ''}.`
             : `Just you. Add people to this install — each gets their own jobs, résumés, applications and settings; scraping stays shared. Up to ${max} accounts.`}
           {others && selfRow && !selfRow.has_pin && ' Your account has no PIN, so the shared settings are only a privacy latch.'}
         </Helper>
         <Button size="sm" onClick={onAdd} disabled={accounts.length >= max}
-          title={accounts.length >= max ? `At most ${max} accounts` : undefined}>+ Add account</Button>
+          title={accounts.length >= max ? `At most ${max} accounts` : undefined}
+          ariaLabel={accounts.length >= max ? `Add account — the limit is ${max} accounts` : undefined}>+ Add account</Button>
       </div>
       <div role="table" aria-label="Accounts" style={{ display: 'flex', flexDirection: 'column' }}>
         {accounts.map((a) => {
@@ -444,7 +454,8 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
                   {self && <Helper size="xs">you</Helper>}
                 </span>
-                <Helper size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{countsLine(a.counts)}</Helper>
+                {/* T7-05: the full line on hover; Win98's wider type gets two lines (theme.css v2-acctstats) */}
+                <Helper size="xs" title={countsLine(a.counts)} className="v2-acctstats" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{countsLine(a.counts)}</Helper>
               </div>
               <span role="cell" style={{ flex: '0 0 74px' }}><Tag tone={owner ? 'accent' : 'neutral'}>{owner ? 'Owner' : 'Member'}</Tag></span>
               <span role="cell" style={{ flex: '0 0 96px' }}><Helper title={a.last_active_at || ''}>{self ? 'now' : ago(a.last_active_at)}</Helper></span>

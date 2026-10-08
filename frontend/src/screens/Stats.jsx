@@ -122,8 +122,10 @@ export default function Stats() {
   const [costs, setCosts] = useState(null)
   const [period, setPeriod] = useState(30)
   // MT-20: the owner of a multi-account install can sum the LLM cost across accounts (that panel only).
-  const { me, multi } = useAccounts()
+  const { me, multi, unlockedUntil } = useAccounts()
   const canAll = multi && me?.role === 'owner'
+  // T7-02: a member (not unlocked as the owner) gets no Run now on owner-only schedules
+  const ownerLocked = multi && !!me && me.role !== 'owner' && !(unlockedUntil && unlockedUntil > Date.now())
   const [allAccountsPick, setAllAccounts] = useState(false)
   const allAccounts = canAll && allAccountsPick
   const [jobs, setJobs] = useState([])
@@ -569,11 +571,13 @@ export default function Stats() {
           </Card>
 
           <Card style={{ height: 300, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, overflow: 'hidden' }}>
-            <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'baseline', gap: 9, lineHeight: '24px' }}>
-              <Heading strong size={17}>LLM costs</Heading>
+            {/* T7-04: one line in every theme — the title never wraps; with the All-accounts
+                switch in a wide-control theme (Win98) "how priced?" gives way first */}
+            <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'baseline', gap: 9, lineHeight: '24px', whiteSpace: 'nowrap', minWidth: 0 }}>
+              <Heading strong size={17} style={{ flex: '0 0 auto' }}>LLM costs</Heading>
               <Helper title="OpenAI and Claude pricing info comes from a fixed table, OpenRouter from its catalog (updated every 12 h), Claude Code, Codex CLI, and Ollama counted as $0. Each call is priced when it is logged."
-                style={{ cursor: 'help', borderBottom: '1px dotted var(--line-strong)' }}>how priced?</Helper>
-              {canAll && <Switch size="sm" on={allAccounts} onChange={setAllAccounts} label="All accounts" ariaLabel="Sum LLM costs across all accounts" style={{ marginLeft: 'auto', alignSelf: 'center' }} />}
+                style={{ cursor: 'help', borderBottom: '1px dotted var(--line-strong)', ...(canAll ? { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } : null) }}>how priced?</Helper>
+              {canAll && <Switch on={allAccounts} onChange={setAllAccounts} label="All accounts" ariaLabel="Sum LLM costs across all accounts" style={{ marginLeft: 'auto', alignSelf: 'center' }} />}
               <span style={{ ...(canAll ? null : { marginLeft: 'auto' }), alignSelf: 'center', display: 'flex', gap: 3 }}>
                 {PERIODS.map(([id, label]) => {
                   const on = period === id
@@ -655,7 +659,9 @@ export default function Stats() {
                   </span>}
                 </span>
                 <span style={{ flex: '0 0 110px', display: 'flex', justifyContent: 'flex-end' }}>
-                  {j.trigger_url
+                  {j.trigger_url && j.owner_only && ownerLocked
+                    ? <Helper title={`Only the owner can run ${j.name}`}>Owner only</Helper>
+                    : j.trigger_url
                     // ui: keep — running-state box (D-13): Pill xs is the role, but the running branch quiets border+ink (--line/--edge) instead of dimming via --disabled-opacity, and its box is pad 0 11 / gap 6 on no ground. The canonical xs paint reproduces none of the three, so this one stays hand-drawn.
                     ? <span onClick={() => !running && trigger(j)} {...kb(() => !running && trigger(j))} aria-disabled={running}
                         title={running ? `${j.name} is running` : `Run ${j.name} now`} aria-label={running ? `${j.name} is running` : `Run ${j.name} now`}

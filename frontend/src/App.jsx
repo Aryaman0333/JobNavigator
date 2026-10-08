@@ -2,6 +2,8 @@ import React, { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import LoginModal from './LoginModal'
 import AccountPicker from './AccountPicker'
+import AccountChanged from './AccountChanged'
+import { listenForSwitches } from './accounts'
 import WelcomeModal from './WelcomeModal'
 import NewUiModal from './NewUiModal'
 import Shell from './Shell'
@@ -130,7 +132,16 @@ function App() {
       window.removeEventListener('jn:account-pick', onPick)
     }
   }, [])
-  const showPicker = !!picker && !showLogin
+  // QA F7 / R6-01: another tab switched this browser (or a write came back 409
+  // account_changed) — a blocking reload notice; api.js has already stopped writes.
+  const [changed, setChanged] = useState(null)
+  useEffect(() => {
+    const stop = listenForSwitches()
+    const onChanged = (e) => setChanged(e.detail || {})
+    window.addEventListener('jn:account-changed', onChanged)
+    return () => { stop(); window.removeEventListener('jn:account-changed', onChanged) }
+  }, [])
+  const showPicker = !!picker && !showLogin && !changed
 
   const handleLoginSuccess = () => {
     setShowLogin(false)
@@ -177,10 +188,14 @@ function App() {
 
       {showLogin && <LoginModal onSuccess={handleLoginSuccess} />}
       {showPicker && (
-        <AccountPicker required={!!picker.required} account={picker.account || null}
+        // R6-04: keyed on the account, so a second shortcut while a PIN pad is up
+        // opens a fresh picker on the NEW account's pad (not the old target's)
+        <AccountPicker key={picker.required ? 'required' : (picker.account?.id || 'grid')}
+          required={!!picker.required} account={picker.account || null}
           onClose={picker.required ? undefined : () => setPicker(null)} />
       )}
-      {showWelcome && !showLogin && !showPicker && (
+      {changed && !showLogin && <AccountChanged account={changed} />}
+      {showWelcome && !showLogin && !showPicker && !changed && (
         <WelcomeModal onClose={() => {
           try { sessionStorage.removeItem('jn:welcome') } catch {}
           // durable, so the tour does not come back on the next visit
@@ -188,7 +203,7 @@ function App() {
           setShowWelcome(false)
         }} />
       )}
-      {showNewUi && !showWelcome && !showLogin && !showPicker && (
+      {showNewUi && !showWelcome && !showLogin && !showPicker && !changed && (
         <NewUiModal onClose={() => {
           try { localStorage.setItem(NEWUI_KEY, NEWUI_VERSION) } catch {}
           setShowNewUi(false)

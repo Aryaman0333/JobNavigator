@@ -7,8 +7,73 @@
 // Everything account-related in the UI renders only when `multi` is true (two or
 // more accounts): a single-account install must look exactly as it did before
 // multi-tenancy.
-import { useEffect, useState } from 'react'
-import api from './api'
+import { useEffect, useRef, useState } from 'react'
+import api, { beginOwnSwitch, bindPageAccount, getPageAccount, markAccountChanged, waitForWrites } from './api'
+
+// ── pending writes before a switch (QA F7 / R6-01) ──────────────────────────
+// A debounced editor (Persona, résumé, letter, application notes, a Settings list
+// box) registers a flush that sends what its timer still owes and resolves when
+// that write has answered. A switch runs every flush and waits for every write
+// already on the wire BEFORE it moves the cookie, so the edit lands in the
+// account it was typed in, never in the next one.
+const flushers = new Set()
+export function registerFlush(fn) {
+  flushers.add(fn)
+  return () => { flushers.delete(fn) }
+}
+// The hook form: `fn` may change every render; the registration does not.
+export function useFlushBeforeSwitch(fn) {
+  const ref = useRef(fn)
+  ref.current = fn
+  useEffect(() => registerFlush(() => ref.current?.()), [])
+}
+export async function flushPendingWrites() {
+  await Promise.allSettled([...flushers].map((f) => {
+    try { return Promise.resolve(f()) } catch (e) { return Promise.reject(e) }
+  }))
+  await waitForWrites()
+}
+
+// ── other tabs (QA F7 / R6-01) ──────────────────────────────────────────────
+// The switching tab tells the others (BroadcastChannel `jn-account`; a
+// localStorage key + `storage` event where BroadcastChannel is missing). A tab
+// that shows another account goes stale: api.js stops its writes and App.jsx
+// shows the blocking reload notice.
+export const SWITCH_CHANNEL = 'jn-account'
+export const SWITCH_STORAGE_KEY = 'jn:account-switch'
+export function announceSwitch(account) {
+  const msg = { id: String(account?.id || ''), name: account?.name || '', t: Date.now() }
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const ch = new BroadcastChannel(SWITCH_CHANNEL); ch.postMessage(msg); ch.close()
+    }
+  } catch { /* the storage event below still reaches the other tabs */ }
+  try { localStorage.setItem(SWITCH_STORAGE_KEY, JSON.stringify(msg)) } catch { /* ignore */ }
+}
+// A message from another tab: stale when it names an account this page does not show.
+export function onSwitchMessage(msg) {
+  const id = String(msg?.id || '').toLowerCase()
+  const mine = getPageAccount()
+  if (!id || !mine || id === mine) return false
+  markAccountChanged({ id, name: msg?.name || '' })
+  return true
+}
+// Installed once by App.jsx; returns the teardown.
+export function listenForSwitches() {
+  let ch = null
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      ch = new BroadcastChannel(SWITCH_CHANNEL)
+      ch.onmessage = (e) => onSwitchMessage(e.data)
+    }
+  } catch { ch = null }
+  const onStorage = (e) => {
+    if (e.key !== SWITCH_STORAGE_KEY || !e.newValue) return
+    try { onSwitchMessage(JSON.parse(e.newValue)) } catch { /* ignore */ }
+  }
+  window.addEventListener('storage', onStorage)
+  return () => { window.removeEventListener('storage', onStorage); try { ch?.close() } catch { /* ignore */ } }
+}
 
 // ── what a switch clears ────────────────────────────────────────────────────
 // Browser storage is per BROWSER, not per account. These keys hold the previous
@@ -54,6 +119,8 @@ export function pathAfterSwitch(loc) {
 
 // The switch is done (cookie set): clear, remember the toast, reload this screen.
 export function finishSwitch(account) {
+  beginOwnSwitch()
+  announceSwitch(account)
   clearAccountCaches()
   try { sessionStorage.setItem(SWITCHED_KEY, JSON.stringify({ name: account?.name || '', color: account?.color || '' })) } catch { /* ignore */ }
   const loc = window.location
@@ -75,7 +142,10 @@ export function takeSwitchedNote() {
 
 // POST /api/auth/switch. Resolves with the account, rejects with the axios error
 // (classify it with api.js `authFailure`).
+// Pending autosaves are flushed (and in-flight writes awaited) first, so nothing
+// typed in this account is sent after the cookie names the next one.
 export async function switchAccount(accountId, pin) {
+  await flushPendingWrites()
   const body = { account_id: accountId }
   if (pin) body.pin = pin
   const { data } = await api.post('/auth/switch', body)
@@ -88,15 +158,22 @@ export function openPicker(account) {
   window.dispatchEvent(new CustomEvent('jn:account-pick', { detail: { account: account || null } }))
 }
 
-// Platform modifier for the ⌘⇧1–5 switch shortcuts.
+// The switch shortcuts (QA F7 / R6-03): the CONTROL key + Shift + 1–5 on every
+// platform — ⌃⇧1–5 on macOS, Ctrl+Shift+1–5 elsewhere. ⌘⇧3/4/5 are macOS
+// screenshot keys (and ⌘⌃⇧3/4 their clipboard twins, hence no Meta at all);
+// ⌃⇧digit has no macOS, Chrome, Firefox, Safari or Edge default, and the app's
+// own keys (Feed letters/arrows, résumé Ctrl+B, picker bare 1–5) never use
+// Ctrl+Shift+digit. Alt is left out: Alt+Shift switches the Windows input
+// language and AltGr is Ctrl+Alt.
 export const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '')
-export const SWITCH_MOD = IS_MAC ? '⌘⇧' : 'Ctrl⇧'
+export const SWITCH_MOD = IS_MAC ? '⌃⇧' : 'Ctrl⇧'
 export const MAX_SHORTCUTS = 5
+export const MAX_ACCOUNTS = 5   // backend routes_accounts MAX_ACCOUNTS (409 account_limit)
 
-// `e` is a keydown: the 0-based account index for ⌘⇧1–5 / Ctrl+Shift+1–5, else -1.
+// `e` is a keydown: the 0-based account index for Ctrl+Shift+1–5 (⌃⇧ on a Mac), else -1.
 // `code` rather than `key`: with Shift held, `key` is "!" / "@" / … per layout.
 export function switchShortcutIndex(e) {
-  if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey) return -1
+  if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return -1
   const m = /^Digit([1-9])$/.exec(e.code || '')
   if (!m) return -1
   const i = Number(m[1]) - 1
@@ -108,6 +185,11 @@ export const roleLabel = (a) => (a?.role === 'owner' ? 'Owner' : 'Member')
 // This browser's account and the install's accounts. `/auth/me` first; the
 // list is only fetched when there is more than one account. Refreshes on
 // `jn:accounts-changed` (Settings › Accounts dispatches it after an add/remove).
+// /auth/me `owner_unlocked_until` as epoch ms, or null when locked / expired.
+const unlockAt = (data) => {
+  const t = Date.parse(data?.owner_unlocked_until || '')
+  return Number.isFinite(t) && t > Date.now() ? t : null
+}
 export function useAccounts() {
   const [state, setState] = useState({ me: null, accounts: [], count: 0 })
   useEffect(() => {
@@ -115,10 +197,11 @@ export function useAccounts() {
     const load = () => {
       api.get('/auth/me').then(({ data }) => {
         if (!live || !data?.account) return
+        bindPageAccount(data.account.id)
         const count = Number(data.accounts_count) || 1
-        if (count < 2) { setState({ me: data.account, accounts: [], count }); return }
+        if (count < 2) { setState({ me: data.account, accounts: [], count, unlockedUntil: unlockAt(data) }); return }
         api.get('/auth/accounts').then(({ data: list }) => {
-          if (live) setState({ me: data.account, accounts: Array.isArray(list) ? list : [], count })
+          if (live) setState({ me: data.account, accounts: Array.isArray(list) ? list : [], count, unlockedUntil: unlockAt(data) })
         }).catch(() => { /* the rail just stays single-account */ })
       }).catch(() => { /* 401s raise their own overlay through api.js */ })
     }

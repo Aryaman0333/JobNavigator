@@ -6,7 +6,12 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 
 const get = vi.fn()
 const post = vi.fn()
-vi.mock('../api', () => ({ default: { get: (...a) => get(...a), post: (...a) => post(...a) } }))
+vi.mock('../api', () => ({
+  default: { get: (...a) => get(...a), post: (...a) => post(...a) },
+  // accounts.js (useAccounts) binds the page's account from /auth/me (QA F7)
+  bindPageAccount: () => {}, getPageAccount: () => null, markAccountChanged: () => {},
+  beginOwnSwitch: () => {}, waitForWrites: () => Promise.resolve(),
+}))
 
 import CopyFrom from '../CopyFrom'
 

@@ -6,7 +6,7 @@
 // digit completes, and the caller-driven busy / error / cooldown states.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, act, cleanup } from '@testing-library/react'
-import { Avatar, PinPad, initialsOf, ACCOUNT_SWATCHES } from '../ui'
+import { Avatar, ModalPanel, PinPad, initialsOf, ACCOUNT_SWATCHES } from '../ui'
 
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
@@ -168,5 +168,36 @@ describe('PinPad', () => {
   it('shows the idle hint when nothing else is going on', () => {
     const { container } = render(<PinPad hint="Enter Viktor's PIN" />)
     expect(container.textContent).toContain("Enter Viktor's PIN")
+  })
+})
+
+// QA F7 / R6-05: the gate's accessibility — the status line describes every cell,
+// and a trapping ModalPanel keeps Tab inside and has a name.
+describe('R6-05 accessibility', () => {
+  it('every PIN cell is described by the status line', () => {
+    const { container } = render(<PinPad error="Wrong PIN · 3 tries left" ariaLabel="Ann's PIN" />)
+    const cells = container.querySelectorAll('input')
+    const id = cells[0].getAttribute('aria-describedby')
+    expect(id).toBeTruthy()
+    cells.forEach((c) => expect(c.getAttribute('aria-describedby')).toBe(id))
+    expect(container.ownerDocument.getElementById(id).textContent).toBe('Wrong PIN · 3 tries left')
+  })
+
+  it('a trapFocus panel takes focus and wraps Tab; it is named by its title', async () => {
+    vi.useFakeTimers()
+    const outside = document.createElement('button'); outside.textContent = 'behind'; document.body.appendChild(outside)
+    outside.focus()
+    const { getByRole, getByText } = render(<ModalPanel title="Choose an account" trapFocus><button>one</button><button>two</button></ModalPanel>)
+    act(() => { vi.runAllTimers() })
+    expect(getByRole('dialog').getAttribute('aria-label')).toBe('Choose an account')
+    expect(document.activeElement).toBe(getByText('one'))
+    getByText('two').focus()
+    fireEvent.keyDown(document.activeElement, { key: 'Tab' })
+    expect(document.activeElement).toBe(getByText('one'))
+    fireEvent.keyDown(document.activeElement, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(getByText('two'))
+    act(() => { outside.focus() })
+    expect(document.activeElement).toBe(getByText('one'))
+    outside.remove()
   })
 })

@@ -2112,6 +2112,11 @@
    whole window to the sunken bevel for as long as the button was held. A window
    frame has no pressed state in 98; only the controls inside it do. `Drawer`
    carries no `v2-raised` at all and was never affected. */
+/* QA F7 / T7-09 · the underline SearchInput (Cover Letters, Résumés) is a search
+   FIELD like the boxed one on Jobs / Companies: 98 has no underline field, so it
+   takes the same sunken well on the field ground instead of a bare bottom rule. */
+.jn-v2[data-theme="win98"] .v2-inset.v2-underline:not([aria-invalid="true"]) { background:var(--search-bg) !important; border-bottom:0 !important; }
+.jn-v2[data-theme="win98"] .v2-inset.v2-underline:not([aria-invalid="true"]),
 .jn-v2[data-theme="win98"] .v2-inset:not(.v2-underline):not([aria-invalid="true"]),
 .jn-v2[data-theme="win98"] .v2-raised:active:not([role="dialog"]) { border:var(--bevel-inset-border) !important; border-color:var(--bevel-inset-color) !important; box-shadow:var(--bevel-inset-shadow) !important; }
 
@@ -2609,6 +2614,16 @@
 .jn-v2[data-theme="win98"] .v2-rail .v2-railfoot:last-child {
   box-shadow:inset -1px -1px 0 var(--bevel-highlight), inset 1px 0 0 var(--bevel-shadow);
 }
+
+/* QA F7 / T7-05 · the health line ("Scraper healthy · 18d ago") lost its time to
+   the ellipsis in 98's wider type. On the open rail the row gives back the room
+   the default theme spends on air: a tighter left pad and a 16px dot slot (the
+   dot is 7px). The status bar's own 2px inner margin is kept. */
+.jn-v2[data-theme="win98"] .v2-rail[data-open="true"] .v2-railhealth { padding:0 6px 0 10px !important; }
+.jn-v2[data-theme="win98"] .v2-rail[data-open="true"] .v2-railhealth > span:first-child { flex:0 0 14px !important; }
+/* … and Settings › Accounts' per-account counts line wraps to two lines there
+   instead of losing "… 129 compa…" to the ellipsis (the default themes fit one). */
+.jn-v2[data-theme="win98"] .v2-acctstats { white-space:normal !important; display:-webkit-box !important; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 
 /* ── Round 7 #8 · the tree's hover ───────────────────────────────────────────
    `.v2-navdark:hover` repaints every rail control --rail-ink, which here is

@@ -95,6 +95,13 @@ const SOURCE_LABELS = {
 const srcLabel = (s) => SOURCE_LABELS[s] || s || ''
 const STATUS_OPTS = [['new', 'New'], ['saved', 'Saved'], ['applied', 'Applied'], ['skip', 'Skip'], ['ignored', 'Ignored']]
 const SORT_OPTS = [['score', 'Top score'], ['date', 'Newest first'], ['salary', 'Salary, high to low'], ['company', 'Company A–Z']]
+// "45 minutes", "1 hour", "2 hours 30 minutes" — the scrape interval in the never-scraped empty state
+const everyText = (min) => {
+  const m = Math.round(min), h = Math.floor(m / 60), r = m % 60
+  const part = (n, u) => `${n} ${u}${n === 1 ? '' : 's'}`
+  if (!h) return part(r, 'minute')
+  return r ? `${part(h, 'hour')} ${part(r, 'minute')}` : part(h, 'hour')
+}
 const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '', max_salary: '' }
 
 // small dropdown shell (trigger pill + panel + backdrop). Flips to right-align
@@ -240,6 +247,8 @@ export default function V2JobFeed() {
   const [sourceCounts, setSourceCounts] = useState({}); const [verdictCounts, setVerdictCounts] = useState({})
   const [verdictList, setVerdictList] = useState([])
   const [statusCounts, setStatusCounts] = useState({})   // {status: n} — counted with the Status filter itself lifted
+  const [facetsOk, setFacetsOk] = useState(false)        // the facets answered at least once (T7-08)
+  const [scrapeEvery, setScrapeEvery] = useState(null)   // scrape_interval_minutes, for the never-scraped empty state
   const [scoreBands, setScoreBands] = useState({})       // {"70": n, …} — what each Score preset would leave
   const [resumes, setResumes] = useState([])
   const [stats, setStats] = useState({ arrived_today: 0, unscored: 0 })
@@ -328,6 +337,7 @@ export default function V2JobFeed() {
     setVerdictList(named(data.h1b_verdicts).map((x) => x.name))
     setVerdictCounts(Object.fromEntries(named(data.h1b_verdicts).map((x) => [x.name, x.count])))
     setStatusCounts(Object.fromEntries(named(data.statuses).map((x) => [x.name, x.count])))
+    setFacetsOk(true)
     setScoreBands(Object.fromEntries(named(data.score_bands).map((x) => [x.name, x.count])))
   }).catch(() => { /* silent: the filter menus; the list itself shows its own error state */ }), [])
   // The screen-level facets settle as one, so the header doesn't flash "0 open roles" before each answers.
@@ -847,6 +857,8 @@ export default function V2JobFeed() {
     api.get('/settings').then(({ data }) => {
       setDefaultDepth(data?.scoring_default_depth === 'full' ? 'full' : 'light')
       setZoomFloater(!(data?.feed_zoom_floater === false || data?.feed_zoom_floater === 'false'))
+      const every = Number(data?.scrape_interval_minutes)
+      setScrapeEvery(Number.isFinite(every) ? every : null)
     }).catch(() => { /* silent: the light default already applies */ })
   }, [])
 
@@ -1015,6 +1027,11 @@ export default function V2JobFeed() {
   const reportCovers = reportShown && !anaCollapsed
   const anaHint = anaCollapsed ? 'Show job details & analysis' : 'Hide job details & analysis — posting only'
   const dCached = cachedAvail   // hoisted above the frame effects, which need it too
+  // T7-08: no job in any status under the other (default, empty) filters = never scraped into
+  const neverScraped = facetsOk && !dSearch && !searchId
+    && ['company', 'source', 'h1b_verdict', 'location', 'arrangement'].every((k) => !(filters[k] || []).length)
+    && filters.min_score === '' && !filters.min_salary && !filters.max_salary
+    && Object.values(statusCounts).reduce((a, n) => a + (Number(n) || 0), 0) === 0
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1230,7 +1247,17 @@ export default function V2JobFeed() {
                         <Heading style={{ display: 'block', marginBottom: 6 }}>No open roles yet</Heading>
                         Jobs come from <a href="/searches" onClick={(e) => { e.preventDefault(); navigate('/searches') }}>Searches</a> and <a href="/companies" onClick={(e) => { e.preventDefault(); navigate('/companies') }}>Companies</a>. Activate one, or change the Status filter to include skipped and applied jobs.
                       </div>
-                    : <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 13, lineHeight: '20px' }}>No jobs match.<br /><Link onClick={() => { setFilters(DEFAULTS); setSearch(''); setSearchId('') }}>Clear filters</Link></div>)
+                    // T7-08: an account with no jobs at all (a brand-new member) under the default
+                    // Status·New filter has nothing to clear — it has not been scraped into yet
+                    : (neverScraped
+                      ? <div data-empty="never-scraped" style={{ padding: '48px 40px', textAlign: 'center', color: 'var(--muted)', fontSize: 13, lineHeight: '20px' }}>
+                          <Heading style={{ display: 'block', marginBottom: 6 }}>Nothing scraped yet</Heading>
+                          {scrapeEvery > 0
+                            ? `Your first scrape runs within ${everyText(scrapeEvery)}. `
+                            : 'Scheduled scraping is off — run a search or a company by hand. '}
+                          Jobs come from your <a href="/searches" onClick={(e) => { e.preventDefault(); navigate('/searches') }}>Searches</a> and <a href="/companies" onClick={(e) => { e.preventDefault(); navigate('/companies') }}>Companies</a>.
+                        </div>
+                      : <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 13, lineHeight: '20px' }}>No jobs match.<br /><Link onClick={() => { setFilters(DEFAULTS); setSearch(''); setSearchId('') }}>Clear filters</Link></div>))
               : jobs.map((j, i) => {
                 const score = bestScore(j), nsc = scoredCount(j)
                 const badge = BADGE[j.status]

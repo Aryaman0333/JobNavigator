@@ -276,6 +276,26 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         c.eq('… with a lock card', _sec_has(mpg, 'advanced', '[data-lock-card]'), 1)
         c.eq('Global exclude has no lock card', _sec_has(mpg, 'exclude', '[data-lock-card]'), 0)
         c.check('the header pill says locked', C.body_has(mpg, f'Owner sections locked · Unlock as {owner_name}'))
+        # QA F7 / R6-06: locked rows stay readable by a screen reader (no `inert`), their
+        # controls are out of the tab order, and the nav says "(locked)"
+        a11y = mpg.evaluate("""() => {
+          const head = document.querySelector('[data-sec="sec-advanced"]');
+          const rows = head ? [...head.parentElement.querySelectorAll('[data-locked="true"]')] : [];
+          const ctrls = rows.flatMap((r) => [...r.querySelectorAll('input, button, [tabindex]')]);
+          return { rows: rows.length, inert: rows.filter((r) => r.hasAttribute('inert')).length,
+                   ariaDisabled: rows.filter((r) => r.getAttribute('aria-disabled') === 'true').length,
+                   tabbable: ctrls.filter((c) => c.tabIndex >= 0).length,
+                   nav: (document.querySelector('[aria-label="Jump to Advanced"]') || {}).textContent || '' };
+        }""")
+        c.check('R6-06: locked rows are aria-disabled, not inert', a11y['rows'] >= 2 and a11y['inert'] == 0 and a11y['ariaDisabled'] == a11y['rows'], a11y)
+        c.eq('R6-06: … their controls are out of the tab order', a11y['tabbable'], 0)
+        c.check('R6-06: the nav entry says (locked)', a11y['nav'].endswith('(locked)'), a11y['nav'])
+        # QA F7 / T7-02: no Run now on owner-only schedules for a locked member
+        C.go(mpg, '/stats', settle=1500)
+        c.eq('T7-02: member sees no "Run Back up database" button',
+             mpg.locator('[aria-label="Run Back up database (pg_dump) now"]').count(), 0)
+        c.check('T7-02: … the row says Owner only', mpg.locator('[title^="Only the owner can run Back up database"]').count() == 1)
+        C.go(mpg, '/settings', settle=1500)
         c.eq('a member cannot write an owner-only setting', _fetch(mpg, 'PATCH', '/settings', {'tracer_links_base_url': 'https://zzs.example'}), 403)
         c.eq('… nor an inherited one', _fetch(mpg, 'PATCH', '/settings', {'prep_include': 'posting'}), 403)
         _scroll_to(mpg, 'advanced')

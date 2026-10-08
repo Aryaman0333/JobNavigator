@@ -230,9 +230,37 @@ async def _api_key_auth(request: Request, call_next):
     request.state.account_id = res.account["id"]
     request.state.owner_unlocked_until = res.unlocked_until
     request.state.owner_unlock_id = res.unlock_id
+    acc_id = str(res.account["id"])
+    changed = _account_changed_response(request, path, res.account, acc_id)
+    if changed is not None:
+        return changed
     unlocked = bool(res.unlocked_until) and res.unlocked_until > acct_auth._now()
     with use_account(res.account["id"]), owner_unlocked(unlocked):
-        return await call_next(request)
+        resp = await call_next(request)
+    resp.headers[acct_auth.ACCOUNT_HEADER] = acc_id
+    return resp
+
+
+# QA F7 / R6-01: writes from a tab that still shows another account. The switch itself
+# (and the PIN check before it) is how a tab changes account, so it is never refused.
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_EXPECT_EXEMPT = ("/api/auth/switch", "/api/auth/verify-pin", "/api/auth/logout")
+
+
+def _account_changed_response(request: Request, path: str, account: dict, acc_id: str):
+    """409 `account_changed` when a write names an expected account that is not the one
+    this request resolved to; None otherwise (no header, a read, or the switch)."""
+    if request.method not in _WRITE_METHODS or path in _EXPECT_EXEMPT:
+        return None
+    expected = request.headers.get(acct_auth.EXPECTED_ACCOUNT_HEADER, "").strip().lower()
+    if not expected or expected == acc_id.lower():
+        return None
+    logger.info("refused a %s %s from a tab loaded for another account", request.method, path)
+    return JSONResponse(
+        status_code=409,
+        content={"detail": acct_auth.ACCOUNT_CHANGED,
+                 "account": {"id": acc_id, "name": account.get("name") or ""}},
+        headers={acct_auth.ACCOUNT_HEADER: acc_id})
 
 
 def _authenticate_sync(path: str, api_key: str, token: str, cookie: str):
@@ -1254,6 +1282,9 @@ async def telegram_test():
         )
 
 
+_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup"})   # their triggers: require_owner
+
+
 @app.get("/api/scheduler/jobs", tags=["scheduler"], summary="List scheduled jobs")
 def get_scheduler_jobs():
     """Return all scheduler jobs with their schedule, next run time (UTC), trigger URL, and running state."""
@@ -1310,6 +1341,9 @@ def get_scheduler_jobs():
             "pending": job.pending,
             "trigger_url": trigger_url,
             "running": running_info,
+            # QA F7 / T7-02: the trigger is `require_owner` (403 for a member that has
+            # not unlocked the owner sections); the Stats table hides Run now then
+            "owner_only": job.id in _OWNER_ONLY_SCHEDULES,
         })
 
     # Per-search and per-company custom scrape intervals

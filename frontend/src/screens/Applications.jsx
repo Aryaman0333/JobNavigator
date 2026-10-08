@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api'
+import { useFlushBeforeSwitch } from '../accounts'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, NBSP, DASH } from '../hooks'
@@ -111,6 +112,7 @@ export default function Applications() {
   const [bulkBusy, setBulkBusy] = useState(false)   // one bulk write at a time
   const timers = useRef([])
   const notesTimer = useRef(null)
+  const notesPending = useRef(null)
   useEffect(() => () => { timers.current.forEach(clearTimeout); clearTimeout(notesTimer.current) }, [])
   // load() sequence guard: a slow full-list reload landing after a newer one must not
   // stomp the newer response. patchSeq is the same idea per-row, for `patch()` below.
@@ -253,15 +255,25 @@ export default function Applications() {
   // autosave: debounce while typing, flush immediately on blur
   const saveNotes = useCallback((id, value, now) => {
     clearTimeout(notesTimer.current)
+    notesPending.current = null
     const run = () => {
+      notesPending.current = null
       const seq = (patchSeq.current[id] = (patchSeq.current[id] || 0) + 1)
       setApps((p) => p.map((a) => (a.id === id ? { ...a, notes: value } : a)))
       api.patch(`/applications/${id}`, { notes: value })
         .then(({ data }) => { if (patchSeq.current[id] === seq) setApps((p) => p.map((a) => (a.id === id ? { ...a, ...data } : a))) })   // the row's age follows the server's updated_at
         .catch((e) => { console.error(e); pushToast({ kind: 'error', msg: 'Could not save notes' + errSuffix(e) }) })
     }
-    if (now) run(); else notesTimer.current = setTimeout(run, 700)
+    if (now) run(); else { notesPending.current = run; notesTimer.current = setTimeout(run, 700) }
   }, [pushToast])
+  // QA F7 / R6-01: a switch writes the notes still waiting on the timer first
+  // (api.js then waits for that PATCH to answer before the cookie moves)
+  useFlushBeforeSwitch(() => {
+    const run = notesPending.current
+    if (!run) return
+    clearTimeout(notesTimer.current)
+    run()
+  })
 
   const remove = (a) => {
     setMenuOpen(false)

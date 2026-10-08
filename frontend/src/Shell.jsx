@@ -10,7 +10,7 @@ import { Avatar, CheckGlyph, Helper, Menu, MenuHead, MenuItem, kb } from './ui'
 import { useToasts, ToastStack } from './Toast'
 import {
   useAccounts, switchAccount, finishSwitch, openPicker, takeSwitchedNote,
-  switchShortcutIndex, roleLabel, SWITCH_MOD, MAX_SHORTCUTS,
+  switchShortcutIndex, roleLabel, SWITCH_MOD, MAX_SHORTCUTS, MAX_ACCOUNTS,
 } from './accounts'
 import './theme.css'
 
@@ -140,6 +140,7 @@ function AccountSwitcher({ open }) {
   })
   const go = (path) => { setMenu(null); navigate(path) }
   const owner = me.role === 'owner'
+  const full = accounts.length >= MAX_ACCOUNTS
   return (
     <div className="v2-railfoot v2-railacct" style={{ flex: '0 0 auto', padding: open ? '6px 8px' : '6px 0', borderTop: '1px solid var(--rail-line)', transition: 'padding .32s ease' }}>
       <div ref={trig} onClick={toggle} {...kb(toggle)} aria-haspopup="menu" aria-expanded={menu ? 'true' : 'false'}
@@ -176,7 +177,10 @@ function AccountSwitcher({ open }) {
               </MenuItem>
             )
           })}
-          {owner && <MenuItem icon="+" divider onClick={() => go('/settings#add-account')}>Add account…</MenuItem>}
+          {/* R6-11: at the cap the item stays visible, disabled, and says why */}
+          {owner && (full
+            ? <MenuItem icon="+" divider disabled hint={`${MAX_ACCOUNTS} max`} ariaLabel={`Add account — the limit is ${MAX_ACCOUNTS} accounts`}>Add account…</MenuItem>
+            : <MenuItem icon="+" divider onClick={() => go('/settings#add-account')}>Add account…</MenuItem>)}
           <MenuItem icon="⚙" divider={!owner} hint="Settings" onClick={() => go('/settings#accounts')}>Manage accounts</MenuItem>
         </Menu>
       )}
@@ -216,6 +220,12 @@ export default function Shell() {
   // all read it, so a click here moves every one without a reload.
   const look = useTheme()
   const appearanceTip = appearanceTitle(look.mode)
+  const [needAccount, setNeedAccount] = useState(false)
+  useEffect(() => {
+    const on = () => setNeedAccount(true)
+    window.addEventListener('jn:account-required', on)
+    return () => window.removeEventListener('jn:account-required', on)
+  }, [])
   const toggleRail = () => setOpen((v) => { const n = !v; try { localStorage.setItem('jobnavigator_v2_rail', n ? 'expanded' : 'collapsed') } catch {} return n })
 
   const loadCounts = useCallback(() => {
@@ -387,7 +397,7 @@ export default function Shell() {
 
         {/* pipeline pulse — the dot yields its slot to the theme toggle when collapsed */}
         {/* tooltip promises Run history, the last card on the page — deep-link to it */}
-        <div onClick={() => navigate('/stats#runs')} title={healthTip} className="v2-navdark v2-railfoot" style={{ display: 'flex', alignItems: 'center', height: 30, padding: `0 ${padX}px`, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'padding .32s ease' }}>
+        <div onClick={() => navigate('/stats#runs')} title={healthTip} className="v2-navdark v2-railfoot v2-railhealth" style={{ display: 'flex', alignItems: 'center', height: 30, padding: `0 ${padX}px`, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'padding .32s ease' }}>
           <span style={{ flex: '0 0 24px', display: 'flex', justifyContent: open ? 'flex-start' : 'center' }}>
             {open
               /* ui: keep — 7px scrape-health rail dot, not a control */
@@ -407,7 +417,9 @@ export default function Shell() {
         </div>
       </aside>
       <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <Outlet />
+        {/* T7-03: no account chosen yet — the screen waits behind the picker instead
+            of painting "Couldn't load …" for the 401s it got; picking reloads the page */}
+        {needAccount ? null : <Outlet />}
       </main>
     </div>
   )

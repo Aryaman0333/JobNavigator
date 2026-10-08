@@ -1200,6 +1200,9 @@ export function PinPad({
   const [shake, setShake] = useState(0)
   const refs = useRef([])
   const mounted = useRef(false)
+  // R6-05: every cell is described by the status line, so a refocused cell reads
+  // "Wrong PIN · 3 tries left", not only "digit 1"
+  const msgId = `jn-pinmsg-${React.useId().replace(/:/g, '')}`
   const endRef = useRef(onCooldownEnd)
   endRef.current = onCooldownEnd
   const cooling = left > 0
@@ -1281,7 +1284,7 @@ export function PinPad({
               value={d} onChange={onChange(i)} onKeyDown={onKeyDown(i)} onPaste={onPaste(i)}
               onFocus={(e) => { try { e.target.select() } catch { /* jsdom */ } }}
               readOnly={!!busy} disabled={cooling}
-              aria-label={`${ariaLabel} digit ${i + 1}`} aria-invalid={bad ? 'true' : undefined}
+              aria-label={`${ariaLabel} digit ${i + 1}`} aria-invalid={bad ? 'true' : undefined} aria-describedby={msgId}
               className="v2-inset" style={{ ...PIN_CELL, opacity: cooling ? 0.6 : 1 }} />
           ))}
         </div>
@@ -1291,7 +1294,7 @@ export function PinPad({
           </span>
         )}
       </div>
-      <span aria-live="polite" style={{
+      <span id={msgId} aria-live="polite" style={{
         minHeight: 18, lineHeight: '18px', fontSize: 'var(--t-11-5)', textAlign: 'center',
         color: bad ? 'var(--bad)' : 'var(--helper-ink)',
       }}>{msg}</span>
@@ -1983,13 +1986,54 @@ export function MoveArrows({ onUp, onDown, upOff, downOff, style, className }) {
 // same string is also the body heading it replaces. There is no small-window
 // variant: round 8 #11 dropped the `prompt` flag, so a confirm box and a full
 // modal wear the same caption and differ only in size.
+// ── VisuallyHidden ──────────────────────────────────────────────────────────
+// Text for screen readers only (QA F7 / R6-06: "(locked)" on a Settings nav entry).
+export function VisuallyHidden({ children }) {
+  return (
+    <span style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 }}>{children}</span>
+  )
+}
+
+// `trapFocus` (QA F7 / R6-05) is for the gates that cannot be walked around (the
+// account picker, the account-changed notice): focus moves into the panel on open
+// unless something inside already has it, and Tab / Shift+Tab wrap inside it, so
+// the rail and the screen behind the scrim are never reached from the keyboard.
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+function useFocusTrap(ref, on) {
+  useEffect(() => {
+    if (!on) return undefined
+    const items = () => Array.from(ref.current?.querySelectorAll(FOCUSABLE) || []).filter((el) => !el.closest('[inert]'))
+    const enter = () => {
+      const p = ref.current
+      if (!p || p.contains(document.activeElement)) return
+      const first = items()[0]
+      if (first) first.focus(); else { p.setAttribute('tabindex', '-1'); p.focus() }
+    }
+    // after children's own effects (a PIN pad focuses its first cell itself)
+    const t = setTimeout(enter, 0)
+    const onKey = (e) => {
+      if (e.key !== 'Tab' || !ref.current) return
+      const list = items()
+      if (!list.length) { e.preventDefault(); return }
+      const i = list.indexOf(document.activeElement)
+      if (i < 0) { e.preventDefault(); (e.shiftKey ? list[list.length - 1] : list[0]).focus(); return }
+      if (!e.shiftKey && i === list.length - 1) { e.preventDefault(); list[0].focus() }
+      else if (e.shiftKey && i === 0) { e.preventDefault(); list[list.length - 1].focus() }
+    }
+    const onFocusIn = (e) => { if (ref.current && !ref.current.contains(e.target)) enter() }
+    document.addEventListener('keydown', onKey, true)
+    document.addEventListener('focusin', onFocusIn)
+    return () => { clearTimeout(t); document.removeEventListener('keydown', onKey, true); document.removeEventListener('focusin', onFocusIn) }
+  }, [ref, on])
+}
 export function ModalPanel({
   width = 480, as, onSubmit, onClose, escape = true, escapeCapture = false, labelledBy, zIndex = 70, titlebar, title,
-  children, style, className, scrimStyle, scrimProps,
+  trapFocus = false, children, style, className, scrimStyle, scrimProps,
 }) {
   useEscape(onClose, escape && !!onClose, escapeCapture)
   const panel = useRef(null)
   useSnapTop(panel)
+  useFocusTrap(panel, trapFocus)
   const chrome = useTitleBar()
   const Panel = as === 'form' ? 'form' : 'div'
   // Round 10 · WHY THE SMALL MODALS NEVER BECAME 98 WINDOWS. The big panels
@@ -2019,7 +2063,7 @@ export function ModalPanel({
       {/* when the caption bar carries the name, the body's <Heading id={labelledBy}>
           is gone with it, so the panel names itself from the same string */}
       <Panel ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelledBy}
-        aria-label={chrome && typeof title === 'string' ? title : undefined}
+        aria-label={!labelledBy && typeof title === 'string' && title ? title : (chrome && typeof title === 'string' ? title : undefined)}
         onSubmit={onSubmit} onClick={(e) => e.stopPropagation()} className={cx('v2-raised', className)}
         style={{
           // `padding` is 0 in every theme but the bevelled one, where it is the

@@ -121,6 +121,12 @@ def _mt_switch(c):
                 C.go(pg, '/feed', settle=1200)
                 c.check('a fresh browser gets the account picker', _wait_text(pg, 'job hunting?'))
                 c.check('… and not the install-password sign-in', not C.body_has(pg, 'Enter your dashboard API key'))
+                # QA F7 / T7-03: the screen waits behind the picker instead of failing
+                c.check("… with no \"Couldn't load\" behind it (T7-03)", not C.body_has(pg, "Couldn't load"))
+                # QA F7 / R6-05: the picker is a named dialog and holds the focus
+                c.check('the picker dialog is named (R6-05)', pg.locator('[role="dialog"][aria-labelledby="jn-picker-title"]').count() == 1)
+                pg.keyboard.press('Tab'); pg.keyboard.press('Tab'); pg.keyboard.press('Tab')
+                c.check('Tab stays inside the picker (R6-05)', pg.evaluate("() => !!document.activeElement.closest('[role=\"dialog\"]')"))
                 tiles = pg.locator('[role="listitem"]').count()
                 c.eq('one tile per account', tiles, 2)
                 pg.screenshot(path=f'{SHOTS}/picker.png')
@@ -177,6 +183,35 @@ def _mt_switch(c):
                     c.eq(f'win98 avatar is square ({rail} rail)', radius, '0px')
                     pg.screenshot(path=f'{SHOTS}/rail-menu-win98-{rail}.png')
                     pg.keyboard.press('Escape')
+                pg.evaluate("() => { localStorage.removeItem('jobnavigator_theme'); localStorage.setItem('jobnavigator_v2_rail', 'expanded') }")
+
+                # QA F7 / R6-01: a second tab of the same browser, then a switch in the first
+                pg2 = pg.context.new_page()
+                C.go(pg2, '/persona', settle=1500)
+                c.check('tab 2 shows the owner', (_switcher(pg2) or '').startswith(f'{owner_name}, Owner'), _switcher(pg2))
+                C.go(pg, '/feed', settle=1200)
+                pg.keyboard.press('Control+Shift+Digit2')
+                c.check("tab 1: Ctrl+Shift+2 asks for the member's PIN", _wait_text(pg, f"Enter {member_name}'s PIN"))
+                pg.keyboard.type(MEMBER_PIN, delay=60)
+                c.check('tab 1 switches to the member', _wait_text(pg, f'Switched to {member_name}', 12000))
+                c.check('tab 2 gets the blocking "switched in another tab" notice',
+                        _wait_text(pg2, f'This tab was switched to {member_name}', 8000))
+                c.check('… as a dialog with a Reload button', pg2.locator('[data-account-changed] [role="dialog"] [role="button"]:has-text("Reload")').count() == 1)
+                c.eq('tab 1 has no such notice', C.body_has(pg, 'This tab was switched'), False)
+                pg2.screenshot(path=f'{SHOTS}/cross-tab-notice.png')
+                # the server refuses a stale write too (what the keepalive flush would send)
+                stale = pg2.evaluate("""async (owner) => {
+                  const r = await fetch('/api/persona', { method: 'PATCH', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json', 'X-Expected-Account': owner },
+                    body: JSON.stringify({ contact: { name: 'stale tab' } }) });
+                  return { status: r.status, detail: (await r.json().catch(() => ({}))).detail };
+                }""", owner_id)
+                c.eq('a write naming the old account is 409 account_changed', stale, {'status': 409, 'detail': 'account_changed'})
+                pg2.locator('[data-account-changed] [role="button"]:has-text("Reload")').click()
+                pg2.wait_for_timeout(1500)
+                c.check('after Reload tab 2 is the member', (_switcher(pg2) or '').startswith(f'{member_name}, Member'), _switcher(pg2))
+                c.check('… and the notice is gone', not C.body_has(pg2, 'This tab was switched'))
+                pg2.close()
                 errs, perrs = C.console_errors(pg)
                 c.check('no page errors through the flow', not perrs, '; '.join(perrs[:2]))
             finally:

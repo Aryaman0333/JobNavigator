@@ -33,13 +33,14 @@ export default function AccountPicker({ account: initial = null, required = fals
   const dismissable = !required && !!onClose
   const owner = (accounts || []).find((a) => a.role === 'owner')
 
+  const [reloadKey, setReloadKey] = useState(0)
   useEffect(() => {
     let live = true
     api.get('/auth/accounts')
-      .then(({ data }) => { if (live) setAccounts(Array.isArray(data) ? data : []) })
+      .then(({ data }) => { if (live) { setAccounts(Array.isArray(data) ? data : []); setLoadErr('') } })
       .catch(() => { if (live) { setAccounts([]); setLoadErr('Could not load the accounts — reload the page to try again.') } })
     return () => { live = false }
-  }, [])
+  }, [reloadKey])
 
   const failed = useCallback((err, acc) => {
     const f = authFailure(err)
@@ -49,7 +50,11 @@ export default function AccountPicker({ account: initial = null, required = fals
       setCooldown(0); setAttempt((n) => n + 1); return
     }
     if (f?.kind === 'pin_cooldown') { setTarget(acc); setError(''); setCooldown(f.retryAfter); setAttempt((n) => n + 1); return }
-    setError(err?.response?.status === 404 ? 'That account no longer exists.' : 'Could not switch — try again.')
+    if (err?.response?.status === 404) {
+      // R6-04: the account is gone — back to a fresh grid
+      setTarget(null); setReloadKey((n) => n + 1)
+      setError('That account no longer exists.')
+    } else setError('Could not switch — try again.')
     setAttempt((n) => n + 1)
   }, [])
 
@@ -102,7 +107,7 @@ export default function AccountPicker({ account: initial = null, required = fals
 
   return (
     <ModalPanel width={target ? 380 : 560} title={target ? 'Enter PIN' : 'Choose an account'} zIndex={9999}
-      onClose={onEscape} escapeCapture
+      onClose={onEscape} escapeCapture trapFocus labelledBy={done ? undefined : (target ? 'jn-picker-pin-title' : 'jn-picker-title')}
       scrimProps={{ className: 'jn-v2', ...themeAttrs(look) }}
       style={{ padding: '26px 26px 22px', gap: 18 }}>
       {done ? (
@@ -114,7 +119,7 @@ export default function AccountPicker({ account: initial = null, required = fals
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }} data-testid="pin-step">
           <Avatar name={target.name} color={target.color} size={44} />
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-            <Heading size={18}>{target.name}</Heading>
+            <Heading size={18} id="jn-picker-pin-title">{target.name}</Heading>
             <Helper>{roleLabel(target)}</Helper>
           </div>
           <PinPad onComplete={submitPin} busy={pinBusy} error={error} hint={pinHint}
@@ -128,7 +133,7 @@ export default function AccountPicker({ account: initial = null, required = fals
         <>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
             {/* ui: keep — the picker's wordmark-sized title matches the sign-in overlay's serif 23/28px */}
-            <span style={{ fontFamily: 'var(--serif)', fontSize: 23, fontWeight: 400, letterSpacing: '-.02em', lineHeight: '28px' }}>Who&rsquo;s job hunting?</span>
+            <span id="jn-picker-title" style={{ fontFamily: 'var(--serif)', fontSize: 23, fontWeight: 400, letterSpacing: '-.02em', lineHeight: '28px' }}>Who&rsquo;s job hunting?</span>
             <Helper>
               {accounts && accounts.length > 1 ? `Pick an account · 1–${Math.min(5, accounts.length)} on the keyboard` : ' '}
             </Helper>

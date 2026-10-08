@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import api from '../api'
+import { useFlushBeforeSwitch } from '../accounts'
 import '../theme.css'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
@@ -383,15 +384,25 @@ export default function ResumeEditor() {
   }, [isCopy, doc, freeformJd, changes.length, reviewed, scores.tailored, scoring, coverExists, jobData, runScore, markApplied]) // eslint-disable-line
 
   // debounced persist
+  // QA F7 / R6-01: the patch the timer still owes, so a switch can send it first
+  const pendingSave = useRef(null)
+  const sendSave = useCallback(async (patch) => {
+    try { await api.patch(`/resumes/${id}`, patch); setSavedAt(new Date().toISOString()) }
+    catch (e) { console.error(e); setSavedAt(null); pushToast({ kind: 'error', msg: `Save failed — your last edit is not stored. ${e.response?.data?.detail || e.message || ''}`.trim() }) }
+    setSaving(false)
+  }, [id])  // eslint-disable-line react-hooks/exhaustive-deps
   const persist = useCallback((patch) => {
     setSaving(true)
     clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(async () => {
-      try { await api.patch(`/resumes/${id}`, patch); setSavedAt(new Date().toISOString()) }
-      catch (e) { console.error(e); setSavedAt(null); pushToast({ kind: 'error', msg: `Save failed — your last edit is not stored. ${e.response?.data?.detail || e.message || ''}`.trim() }) }
-      setSaving(false)
-    }, 500)
-  }, [id])
+    pendingSave.current = patch
+    saveTimer.current = setTimeout(() => { pendingSave.current = null; sendSave(patch) }, 500)
+  }, [sendSave])
+  useFlushBeforeSwitch(() => {
+    const patch = pendingSave.current
+    if (!patch) return undefined
+    clearTimeout(saveTimer.current); pendingSave.current = null
+    return sendSave(patch)
+  })
   const onData = useCallback((next) => { setData(next); persist({ json_data: next }) }, [persist])
   const pickTemplate = (t) => { setTemplate(t); setTplOpen(false); persist({ template: t }) }
   const pickFormat = (f) => { setFormat(f); setFmtOpen(false); persist({ page_format: f }) }

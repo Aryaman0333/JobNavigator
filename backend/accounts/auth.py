@@ -109,6 +109,13 @@ PIN_MAX_BUCKETS = 1024               # memory bound for the per-client counters
 ACCOUNT_REQUIRED = "account_required"
 INVALID_ACCOUNT_TOKEN = "invalid_account_token"
 AUTH_HEADER = "X-JN-Auth"                    # value "account" on an account_required 401
+# QA F7 / R6-01: a dashboard tab sends the account it was loaded for on every write;
+# a write whose expected account is not the request's account (another tab switched
+# this browser) is refused with 409 `account_changed`. Every account-bound response
+# names its account in ACCOUNT_HEADER, which is how a tab learns which account it shows.
+EXPECTED_ACCOUNT_HEADER = "X-Expected-Account"
+ACCOUNT_HEADER = "X-JN-Account"
+ACCOUNT_CHANGED = "account_changed"
 
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
 

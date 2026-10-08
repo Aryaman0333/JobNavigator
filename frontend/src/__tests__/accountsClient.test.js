@@ -52,9 +52,15 @@ describe('the api interceptor', () => {
 
 describe('switchShortcutIndex', () => {
   const k = (code, mods = {}) => ({ code, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods })
-  it('maps ⌘⇧1–5 and Ctrl+Shift+1–5 to 0–4', () => {
-    expect(switchShortcutIndex(k('Digit1', { metaKey: true, shiftKey: true }))).toBe(0)
+  it('maps Ctrl+Shift+1–5 (⌃⇧ on a Mac) to 0–4', () => {
+    expect(switchShortcutIndex(k('Digit1', { ctrlKey: true, shiftKey: true }))).toBe(0)
     expect(switchShortcutIndex(k('Digit5', { ctrlKey: true, shiftKey: true }))).toBe(4)
+  })
+  it('never ⌘⇧3/4/5 (macOS screenshots) or ⌘⌃⇧ (screenshot to clipboard) — R6-03', () => {
+    for (const d of ['Digit1', 'Digit3', 'Digit4', 'Digit5']) {
+      expect(switchShortcutIndex(k(d, { metaKey: true, shiftKey: true }))).toBe(-1)
+      expect(switchShortcutIndex(k(d, { metaKey: true, ctrlKey: true, shiftKey: true }))).toBe(-1)
+    }
   })
   it('ignores everything else', () => {
     expect(switchShortcutIndex(k('Digit6', { ctrlKey: true, shiftKey: true }))).toBe(-1)

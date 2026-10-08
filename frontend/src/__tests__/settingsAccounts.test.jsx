@@ -46,6 +46,15 @@ describe('countsLine / errorText', () => {
     expect(errorText(e(422, { detail: 'name is required' }))).toBe('name is required')
     expect(errorText(new Error('net'), 'fallback')).toBe('fallback')
   })
+  it('QA F7 / R6-08: no raw code reaches a Settings flash', () => {
+    const e = (status, data) => ({ response: { status, data } })
+    for (const code of ['owner_only', 'own_account_only', 'no_account', 'gmail_not_configured', 'scheduled_scrape_running',
+      'account_changed', 'invalid_account_token', 'account_required', 'No account to link']) {
+      const t = errorText(e(403, { detail: code }))
+      expect(t).not.toBe(code)
+      expect(t).toMatch(/[A-Z].* .*[.—]/)
+    }
+  })
 })
 
 describe('ColorPicker', () => {

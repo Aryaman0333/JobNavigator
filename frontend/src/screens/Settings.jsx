@@ -1,17 +1,40 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import ConfirmDialog, { PromptDialog } from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, NBSP } from '../hooks'
-import { Button, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, Label, Link, Menu, MenuHead, MenuItem, ModalPanel, Mono, PageTitle, Pill, Select, Spinner, Surface, Switch, Textarea, ToolbarTrigger } from '../ui'
+import { Button, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, Label, Link, Menu, MenuHead, MenuItem, ModalPanel, Mono, PageTitle, Pill, Select, Spinner, Surface, Switch, Textarea, ToolbarTrigger, VisuallyHidden } from '../ui'
 import { useTheme, MODE_OPTIONS, themeOptions } from '../theme'
 import { describeCron, whenShort, CRON_PRESETS } from '../time'
-import api from '../api'
+import api, { authFailure } from '../api'
+import { MAX_ACCOUNTS, useFlushBeforeSwitch } from '../accounts'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import {
-  AccountsTable, AddAccountModal, YourAccount, accountsChanged,
+  AccountsTable, AddAccountModal, YourAccount, accountsChanged, errorText,
   LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, memberGroup, rowLocked, scopeTag,
 } from './SettingsAccounts'
 import '../theme.css'
+
+// QA F7 / R6-06: a locked row stays in the accessibility tree (read-only, aria-disabled);
+// its controls are taken out of the tab order and marked read-only, and given back
+// when the row unlocks. `data-jn-tab` remembers a control's own tabindex.
+const LOCKABLE = 'a[href], button, input, select, textarea, [tabindex]'
+function lockControls(el, locked) {
+  el.querySelectorAll(LOCKABLE).forEach((c) => {
+    if (locked) {
+      if (!c.hasAttribute('data-jn-tab')) c.setAttribute('data-jn-tab', c.getAttribute('tabindex') ?? '')
+      c.setAttribute('tabindex', '-1')
+      c.setAttribute('aria-disabled', 'true')
+      if ('readOnly' in c && c.tagName !== 'BUTTON') c.readOnly = true
+    } else if (c.hasAttribute('data-jn-tab')) {
+      const t = c.getAttribute('data-jn-tab')
+      if (t === '') c.removeAttribute('tabindex'); else c.setAttribute('tabindex', t)
+      c.removeAttribute('data-jn-tab'); c.removeAttribute('aria-disabled')
+      if ('readOnly' in c && c.tagName !== 'BUTTON') c.readOnly = false
+    }
+  })
+}
+
+const CAP_TEXT = (n) => `This install already has ${n} accounts — remove one to add another.`
 
 // ── shared bits ──────────────────────────────────────────────────────────────
 const PROVIDERS = [
@@ -225,9 +248,19 @@ export default function Settings() {
   const { toasts, push, dismiss } = useToasts()
   const loc = useLocation()
   const navigate = useNavigate()
+  // R6-10: /auth/me did not answer — nobody is assumed to be the owner
+  const [meErr, setMeErr] = useState(false)
   const loadAccounts = useCallback(async () => {
+    let data
     try {
-      const { data } = await api.get('/auth/me')
+      ({ data } = await api.get('/auth/me'))
+    } catch (e) {
+      // a 401 raises the picker / sign-in itself; anything else leaves Settings read-only
+      if (!authFailure(e)) setMeErr(true)
+      return
+    }
+    setMeErr(!data?.account)
+    try {
       if (!data?.account) return
       const n = Number(data.accounts_count) || 1
       setMe(data.account); setAcctCount(n); setOwnerHasPin(data.owner_has_pin !== false)
@@ -262,7 +295,7 @@ export default function Settings() {
   }, [loadAccounts])
   const multi = acctCount >= 2 && !!me
   const hasMe = !!me
-  const isOwner = !me || me.role === 'owner'
+  const isOwner = !!me && me.role === 'owner'
   const member = multi && !isOwner
   const ownerName = (acctData?.accounts || []).find((a) => a.role === 'owner')?.name || 'the owner'
   const unlocked = !!unlockedUntil
@@ -291,7 +324,7 @@ export default function Settings() {
       flash(mode === 'own' ? `${who} keeps their own ${title}` : `${who} inherits your ${title}`)
     } catch (e) {
       setPolicies((p) => ({ ...p, [policyFor]: { ...(p[policyFor] || {}), [section]: prev } }))
-      flash(e?.response?.data?.detail || 'Could not change the policy', true)
+      flash(errorText(e, 'Could not change the policy'), true)
     }
   }, [policyFor, policies, acctData])  // eslint-disable-line react-hooks/exhaustive-deps
   const scrollRef = useRef(null)
@@ -316,7 +349,7 @@ export default function Settings() {
       setLoadErr(null)
     } catch (e) {
       console.error(e)
-      setLoadErr(e?.response?.data?.detail || e?.message || 'The server did not answer.')
+      setLoadErr(errorText(e, e?.message || 'The server did not answer.'))
     }
   }, [])
 
@@ -385,7 +418,8 @@ export default function Settings() {
       setS((p) => { const n = { ...p }; if (prev === undefined) delete n[key]; else n[key] = prev; return n })
       // Server validates int/cron/enum values and says which key it refused and why — show that instead of a generic failure.
       const detail = e?.response?.status === 400 ? e?.response?.data?.detail : null
-      flash(typeof detail === 'string' && detail ? detail : 'Could not save — try again', true)
+      flash(typeof detail === 'string' && detail ? detail
+        : ([403, 409].includes(e?.response?.status) ? errorText(e, 'Could not save — try again') : 'Could not save — try again'), true)
       return false
     }
   }, [S])
@@ -435,7 +469,8 @@ export default function Settings() {
     } catch (e) {
       console.error(e)
       setTrig((t) => ({ ...t, [id]: '' }))
-      flash(e?.response?.data?.detail || 'Save failed. Try again.', true)
+      // R6-08: codes (owner_only, gmail_not_configured, …) read as sentences
+      flash(errorText(e, 'Save failed. Try again.'), true)
     }
   }
 
@@ -619,6 +654,10 @@ export default function Settings() {
         BT('Register webhook', member && val('telegram_bot_mode', 'household') === 'own'
           ? 'Points your own bot at the public URL so its buttons and link codes reach the backend.'
           : 'Points Telegram at your public URL so inbound bot commands reach the backend.', 'Register…', async () => {
+          // R6-08: own bot without a token has nothing to register (the server says owner_only)
+          if (member && val('telegram_bot_mode', 'household') === 'own' && !val('telegram_bot_token')) {
+            flash('Add your bot token above first — then register its webhook.', true); return false
+          }
           const url = await askText({ title: 'Register the Telegram webhook', body: 'The public base URL Telegram should post updates to.', placeholder: 'https://your-domain.example', mono: true, label: 'Register' })
           if (!url || !url.trim()) return false
           const { data } = await api.post('/telegram/register-webhook', { public_url: url.trim() })
@@ -678,7 +717,12 @@ export default function Settings() {
       const el = c && c.querySelector(`[data-sec="sec-${target}"]`)
       if (c && el) c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 4
     })
-    if (h === 'add-account' && isOwner) setAdding(true)
+    // R6-11: at the cap the Add dialog would only end in 409 account_limit
+    const cap = acctData?.max_accounts || MAX_ACCOUNTS
+    if (h === 'add-account' && isOwner) {
+      if ((acctData?.accounts || []).length >= cap) push({ kind: 'error', msg: CAP_TEXT(cap) })
+      else setAdding(true)
+    }
     navigate(loc.pathname + loc.search, { replace: true })
   }, [loc.hash, ready, hasS, multi, isOwner])  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -810,7 +854,7 @@ export default function Settings() {
                 ...(member && sectionLocked(rows) ? { opacity: 0.55 } : null),
                 color: cur === id && !q ? 'var(--text)' : 'var(--text-2)', fontWeight: cur === id && !q ? 600 : 400,
                 /* 3px accent border + 29px left pad keeps the label position consistent whether or not the border shows */
-                borderLeft: `3px solid ${cur === id && !q ? 'var(--accent)' : 'transparent'}` }}>{title}</div>
+                borderLeft: `3px solid ${cur === id && !q ? 'var(--accent)' : 'transparent'}` }}>{title}{member && sectionLocked(rows) && <VisuallyHidden> (locked)</VisuallyHidden>}</div>
             </div>
           ))}
         </div>
@@ -818,6 +862,12 @@ export default function Settings() {
         {/* rows */}
         <div ref={attachScroller} className="v2-scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '0 40px 40px', minHeight: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', maxWidth: 980 }}>
+            {meErr && (
+              <div role="alert" data-account-error style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 22 }}>
+                <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--bad)' }}>Couldn’t check which account this is — settings are read-only until it loads.</span>
+                <Link onClick={() => loadAccounts()}>Try again</Link>
+              </div>
+            )}
             {visible.map(([id, , title, sub, rows, block]) => (
               <div key={id} style={{ display: 'flex', flexDirection: 'column' }}>
                 {/* alignItems center, not baseline: both children are 26px tall (shared line-height below), so centring matches baseline in the default theme
@@ -849,12 +899,15 @@ export default function Settings() {
                   // `_meta.set_by_owner` (the value is blanked); the row says so, read-only.
                   const r = member && r0.key && meta?.[r0.key]?.set_by_owner ? { ...r0, kind: 'ownerset', ownerName } : r0
                   const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
-                  if (!member) return row
-                  // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and inert
-                  const locked = rowLocked(r, lockCtx)
+                  if (!member && !meErr) return row
+                  // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and
+                  // read-only. R6-06: not `inert` — that hid the value from screen readers; the
+                  // row is aria-disabled and its controls leave the tab order instead.
+                  // R6-10: with no answer from /auth/me every row is read-only.
+                  const locked = meErr || rowLocked(r, lockCtx)
                   return (
                     <div key={r.label} data-locked={locked ? 'true' : undefined} aria-disabled={locked || undefined}
-                      ref={(el) => { if (el) { if (locked) el.setAttribute('inert', ''); else el.removeAttribute('inert') } }}
+                      ref={(el) => { if (el) lockControls(el, locked) }}
                       style={locked ? { opacity: 0.55, pointerEvents: 'none' } : undefined}>{row}</div>
                   )
                 })}
@@ -1158,7 +1211,7 @@ function LinkedInRow({ li, setLi, flash }) {
           if (!['running', 'awaiting_pin'].includes(data.phase)) clearInterval(poll.current)
         } catch { /* keep polling */ }
       }, 2500)
-    } catch (e) { flash(e?.response?.data?.detail || 'Could not start the refresh', true) }
+    } catch (e) { flash(errorText(e, 'Could not start the refresh'), true) }
   }
 
   const phase = li?.phase || 'idle'
@@ -1182,7 +1235,7 @@ function LinkedInRow({ li, setLi, flash }) {
               const { data } = await api.post('/linkedin/session/pin', { pin })
               if (!data.ok) flash(data.detail || 'Enter the digits from the email', true)
               else { setPin(''); flash('PIN sent') }
-            } catch (e) { flash(e?.response?.data?.detail || 'Could not send the PIN', true) }
+            } catch (e) { flash(errorText(e, 'Could not send the PIN'), true) }
           }} />
         </>
       )}
@@ -1239,6 +1292,8 @@ function EditModal({ spec, S, defaults, onSave, onClose }) {
   const flushRef = useRef(flush)
   closeRef.current = close
   flushRef.current = flush
+  // QA F7 / R6-01: an account switch (shortcut) writes the pending text first
+  useFlushBeforeSwitch(() => flushRef.current())
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') closeRef.current() }
     document.addEventListener('keydown', onKey)
@@ -1288,7 +1343,7 @@ function ModelsModal({ S, save, onClose }) {
     setLoading(true); setErr('')
     api.get('/llm/models', { params: { provider } })
       .then(({ data }) => { if (!dead) setLive(Array.isArray(data) ? data : (data?.models || [])) })
-      .catch((e) => { if (!dead) setErr(e?.response?.data?.detail || 'Could not reach the catalog') })
+      .catch((e) => { if (!dead) setErr(errorText(e, 'Could not reach the catalog')) })
       .finally(() => { if (!dead) setLoading(false) })
     return () => { dead = true }
   }, [provider])
