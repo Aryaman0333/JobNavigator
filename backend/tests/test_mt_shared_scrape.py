@@ -4,7 +4,8 @@ Identical targets of different accounts are fetched once and ingested per accoun
 account applies its own title filters, excludes and dedup under its own context, writes
 its own ScrapeLog row, and the rows of one fetch share a run_id. Different URLs (or any
 fetch parameter) are separate targets; results_wanted / hours_old are fetched at the max
-and trimmed per account. A single account without duplicates behaves exactly as before.
+and trimmed per account when they are close (QA F10 / R4-05: within 1.5x, same hours
+bucket; else separate fetches). A single account without duplicates behaves exactly as before.
 """
 import sys
 import types
@@ -327,23 +328,24 @@ async def test_searches_differing_only_in_results_and_hours_share_one_fetch(test
     import backend.scraper.orchestrator as orch
     a, b = accounts
     calls = _fake_jobspy(monkeypatch, ROWS)
-    _search(test_db, results_wanted=1, hours_old=24)
+    # QA F10 / R4-05: close values only (results within 1.5x, same hours bucket)
+    _search(test_db, results_wanted=2, hours_old=12)
     with use_account(b):
-        _search(test_db, results_wanted=50, hours_old=168, search_term="  Product   Manager ")
+        _search(test_db, results_wanted=3, hours_old=24, search_term="  Product   Manager ")
 
     await orch.run_all(force=True)
 
     assert len(calls) == 1, "one JobSpy call for both accounts"
-    assert calls[0]["results_wanted"] == 50 and calls[0]["hours_old"] == 168
+    assert calls[0]["results_wanted"] == 3 and calls[0]["hours_old"] == 24
     jobs = _jobs(test_db)
-    # A: first row per board, posted within a day
-    assert {t for t, _ in jobs[a]} == {"Product Manager", "PM Generalist"}
+    # A: first two rows per board, posted within its window (the 2- and 5-day-old dropped)
+    assert {t for t, _ in jobs[a]} == {"Product Manager", "Product Owner", "PM Generalist"}
     # B: everything
     assert {t for t, _ in jobs[b]} == {r["title"] for r in ROWS}
     logs = {l.account_id: l for l in _logs(test_db)}
-    assert logs[a].run_id == logs[b].run_id and logs[a].jobs_found == 2 and logs[b].jobs_found == 5
+    assert logs[a].run_id == logs[b].run_id and logs[a].jobs_found == 3 and logs[b].jobs_found == 5
     # `returned` reports this account's trimmed copy
-    assert logs[a].source_breakdown["indeed"]["returned"] == 1
+    assert logs[a].source_breakdown["indeed"]["returned"] == 2
 
 
 @pytest.mark.asyncio

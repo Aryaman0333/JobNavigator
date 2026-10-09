@@ -14,7 +14,10 @@ import uuid
 from contextlib import contextmanager
 from typing import Awaitable, Callable, Iterable, Optional
 
-from backend.accounts.context import _unscoped, owner_account_id, unscoped, use_account
+from backend.accounts.context import (
+    _session_list, _unscoped, drop_foreign, flush_pending, owner_account_id, unscoped,
+    use_account,
+)
 
 logger = logging.getLogger("jobnavigator.accounts")
 
@@ -64,21 +67,48 @@ def gmail_account_ids() -> list[Optional[uuid.UUID]]:
 
 
 @contextmanager
-def acting_as(account_id: Optional[uuid.UUID]):
+def acting_as(account_id: Optional[uuid.UUID], session=None):
     """Run the block as `account_id`, scoped even when the caller was `unscoped()`.
     None = the owner (no accounts readable, or a row with no account): QA F4 / R1-06 —
     it also clears `unscoped()` and sets the owner explicitly, so the body never runs
     over every account. With no owner at all (no accounts table yet) the block runs
     with no account context: the non-strict fallback then reads unfiltered, which is
-    the pre-migration single-user behaviour."""
+    the pre-migration single-user behaviour.
+
+    `session` (a Session or a list of them) that the block keeps using across the switch
+    is isolated on the way in and out (QA F10 / R1-05, see `context.use_account`).
+    Better still, give the block a session of its own: `account_session()`."""
+    sessions = _session_list(session)
+    flush_pending(sessions)
     token = _unscoped.set(False)
     try:
         if account_id is None:
             account_id = owner_account_id()
         with use_account(account_id):
+            drop_foreign(sessions)
             yield
+            flush_pending(sessions)
     finally:
         _unscoped.reset(token)
+        drop_foreign(sessions)
+
+
+@contextmanager
+def account_session(account_id: Optional[uuid.UUID], session_factory=None):
+    """`acting_as(account_id)` with a fresh Session of its own, closed afterwards (QA F10 /
+    R1-05). Fan-out code that loaded every account's rows in one batch session uses this
+    for each account's work instead of reusing the batch session: a reused session's
+    identity map (`Session.get`) and lazy loads would still serve the rows it loaded for
+    another account."""
+    if session_factory is None:
+        from backend.models import db as db_mod
+        session_factory = db_mod.SessionLocal
+    with acting_as(account_id):
+        s = session_factory()
+        try:
+            yield s
+        finally:
+            s.close()
 
 
 async def for_each_account(
@@ -86,6 +116,7 @@ async def for_each_account(
     body: Callable[[], Awaitable[None]],
     account_ids: Optional[Iterable[Optional[uuid.UUID]]] = None,
     errors: Optional[list] = None,
+    session=None,
 ) -> None:
     """Await `body()` once per account (default: every account) under `acting_as(id)`.
 
@@ -96,7 +127,10 @@ async def for_each_account(
 
     QA F6 / R4-03: inside a larger run (the saved-job pass of scrape_all) pass an `errors`
     list instead: every failure is appended as {"account", "where", "error"} and nothing
-    is re-raised, so one account cannot fail the whole run."""
+    is re-raised, so one account cannot fail the whole run.
+
+    QA F10 / R1-05: a `session` the bodies share is isolated at every switch (rows of the
+    previous account are dropped from it); bodies that open their own session need none."""
     import backend.job_monitor as jm
     ids = list(account_ids) if account_ids is not None else all_account_ids()
     first_error: Optional[BaseException] = None
@@ -108,7 +142,7 @@ async def for_each_account(
                 logger.info("%s skipped for account %s: it is being removed", label, acc)
                 continue
             try:
-                with acting_as(acc):
+                with acting_as(acc, session=session):
                     await body()
             except Exception as e:
                 # The first failure is re-raised below (and logged with its traceback by

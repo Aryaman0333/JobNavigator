@@ -36,13 +36,50 @@ def _as_uuid(value) -> Optional[uuid.UUID]:
 
 
 @contextmanager
-def use_account(account_id):
-    """Run the block as `account_id` (None clears the context)."""
+def use_account(account_id, session=None):
+    """Run the block as `account_id` (None clears the context).
+
+    QA F10 / R1-05: query criteria follow the context, but a Session's identity map
+    (`Session.get` hits) and lazy loads of rows it already holds do not. When the block
+    keeps using a session (or a list of them) that also lives outside it, pass it as
+    `session`: pending changes are flushed under the context they were made in, and on
+    the way in and out every account-owned row the new context may not see is expunged
+    from it. Code that opens its own session per account needs none of this."""
+    sessions = _session_list(session)
+    flush_pending(sessions)
     token = current_account.set(_as_uuid(account_id))
     try:
+        drop_foreign(sessions)
         yield
+        flush_pending(sessions)
     finally:
         current_account.reset(token)
+        drop_foreign(sessions)
+
+
+def _session_list(session) -> list:
+    if session is None:
+        return []
+    if isinstance(session, (list, tuple, set)):
+        return [s for s in session if s is not None]
+    return [session]
+
+
+def flush_pending(sessions) -> None:
+    """Flush pending changes now, under the context they were made in (QA F10 / R1-05)."""
+    for s in sessions:
+        if s.new or s.dirty or s.deleted:
+            s.flush()
+
+
+def drop_foreign(sessions) -> None:
+    """Expunge from each session the account-owned rows the current context may not see
+    (QA F10 / R1-05; `scoping.drop_foreign_rows`)."""
+    if not sessions:
+        return
+    from backend.accounts.scoping import drop_foreign_rows
+    for s in sessions:
+        drop_foreign_rows(s)
 
 
 @contextmanager

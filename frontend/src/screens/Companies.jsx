@@ -27,8 +27,13 @@ const warnTextOf = (c, downReason) => c.last_error || downReason
   || (c.last_run_warning ? `last run found nothing · ${ago(c.last_scraped_at)}` : null)
 const warnMuted = (c) => !c.active || !!c.warning_acknowledged
 const isAlarming = (c, downReason) => !!warnTextOf(c, downReason) && !warnMuted(c)
-// FastAPI's `detail` is a plain string for HTTPException; append it when present.
-const errSuffix = (e) => (typeof e?.response?.data?.detail === 'string' ? ' — ' + e.response.data.detail : '')
+// FastAPI's `detail` is a plain string for HTTPException; append it when present. Coded
+// errors ({detail: 'name_taken', message}) carry their sentence in `message`.
+const errSuffix = (e) => {
+  const d = e?.response?.data
+  if (typeof d?.message === 'string' && d.message) return ' — ' + d.message
+  return typeof d?.detail === 'string' ? ' — ' + d.detail : ''
+}
 
 // ATS + tier chip colors live in theme.css (.cc-*) so they flip with dark mode.
 const ATS_SLUGS = new Set(['greenhouse', 'workday', 'lever', 'ashby', 'phenom', 'oraclehcm', 'smartrecruiters', 'rippling', 'eightfold', 'talentbrew', 'meta', 'google'])
@@ -817,7 +822,7 @@ function AddModal({ onClose, resumes, personaPopulated, onCreated, pushToast }) 
       })
       onCreated(); onClose()
     } catch (e) {
-      pushToast({ kind: 'error', msg: 'Could not add company' + (typeof e?.response?.data?.detail === 'string' ? ' — ' + e.response.data.detail : '') })
+      pushToast({ kind: 'error', msg: 'Could not add company' + errSuffix(e) })
       setSaving(false)
     }
   }

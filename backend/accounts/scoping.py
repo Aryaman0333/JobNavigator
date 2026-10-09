@@ -15,7 +15,11 @@ join from an unowned entity, a Core table) raises AccountContextMissing (QA F4 /
 Not covered (see MT-PLAN.md "Unscoped call sites"): `text()` statements, Core
 statements executed on a Connection (not through the Session), `bulk_insert_mappings` /
 `bulk_save_objects` (no event fires; `test_qa_f4_scoping.py` forbids them in backend/),
-and `Session.get()` / `Query.get()` hits served from the identity map.
+and `Session.get()` / `Query.get()` hits served from the identity map, plus lazy loads
+from rows loaded under another context (QA F10 / R1-05: a session reused across a switch
+is passed to `use_account` / `acting_as` / `for_each_account` as `session=`, which drops
+other accounts' rows from it via `drop_foreign_rows`; fan-out code uses a fresh session
+per account, `background.account_session`).
 """
 from sqlalchemy import event
 from sqlalchemy.orm import Session, with_loader_criteria
@@ -168,6 +172,35 @@ def install_scoping(marker) -> None:
             return
         for obj in new:
             obj.account_id = account
+
+
+_UNLOADED = object()
+
+
+def drop_foreign_rows(session) -> int:
+    """Expunge from `session`'s identity map every account-owned row of another account
+    than the current context's (QA F10 / R1-05), so `Session.get()` cannot answer with
+    it from memory and no lazy load runs from it. A row whose account is not loaded is
+    dropped too (fail closed). `unscoped()` sees every account: nothing is dropped.
+    Returns how many rows were expunged."""
+    if session is None or _marker is None or is_unscoped():
+        return 0
+    from sqlalchemy import inspect as sa_inspect
+    account = current_account.get()
+    if account is None:
+        try:
+            account = owner_id_for_session(session)
+        except Exception:
+            account = None   # unknown: keep nothing account-owned
+    dropped = 0
+    for obj in list(session.identity_map.values()):
+        if not isinstance(obj, _marker):
+            continue
+        owner = sa_inspect(obj).dict.get("account_id", _UNLOADED)
+        if owner is _UNLOADED or account is None or str(owner) != str(account):
+            session.expunge(obj)
+            dropped += 1
+    return dropped
 
 
 def _accounts_exist(session) -> bool:

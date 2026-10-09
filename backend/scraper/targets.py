@@ -12,7 +12,9 @@ Target keys
 - Search, by mode:
   - keyword (JobSpy): boards, term, location, country, job type, remote flag.
     results_wanted and hours_old are NOT part of the key: the shared fetch uses the
-    largest value among subscribers and each account trims its copy afterwards.
+    largest value among subscribers and each account trims its copy afterwards — but
+    only among subscribers whose values are close (`split_search_targets`, QA F10 /
+    R4-05), so one account's 500 rows / 30 days never inflates another's 50 rows / 1 day.
   - levels_fyi: normalised direct_url + max_pages.
   - freehire: the API query the search builds (direct_url filters + term); results_wanted
     is taken as the max and trimmed per account.
@@ -176,6 +178,70 @@ def search_fetch_params(subscribers: list) -> dict:
     if mode == "freehire":
         return {"results_wanted": max((s.results_wanted or 100) for s in subscribers)}
     return {}
+
+
+# QA F10 / R4-05: when JobSpy subscribers may share one fetch. A shared fetch runs at the
+# largest results_wanted / hours_old of its subscribers, so a big request (long, likely to
+# hit LinkedIn's 429) would degrade every small one sharing it. The rule:
+#   - hours_old: same bucket (≤24 h, ≤3 d, ≤7 d, ≤14 d, ≤30 d, longer);
+#   - results_wanted: within SHARE_RESULTS_RATIO of the smallest in the group.
+# Anything else is a separate fetch (a separate target with the same key plus its fetch
+# values). 50 vs 60 rows → one fetch at 60, the 50 trimmed; 50 vs 500 → two fetches.
+SHARE_HOURS_BUCKETS = (24, 72, 168, 336, 720)
+SHARE_RESULTS_RATIO = 1.5
+
+
+def hours_bucket(hours_old) -> int:
+    hours = hours_old or 24
+    for i, bound in enumerate(SHARE_HOURS_BUCKETS):
+        if hours <= bound:
+            return i
+    return len(SHARE_HOURS_BUCKETS)
+
+
+def _split_keyword_subscribers(subscribers: list) -> list[list]:
+    """Groups of subscribers that may share one JobSpy fetch, each in load order, the
+    groups ordered by their first subscriber."""
+    order = {id(s): i for i, s in enumerate(subscribers)}
+    by_bucket: dict = {}
+    for s in subscribers:
+        by_bucket.setdefault(hours_bucket(s.hours_old), []).append(s)
+    groups = []
+    for rows in by_bucket.values():
+        rows = sorted(rows, key=lambda s: ((s.results_wanted or 50), order[id(s)]))
+        current, floor = [], None
+        for s in rows:
+            wanted = s.results_wanted or 50
+            if current and wanted > floor * SHARE_RESULTS_RATIO:
+                groups.append(current)
+                current = []
+            if not current:
+                floor = wanted
+            current.append(s)
+        if current:
+            groups.append(current)
+    groups = [sorted(g, key=lambda s: order[id(s)]) for g in groups]
+    return sorted(groups, key=lambda g: order[id(g[0])])
+
+
+def split_search_targets(targets: list) -> list:
+    """Split shared keyword (JobSpy) targets whose subscribers ask for very different
+    results_wanted / hours_old into separate fetches (QA F10 / R4-05). Other modes and
+    single-subscriber targets pass through unchanged."""
+    out = []
+    for target in targets:
+        if not target.shared or target.key[:1] != ("keyword",):
+            out.append(target)
+            continue
+        groups = _split_keyword_subscribers(target.subscribers)
+        if len(groups) == 1:
+            out.append(target)
+            continue
+        for group in groups:
+            params = search_fetch_params(group)
+            key = target.key + (("fetch", params["results_wanted"], params["hours_old"]),)
+            out.append(Target(key=key, subscribers=group))
+    return out
 
 
 def is_shareable_search(search) -> bool:

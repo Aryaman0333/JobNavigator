@@ -480,7 +480,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
     {"account", "where", "error"} for the run summary."""
     import uuid
     from backend.accounts.settings import get_setting
-    from backend.accounts.background import acting_as
+    from backend.accounts.background import account_session, acting_as
     from backend.scraper.targets import (
         SharedFetch, company_due, company_key, company_target_due, group_targets, load_active,
     )
@@ -561,17 +561,20 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                 # One company's failure must never take the batch down: the scraper's own errors come
                 # back as a result dict, and anything else (browser death, a DB error while logging,
                 # the company deleted mid-run) is handled here so the loop carries on.
-                with acting_as(account):
+                # QA F10 / R1-05: each subscriber works in a fresh session of its own
+                # account, never in the batch session that loaded every account's rows
+                # (its identity map and lazy loads would ignore the context switch).
+                with account_session(account, SessionLocal) as sdb:
                     try:
                         # QA F6 / T5-01: re-read the row (fresh, under its account). A company
                         # or account deleted since the batch loaded is skipped, never touched.
-                        fresh = db.query(Company).filter(Company.id == cid).first()
+                        fresh = sdb.query(Company).filter(Company.id == cid).first()
                         if fresh is None:
                             skipped.append({"name": cname, "reason": "deleted during the run"})
                             continue
                         company = fresh
                         if account not in external_ids_by_account:
-                            external_ids_by_account[account] = get_existing_external_ids(db)
+                            external_ids_by_account[account] = get_existing_external_ids(sdb)
                         kwargs = {"shared_fetch": shared} if shared is not None else {}
                         result = await scrape_single_career_page(
                             company, shared_browser=shared_browser,
@@ -580,7 +583,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                             skipped.append({"name": cname, "reason": "deleted during the run"})
                             continue
                         auto_depth = company.auto_scoring_depth
-                        record_company_scrape_log(cid, cname, result, db=db, run_id=run_id)
+                        record_company_scrape_log(cid, cname, result, db=sdb, run_id=run_id)
                         scraped += 1
                         if result.get("error"):
                             failed += 1
@@ -600,11 +603,11 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                         # Roll back first: after a failed flush every ORM attribute access
                         # raises PendingRollbackError (T5-01), so nothing below reads `company`.
                         try:
-                            db.rollback()
+                            sdb.rollback()
                         except Exception:
                             logger.exception("Rollback failed")
                         try:
-                            gone = db.query(Company.id).filter(Company.id == cid).first() is None
+                            gone = sdb.query(Company.id).filter(Company.id == cid).first() is None
                         except Exception:
                             gone = False
                         if gone:
@@ -624,6 +627,9 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                         except Exception:
                             logger.exception(f"Could not record the failure of '{cname}'")
 
+            # End the batch session's read transaction and expire its rows, so the next
+            # target's due/deleted checks read fresh values.
+            db.commit()
             await asyncio.sleep(2)
 
         for account in sweep_accounts:

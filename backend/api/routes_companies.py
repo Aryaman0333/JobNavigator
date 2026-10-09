@@ -195,16 +195,77 @@ def list_companies(
     return out
 
 
+class _CompanyInputError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+    def response(self):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=self.status,
+                            content={"detail": self.code, "message": self.message})
+
+
+def _checked_resume_ids(db, value, stored=()) -> list:
+    """QA F10 / T4-01: `selected_resume_ids` holds "persona" and ids of the caller's own
+    base résumés only (the Resume query is account-scoped, so another account's id is not
+    found). Anything else is a 422 `invalid_resume_ids`, nothing written. An id the row
+    already holds that is no longer valid (the résumé was deleted since) is dropped
+    silently instead, so editing an older company never gets stuck on it."""
+    import uuid as _uuid
+    from backend.models.db import Resume
+    from backend.analyzer.cv_scorer import _PERSONA_KEY as PERSONA_ID
+    bad_shape = _CompanyInputError(
+        422, "invalid_resume_ids", "selected_resume_ids must be a list of your base résumé ids")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise bad_shape
+    parsed = {}
+    for v in value:
+        if v == PERSONA_ID:
+            continue
+        try:
+            parsed[v] = _uuid.UUID(v)
+        except ValueError:
+            parsed[v] = None
+    wanted = [u for u in parsed.values() if u is not None]
+    own = {str(r) for (r,) in db.query(Resume.id).filter(
+        Resume.id.in_(wanted), Resume.is_base == True).all()} if wanted else set()  # noqa: E712 (scoped)
+    stored = {str(s) for s in (stored or [])}
+    out, invalid = [], []
+    for v in value:
+        if v == PERSONA_ID or (parsed.get(v) is not None and str(parsed[v]) in own):
+            out.append(v)
+        elif v in stored:
+            continue   # stale id already on the row: dropped
+        else:
+            invalid.append(v)
+    if invalid:
+        raise _CompanyInputError(
+            422, "invalid_resume_ids",
+            f"Not one of your base résumés: {', '.join(invalid[:5])}")
+    return out
+
+
+def _name_taken(name: str) -> _CompanyInputError:
+    return _CompanyInputError(409, "name_taken", f"You already have a company named {name}.")
+
+
 @router.post("")
 def create_company(data: CompanyCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     existing = db.query(Company).filter(func.lower(Company.name) == data.name.lower()).first()
     if existing:
-        raise HTTPException(status_code=409, detail="Company already exists")
+        return _name_taken(data.name).response()
+    try:
+        resume_ids = _checked_resume_ids(db, data.selected_resume_ids)
+    except _CompanyInputError as e:
+        return e.response()
     company = Company(
         name=data.name,
         tier=data.tier,
         scrape_urls=[u for u in data.scrape_urls if u.strip()],
-        selected_resume_ids=data.selected_resume_ids,
+        selected_resume_ids=resume_ids,
         scrape_interval_minutes=data.scrape_interval_minutes,
         title_include_expr=data.title_include_expr,
         title_exclude_keywords=data.title_exclude_keywords,
@@ -217,7 +278,16 @@ def create_company(data: CompanyCreate, background_tasks: BackgroundTasks, db: S
         playwright_enabled=True,
     )
     db.add(company)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # QA F10 / T5-03: a concurrent create of the same name (two tabs) passed the check
+        # above too; the unique constraint caught the second one.
+        db.rollback()
+        taken = db.query(Company.id).filter(func.lower(Company.name) == data.name.lower()).first()
+        if taken is None:
+            raise
+        return _name_taken(data.name).response()
 
     company_id = str(company.id)
     background_tasks.add_task(_fire_h1b_async, company_id)
@@ -260,6 +330,12 @@ def update_company(company_id: str, updates: dict, background_tasks: BackgroundT
         "title_include_expr", "title_exclude_keywords",
         "wait_for_selector", "max_pages", "h1b_slug", "notes", "aliases", "auto_scoring_depth",
     }
+    if "selected_resume_ids" in updates:
+        try:
+            updates = {**updates, "selected_resume_ids": _checked_resume_ids(
+                db, updates["selected_resume_ids"], stored=company.selected_resume_ids)}
+        except _CompanyInputError as e:
+            return e.response()
     for key, value in updates.items():
         if key in allowed:
             setattr(company, key, value)

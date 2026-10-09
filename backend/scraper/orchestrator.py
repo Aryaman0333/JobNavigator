@@ -273,11 +273,11 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
     deleted mid-run is skipped. Errors outside a source's own result (an ingest crash, a
     scoring sweep) come back in `errors` ({"account", "where", "error"}) for the summary."""
     import uuid
-    from backend.accounts.background import acting_as
+    from backend.accounts.background import account_session, acting_as
     from backend.accounts.context import current_account
     from backend.scraper.targets import (
         SharedFetch, group_targets, is_shareable_search, load_active, search_due,
-        search_fetch_params, search_key, search_target_due,
+        search_fetch_params, search_key, search_target_due, split_search_targets,
     )
     db = SessionLocal()
     errors: list = []
@@ -300,8 +300,8 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
             accounts = [a for a in accounts if a in account_ids] or accounts[:1]
         first_run_accounts = []
         for acc in accounts:
-            with acting_as(acc):
-                if db.query(ScrapeLog).count() == 0:
+            with account_session(acc, SessionLocal) as adb:
+                if adb.query(ScrapeLog).count() == 0:
                     first_run_accounts.append(acc)
 
         proxy_url = _get_setting_value(db, "proxy_url", "") or None
@@ -323,7 +323,9 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
 
         def _key(s):
             return search_key(s) if is_shareable_search(s) else (s.search_mode, "own", str(s.id))
-        targets = group_targets(runnable, _key)
+        # QA F10 / R4-05: JobSpy subscribers share one fetch only when their
+        # results_wanted / hours_old are close; otherwise they are separate fetches.
+        targets = split_search_targets(group_targets(runnable, _key))
         logger.info(f"Running {len(runnable)} active searches as {len(targets)} targets")
         sweep_accounts = []
 
@@ -349,10 +351,14 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                       if target.shared else None)
             for search in target.subscribers:
                 sid, sname, account = ident[id(search)]
-                with acting_as(account):
+                # QA F10 / R1-05: each subscriber works in a fresh session of its own
+                # account, never in the batch session that loaded every account's rows
+                # (its identity map and lazy loads would ignore the context switch).
+                with account_session(account, SessionLocal) as sdb:
                     try:
                         # QA F6 / T5-01: a search (or account) deleted mid-run is skipped.
-                        if db.query(Search.id).filter(Search.id == sid).first() is None:
+                        search = sdb.query(Search).filter(Search.id == sid).first()
+                        if search is None:
                             logger.info(f"Search '{sname}' was deleted during the run, skipped")
                             continue
                         try:
@@ -367,7 +373,7 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                             result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
 
                         auto_depth = search.auto_scoring_depth
-                        _record_search_log(db, search, result, run_id=run_id)
+                        _record_search_log(sdb, search, result, run_id=run_id)
                         breakdown = result.get("source_breakdown") or None
                         if source_errors(breakdown):
                             logger.warning(
@@ -389,11 +395,11 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                         # e.g. the ScrapeLog write failed: this subscriber only. Roll back
                         # before anything else touches the session (T5-01).
                         try:
-                            db.rollback()
+                            sdb.rollback()
                         except Exception:
                             pass
                         try:
-                            gone = db.query(Search.id).filter(Search.id == sid).first() is None
+                            gone = sdb.query(Search.id).filter(Search.id == sid).first() is None
                         except Exception:
                             gone = False
                         if gone:
@@ -402,6 +408,9 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                         logger.exception(f"Search '{sname}' ingest failed, others continue: {e}")
                         errors.append({"account": account, "where": f"search {sname}",
                                        "error": f"{type(e).__name__}: {e}"})
+            # End the batch session's read transaction and expire its rows, so the next
+            # target's due/deleted checks read fresh values.
+            db.commit()
 
         for acc in sweep_accounts:
             # Contained: a scoring failure must not abort the rest of scrape_all
@@ -426,15 +435,15 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
 
         # First-run: mark all jobs as seen so only truly new ones trigger alerts
         for acc in first_run_accounts:
-            with acting_as(acc):
+            with account_session(acc, SessionLocal) as adb:
                 try:
-                    unseen = db.query(Job).filter(Job.seen == False).all()
+                    unseen = adb.query(Job).filter(Job.seen == False).all()
                     for j in unseen:
                         j.seen = True
-                    db.commit()
+                    adb.commit()
                     logger.info(f"First run: marked {len(unseen)} existing jobs as seen")
                 except Exception as e:   # one account's bookkeeping, never the run (R4-03)
-                    db.rollback()
+                    adb.rollback()
                     logger.exception(f"First-run mark-seen failed: {e}")
                     errors.append({"account": acc, "where": "first-run mark seen",
                                    "error": f"{type(e).__name__}: {e}"})
