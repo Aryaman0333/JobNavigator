@@ -461,7 +461,8 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
               </div>
               <span role="cell" style={{ flex: '0 0 74px' }}><Tag tone={owner ? 'accent' : 'neutral'}>{owner ? 'Owner' : 'Member'}</Tag></span>
               <span role="cell" style={{ flex: '0 0 96px' }}><Helper title={a.last_active_at || ''}>{self ? 'now' : ago(a.last_active_at)}</Helper></span>
-              <span role="cell" style={{ flex: '0 0 auto', display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end', minWidth: 190 }}>
+              {/* fixed width so the role and last-active columns line up whatever buttons a row has */}
+              <span role="cell" style={{ flex: '0 0 240px', display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
                 <Pill size="sm" onClick={() => setEditing(a)} ariaLabel={self ? 'Rename or recolour your account' : `Rename or recolour ${a.name}`}>Edit</Pill>
                 <Pill size="sm" onClick={() => setPinFor({ account: a, mode: 'set' })}
                   ariaLabel={self ? (a.has_pin ? 'Change your PIN' : 'Set your PIN') : (a.has_pin ? `Reset ${a.name}’s PIN` : `Set ${a.name}’s PIN`)}>
