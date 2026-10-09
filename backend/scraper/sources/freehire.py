@@ -214,7 +214,7 @@ async def run(search: Search, shared=None) -> dict:
                     logger.warning(f"freehire inline analysis failed for {j['title']}: {e}")
 
                 if job.h1b_jd_flag:
-                    logger.info(f"Skipping (body exclusion): {j['title']} @ {j.get('company', '?')}")
+                    logger.info(f"Skipping (body exclusion): {j['title']} @ {job.company or j.get('company') or '?'}")
                     continue
 
                 try:

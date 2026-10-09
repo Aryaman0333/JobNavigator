@@ -232,7 +232,7 @@ def _search_mode_is_valid(search: Search) -> bool:
 
 # ── Fan-out: all active searches + companies ────────────────────────────────
 
-def _record_search_log(db, search: Search, result: dict, run_id=None) -> ScrapeLog:
+def _record_search_log(db, search: Search, result: dict, run_id=None, started_at=None) -> ScrapeLog:
     """The ScrapeLog row of one search run, under the current account. A clean run that
     found nothing is a warning (same rule company scrapes use) so /health/entities can flag
     a search that quietly stopped returning results."""
@@ -240,7 +240,9 @@ def _record_search_log(db, search: Search, result: dict, run_id=None) -> ScrapeL
     # QA F6 / R4-06: every finished attempt stamps last_run_at, also an empty or failed
     # one (the source modules stamp only after a non-empty ingest), so a search with its
     # own interval is not re-run on every tick. The error / warning lives on this row.
-    search.last_run_at = datetime.now(timezone.utc)
+    # QA V-02: the scheduled batch passes its start time, so the interval is measured
+    # start to start (see targets._elapsed_due).
+    search.last_run_at = started_at or datetime.now(timezone.utc)
     log = ScrapeLog(
         search_id=search.id,
         source=_source_for_search(search),
@@ -305,6 +307,11 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                     first_run_accounts.append(acc)
 
         proxy_url = _get_setting_value(db, "proxy_url", "") or None
+        # The scheduler period, for the due checks (QA V-02).
+        try:
+            tick = int(_get_setting_value(db, "scrape_interval_minutes", "60") or 0)
+        except (TypeError, ValueError):
+            tick = 0
 
         runnable = []
         for search in searches:
@@ -339,10 +346,10 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
             target.subscribers = alive
             # Interval check (skipped for manual triggers): due when any subscriber is due.
             if not force:
-                due, _effective = search_target_due(target, now)
+                due, _effective = search_target_due(target, now, tick)
                 if not due:
                     for search in target.subscribers:
-                        _, elapsed, interval = search_due(search, now)
+                        _, elapsed, interval = search_due(search, now, tick)
                         logger.info(f"Search '{search.name}' skipped — next run in {interval - elapsed:.0f}m")
                     continue
 
@@ -373,7 +380,7 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                             result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
 
                         auto_depth = search.auto_scoring_depth
-                        _record_search_log(sdb, search, result, run_id=run_id)
+                        _record_search_log(sdb, search, result, run_id=run_id, started_at=now)
                         breakdown = result.get("source_breakdown") or None
                         if source_errors(breakdown):
                             logger.warning(

@@ -1515,24 +1515,107 @@ def get_run_history(limit: Annotated[int, Query(ge=0, le=1000)] = 30, offset: in
             q = q.filter(JobRun.job_type == job_type)
         if status:
             q = q.filter(JobRun.status == status)
-        runs = q.order_by(JobRun.started_at.desc()).offset(max(0, offset)).limit(limit).all()
-        return [
-            {
-                "id": str(r.id),
-                "job_type": r.job_type,
-                "trigger": r.trigger,
-                "status": r.status,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-                "duration_seconds": r.duration_seconds,
-                "result_summary": r.result_summary,
-                "error": sanitize_run_error(r.error),
-                "meta": r.meta,
-            }
-            for r in runs
-        ]
+        q = q.order_by(JobRun.started_at.desc())
+        member = _member_viewer(db)
+        if member is None or (job_type and job_type != "scrape_all"):
+            runs = q.offset(max(0, offset)).limit(limit).all()
+            return [_run_dict(r) for r in runs]
+        # QA V-03: a member also sees the install-level scheduled scrape_all runs (the
+        # owner's rows), which ingest into every account — merged by start time.
+        upto = max(0, offset) + limit
+        own = q.limit(upto).all()
+        shared = _install_scrape_runs(db, member, status=status, limit=upto)
+        runs = sorted(own + shared, key=lambda r: _utc_ts(r.started_at), reverse=True)
+        runs = runs[max(0, offset):upto]
+        shared_ids = {r.id for r in shared}
+        views = _member_views(db, [r for r in runs if r.id in shared_ids])
+        return [views.get(r.id) or _run_dict(r) for r in runs]
     finally:
         db.close()
+
+
+def _run_dict(r) -> dict:
+    return {
+        "id": str(r.id),
+        "job_type": r.job_type,
+        "trigger": r.trigger,
+        "status": r.status,
+        "started_at": r.started_at.isoformat() if r.started_at else None,
+        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "duration_seconds": r.duration_seconds,
+        "result_summary": r.result_summary,
+        "error": sanitize_run_error(r.error),
+        "meta": r.meta,
+    }
+
+
+def _utc_ts(ts):
+    from datetime import datetime as _d, timezone as _tz
+    if ts is None:
+        return _d.min.replace(tzinfo=_tz.utc)
+    return ts.replace(tzinfo=_tz.utc) if ts.tzinfo is None else ts
+
+
+def _member_viewer(db):
+    """The caller's account when it is a member (None for the owner / no accounts)."""
+    from backend.accounts.settings import member_account
+    try:
+        return member_account(db)
+    except Exception:
+        return None
+
+
+# Message a member sees instead of a failed scheduled run's error, which may name
+# other accounts (the owner sees the full text).
+INSTALL_RUN_FAILED = "The scheduled scrape failed — details are in the owner's Run history"
+
+
+def _install_scrape_runs(db, member, status=None, limit=30, run_id=None) -> list:
+    """The owner's scheduled scrape_all runs (install-level since MT-8: one fetch, ingest
+    into every subscribing account) started after `member` was created, newest first.
+    Read unscoped; the caller turns each into the member's view (_member_views)."""
+    from backend.accounts.context import unscoped, owner_account_id
+    from backend.models.db import Account
+    owner = owner_account_id()
+    if owner is None:
+        return []
+    with unscoped():
+        acc = db.query(Account).filter(Account.id == member).first()
+        q = db.query(JobRun).filter(JobRun.account_id == owner,
+                                    JobRun.job_type == "scrape_all",
+                                    JobRun.trigger == "scheduler")
+        if acc is not None and acc.created_at is not None:
+            q = q.filter(JobRun.started_at >= acc.created_at)
+        if status:
+            q = q.filter(JobRun.status == status)
+        if run_id is not None:
+            q = q.filter(JobRun.id == run_id)
+        runs = q.order_by(JobRun.started_at.desc()).limit(limit).all()
+        for r in runs:
+            db.expunge(r)   # read-only snapshots: never flushed back under the member
+    return runs
+
+
+def _member_views(db, runs) -> dict:
+    """id → the member's view of install-level scheduled runs: timing and status kept,
+    the summary rebuilt from the member's OWN ScrapeLog rows in the run's window, the
+    error replaced by a generic line, meta dropped. Nothing of another account."""
+    from backend.scheduler import own_scrape_summaries
+    if not runs:
+        return {}
+    try:
+        lines = own_scrape_summaries(db, [(r.started_at, r.finished_at) for r in runs])
+    except Exception:
+        logger.exception("member run summary failed")
+        lines = ["Summary unavailable"] * len(runs)
+    out = {}
+    for r, line in zip(runs, lines):
+        d = _run_dict(r)
+        d["result_summary"] = None if r.status == "running" else line
+        d["error"] = INSTALL_RUN_FAILED if (r.status == "failed" or r.error) else None
+        d["meta"] = {"install_run": True}
+        out[r.id] = d
+    return out
 
 
 @app.get("/api/monitor/run/{run_id}", tags=["monitor"], summary="Single run details")
@@ -1541,20 +1624,15 @@ def get_run_detail(run_id: str):
     db = SessionLocal()
     try:
         r = db.query(JobRun).filter(JobRun.id == run_id).first()
-        if not r:
-            raise HTTPException(status_code=404, detail="Run not found")
-        return {
-            "id": str(r.id),
-            "job_type": r.job_type,
-            "trigger": r.trigger,
-            "status": r.status,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-            "duration_seconds": r.duration_seconds,
-            "result_summary": r.result_summary,
-            "error": sanitize_run_error(r.error),
-            "meta": r.meta,
-        }
+        if r:
+            return _run_dict(r)
+        member = _member_viewer(db)
+        if member is not None:
+            # QA V-03: a member may open an install-level scheduled run (its own part).
+            shared = _install_scrape_runs(db, member, limit=1, run_id=run_id)
+            if shared:
+                return _member_views(db, shared)[shared[0].id]
+        raise HTTPException(status_code=404, detail="Run not found")
     finally:
         db.close()
 

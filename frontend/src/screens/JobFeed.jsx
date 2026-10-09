@@ -5,7 +5,7 @@ import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../hooks'
 import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow, ZOOM_MAX, ZOOM_MIN, ZoomFloater } from '../ui'
-import { ANALYZE, SCORE_RESUME, TAILOR, activityText, feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
+import { ANALYZE, NO_BASES_HINT, SCORE_RESUME, TAILOR, activityText, noScoreSource,feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
 import { PICK_KEY, clickMods, clickSelection } from './rowSelect'
 
 const FILTERS_KEY = 'v2_feed_filters'
@@ -251,6 +251,7 @@ export default function V2JobFeed() {
   const [scrapeEvery, setScrapeEvery] = useState(null)   // scrape_interval_minutes, for the never-scraped empty state
   const [scoreBands, setScoreBands] = useState({})       // {"70": n, …} — what each Score preset would leave
   const [resumes, setResumes] = useState([])
+  const [resumesLoaded, setResumesLoaded] = useState(false)   // V-05: the base list answered
   const [stats, setStats] = useState({ arrived_today: 0, unscored: 0 })
   const [picker, setPicker] = useState(null)      // {mode, jobs:[...]} — opens the Create-copy modal
   const [cvMode, setCvMode] = useState('tailor')  // 'tailor' | 'copy' method toggle
@@ -261,6 +262,10 @@ export default function V2JobFeed() {
   const lastIdx = useRef(null)
 
   const [personaAvailable, setPersonaAvailable] = useState(false)
+  const [personaLoaded, setPersonaLoaded] = useState(false)
+  // V-05: nothing to score against (no base résumé, empty Persona) — the score
+  // actions are disabled with a hint instead of opening an empty picker.
+  const cannotScore = noScoreSource({ basesLoaded: resumesLoaded, bases: resumes, personaLoaded, personaHasContent: personaAvailable })
   // Default depth for no-choice paths (one-click SCORE pill etc); the r / ⋯ → Rescore picker is separate.
   // Light until Settings says otherwise.
   const [defaultDepth, setDefaultDepth] = useState('light')
@@ -343,7 +348,7 @@ export default function V2JobFeed() {
   // The screen-level facets settle as one, so the header doesn't flash "0 open roles" before each answers.
   const { ready: facetsReady } = useSettled([
     loadFacets,
-    () => api.get('/resumes?is_base=true').then(({ data }) => setResumes(data || [])).catch(() => { /* silent: only names the résumés in the score modal; scoring reports its own failures */ }),
+    () => api.get('/resumes?is_base=true').then(({ data }) => { setResumes(data || []); setResumesLoaded(true) }).catch(() => { /* silent: only names the résumés in the score modal; scoring reports its own failures */ }),
     () => api.get('/jobs/feed-stats').then(({ data }) => setStats(data)).catch(() => { /* silent: the header counters; refreshStats re-runs them after every action */ }),
   ])
   // One trailing timer shared by both callers (a filter change and a triage refresh),
@@ -850,7 +855,7 @@ export default function V2JobFeed() {
   }), [postZoom])
 
   // persona availability (adds a "Persona" option to score/tailor)
-  useEffect(() => { api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in the score modal */ }) }, [])
+  useEffect(() => { api.get('/persona').then(({ data }) => { setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0); setPersonaLoaded(true) }).catch(() => { /* silent: Persona is one optional entry in the score modal */ }) }, [])
   // `scoring_default_depth` is the setting the scorer itself falls back to; the Feed's one-click path reads it too.
   // `feed_zoom_floater` rides along: same call, and the default is ON, so only an explicit false hides the pill.
   useEffect(() => {
@@ -1042,7 +1047,8 @@ export default function V2JobFeed() {
           <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--muted)', ...headStyle }}>{head ? `${head.total} open roles · ${head.arrived} arrived today · ${head.unscored} not yet scored` : loadError ? DASH : NBSP}</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-          {head && head.unscored > 0 && <Button variant="ai" onClick={openRescoreBulk} title="Pick résumés + depth, then score every unscored job" style={headStyle}>Score {head.unscored} unscored jobs</Button>}
+          {head && head.unscored > 0 && cannotScore && <Helper style={headStyle}>{NO_BASES_HINT}</Helper>}
+          {head && head.unscored > 0 && <Button variant="ai" disabled={cannotScore} onClick={cannotScore ? undefined : openRescoreBulk} title={cannotScore ? NO_BASES_HINT : 'Pick résumés + depth, then score every unscored job'} style={headStyle}>Score {head.unscored} unscored jobs</Button>}
         </div>
       </HeaderRow>
 
@@ -1649,8 +1655,11 @@ export default function V2JobFeed() {
                   <ScoreRing value={null} size="sm" label="No fit" style={{ marginLeft: -4 }} />
                   <div style={{ flex: 1, minWidth: 0, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-2)' }}>Not scored yet</span>
+                    {cannotScore && <span style={{ color: 'var(--muted)' }}>{' · '}{NO_BASES_HINT}</span>}
+                    {!cannotScore && <>
                     <span style={{ color: 'var(--muted)' }}>{' '}Score against your résumés for the </span>
                     <span style={{ color: 'var(--accent)' }}>fit breakdown, requirements and keywords</span>
+                    </>}
                   </div>
                   {/* nothing scored yet, but a tailor is out: the same trailing item the
                       report band gets, so activity is never invisible */}
@@ -1663,7 +1672,7 @@ export default function V2JobFeed() {
                       </div>
                     </>
                   )}
-                  <Button variant="ai" size="xs" onClick={() => openRescore(d)}>Score this role</Button>
+                  <Button variant="ai" size="xs" disabled={cannotScore} title={cannotScore ? NO_BASES_HINT : undefined} onClick={cannotScore ? undefined : () => openRescore(d)}>Score this role</Button>
                 </div>
               )}
               {/* the takeover, and ONLY here: no score at all and a scoring run in flight.

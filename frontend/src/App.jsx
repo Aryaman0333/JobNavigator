@@ -20,6 +20,7 @@ import Persona from './screens/Persona'
 import Stats from './screens/Stats'
 import axios from 'axios'
 import { TitleSync } from './useTitle'
+import { alreadyWelcomed, newUiPending, markWelcomed, markNewUiSeen } from './onboarding'
 
 // design-base/ (lab pages) is git-ignored and may not exist on a clone.
 // import.meta.glob yields an empty map when it matches nothing, so an absent folder costs the two routes rather than breaking the build.
@@ -31,41 +32,8 @@ const labRoute = (name, path) => {
   return <Route path={path} element={<Suspense fallback={null}><Page /></Suspense>} />
 }
 
-// Set once the onboarding overlay has been dismissed; its absence is what makes
-// a browser profile a "first visit" (R4-T0-02).
-const WELCOMED_KEY = 'jobnavigator_welcomed'
-// Two keys an older build wrote for the same fact (and the ones the Playwright
-// harness seeds). Either one means the tour has already been seen, so neither an
-// upgrade nor a test run replays it.
-const LEGACY_WELCOMED = ['jobnavigator_v2_welcome_seen', 'jobnavigator_welcome_seen']
-const alreadyWelcomed = () => {
-  try {
-    if (localStorage.getItem(WELCOMED_KEY) === '1') return true
-    return LEGACY_WELCOMED.some((k) => localStorage.getItem(k) === 'true')
-  } catch { return true }   // storage blocked: never strand someone behind a modal that can't record its own dismissal
-}
-
-// The upgrade overlay (NewUiModal). Versioned rather than boolean, so the
-// next release can raise its own by bumping the value; anything else — an older
-// mark, no mark — means this release has not been announced to this profile yet.
-const NEWUI_KEY = 'jobnavigator_newui_seen'
-const NEWUI_VERSION = '2.0.0'
-// Keys only an EXISTING install can have written. A profile carrying any of them
-// (or the welcome mark itself) used JobNavigator before the redesign, which is
-// exactly the audience for "here is what moved" — a genuinely fresh profile has
-// none of them and gets the first-run tour instead.
-const RETURNING_KEYS = ['jobnavigator_api_key', 'jobnavigator_dark_mode', 'jobnavigator_v2_rail']
-const isReturningUser = () => {
-  try {
-    if (alreadyWelcomed()) return true
-    return RETURNING_KEYS.some((k) => localStorage.getItem(k) !== null)
-  } catch { return false }
-}
-// Same guard as the tour: storage blocked → no overlay, since the dismissal
-// could not be recorded and it would come back on every load.
-const newUiPending = () => {
-  try { return isReturningUser() && localStorage.getItem(NEWUI_KEY) !== NEWUI_VERSION } catch { return false }
-}
+// The overlay storage rules (first-run tour vs upgrade announcement) live in
+// onboarding.js, where they are unit-tested.
 
 // `/v2/feed?job=7#x` → `/feed?job=7#x`; bare `/v2` → `/`. Search and hash ride
 // along because the query is what the old links actually carried. `/classic/…`
@@ -90,9 +58,12 @@ function App() {
   // At most one of the two overlays ever shows. The first-run tour wins: a
   // profile that is BOTH new and carrying a legacy key (the harness seeds an API
   // key into an otherwise empty context) is being onboarded, not upgraded — so
-  // this stays mounted-but-unrendered and, crucially, unmarked, which is what
-  // makes it appear on the visit after the tour was dismissed.
+  // this stays unrendered while the tour is up, and dismissing a first-run tour
+  // marks it seen (V-01), so a brand-new user never gets the upgrade overlay.
   const [showNewUi, setShowNewUi] = useState(newUiPending)
+  // V-01: whether this load is a never-welcomed profile — its tour dismissal also
+  // marks the upgrade announcement seen, so a brand-new user never gets it.
+  const [firstRun] = useState(() => !alreadyWelcomed())
 
   // Handle ?cv= query param tracer links — redirect to /cv/{token} on backend
   useEffect(() => {
@@ -197,15 +168,15 @@ function App() {
       {changed && !showLogin && <AccountChanged account={changed} />}
       {showWelcome && !showLogin && !showPicker && !changed && (
         <WelcomeModal onClose={() => {
-          try { sessionStorage.removeItem('jn:welcome') } catch {}
           // durable, so the tour does not come back on the next visit
-          try { localStorage.setItem(WELCOMED_KEY, '1') } catch {}
+          markWelcomed(firstRun)
+          if (firstRun) setShowNewUi(false)
           setShowWelcome(false)
         }} />
       )}
       {showNewUi && !showWelcome && !showLogin && !showPicker && !changed && (
         <NewUiModal onClose={() => {
-          try { localStorage.setItem(NEWUI_KEY, NEWUI_VERSION) } catch {}
+          markNewUiSeen()
           setShowNewUi(false)
         }} />
       )}

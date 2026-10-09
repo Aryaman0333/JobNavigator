@@ -8,8 +8,9 @@ user's own storage is never involved:
      key) sees "Welcome to the new JobNavigator" once. Closing it — by Escape,
      the scrim, the ✕ or "Got it", all one `onClose` — writes
      `jobnavigator_newui_seen = '2.0.0'` and the next load is clean.
-  2. A GENUINELY FRESH profile sees the first-run tour instead — and the upgrade
-     modal is NOT marked seen, so it is still owed on the visit after the tour.
+  2. A GENUINELY FRESH profile sees the first-run tour instead; the upgrade modal
+     is not marked seen while the tour is up, and closing the tour marks it seen
+     (V-01), so the visit after the tour is clean.
   3. The classic dashboard was removed in 3.0: `/classic` and `/classic/<screen>`
      redirect to the same path without the prefix (query and hash kept), so old
      bookmarks land on the screen of the same name.
@@ -110,11 +111,15 @@ def _newui(c):
             pg.wait_for_timeout(450)
             c.eq('dismissing the tour writes jobnavigator_welcomed',
                  C.ls_get(pg, 'jobnavigator_welcomed'), '1')
+            # V-01: a first-run tour marks the upgrade announcement seen too
+            c.eq('dismissing the first-run tour marks the upgrade seen',
+                 C.ls_get(pg, SEEN_KEY), VERSION)
 
-            # the visit AFTER the tour: no longer new, still unannounced
+            # the visit AFTER the tour: a brand-new user is never "upgraded"
             C.clear_log(pg)
             C.go(pg, '/feed', settle=900)
-            c.check('the upgrade modal is owed on the next visit', C.body_has(pg, NEWUI_TITLE))
+            c.check('no upgrade modal on the next visit', not C.body_has(pg, NEWUI_TITLE))
+            c.check('and no tour either', not _tour_only(pg))
         finally:
             pg.context.close()
 

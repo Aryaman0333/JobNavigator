@@ -155,7 +155,6 @@ def _scrape_summary(since, all_accounts: bool = False, exclude_accounts=()) -> s
     from backend.models.db import Account, ScrapeLog, Search, Company
     db = SessionLocal()
     try:
-        from backend.scraper.orchestrator import empty_sources, source_errors
         with (unscoped() if all_accounts else nullcontext()):
             rows = db.query(ScrapeLog).filter(ScrapeLog.ran_at >= since).all()
             if exclude_accounts:
@@ -174,39 +173,74 @@ def _scrape_summary(since, all_accounts: bool = False, exclude_accounts=()) -> s
             names = {a.id: a.name for a in db.query(Account).all()}
             account_part = "per account: " + ", ".join(
                 f"{names.get(acc, 'unknown')} +{n}" for acc, n in per_account.items())
-
-        def _live(r):
-            return not (
-                (r.search_id is not None and r.search_id in off_searches)
-                or (r.company_id is not None and r.company_id in off_companies)
-            )
-
-        live = [r for r in rows if _live(r)]
-        found = sum(r.new_jobs or 0 for r in rows)
-        failed = sum(1 for r in live if r.error)
-        # is_warning has three causes and they are not the same thing. A refused
-        # board, a board that returned nothing while the others worked, and a run
-        # that found nothing each get their own count — a run with 40 jobs from
-        # LinkedIn and 0 from Indeed is not "empty".
-        bad_source = {r.id for r in live if not r.error and source_errors(r.source_breakdown)}
-        quiet_source = {r.id for r in live if not r.error and r.id not in bad_source
-                        and empty_sources(r.source_breakdown)}
-        warned = sum(1 for r in live if r.is_warning and not r.error
-                     and r.id not in bad_source and r.id not in quiet_source)
-        parts = [f"{len(rows)} source{'' if len(rows) == 1 else 's'}", f"+{found} new"]
-        if failed:
-            parts.append(f"{failed} failed")
-        if bad_source:
-            parts.append(f"{len(bad_source)} with a failed board")
-        if quiet_source:
-            parts.append(f"{len(quiet_source)} with a board that returned nothing")
-        if warned:
-            parts.append(f"{warned} empty")
-        if account_part:
-            parts.append(account_part)
-        return " - ".join(parts)
+        return _format_scrape_summary(rows, off_searches, off_companies, account_part)
     finally:
         db.close()
+
+
+def _format_scrape_summary(rows, off_searches, off_companies, account_part: str = "") -> str:
+    """The summary line from ScrapeLog rows (see _scrape_summary)."""
+    from backend.scraper.orchestrator import empty_sources, source_errors
+    if not rows:
+        return "No sources ran"
+    def _live(r):
+        return not (
+            (r.search_id is not None and r.search_id in off_searches)
+            or (r.company_id is not None and r.company_id in off_companies)
+        )
+
+    live = [r for r in rows if _live(r)]
+    found = sum(r.new_jobs or 0 for r in rows)
+    failed = sum(1 for r in live if r.error)
+    # is_warning has three causes and they are not the same thing. A refused
+    # board, a board that returned nothing while the others worked, and a run
+    # that found nothing each get their own count — a run with 40 jobs from
+    # LinkedIn and 0 from Indeed is not "empty".
+    bad_source = {r.id for r in live if not r.error and source_errors(r.source_breakdown)}
+    quiet_source = {r.id for r in live if not r.error and r.id not in bad_source
+                    and empty_sources(r.source_breakdown)}
+    warned = sum(1 for r in live if r.is_warning and not r.error
+                 and r.id not in bad_source and r.id not in quiet_source)
+    parts = [f"{len(rows)} source{'' if len(rows) == 1 else 's'}", f"+{found} new"]
+    if failed:
+        parts.append(f"{failed} failed")
+    if bad_source:
+        parts.append(f"{len(bad_source)} with a failed board")
+    if quiet_source:
+        parts.append(f"{len(quiet_source)} with a board that returned nothing")
+    if warned:
+        parts.append(f"{warned} empty")
+    if account_part:
+        parts.append(account_part)
+    return " - ".join(parts)
+
+
+def own_scrape_summaries(db, windows: list) -> list:
+    """QA V-03: for each (started, finished) window of an install-level scheduled
+    scrape_all, the summary line of the CURRENT account's own ScrapeLog rows in it
+    (scoped reads only — a member sees its own part of the run, nothing of another
+    account's). `finished` None = still running (up to now)."""
+    from backend.models.db import ScrapeLog, Search, Company
+    if not windows:
+        return []
+
+    def _utc(ts):
+        if ts is not None and ts.tzinfo is None:   # SQLite / legacy rows are naive UTC
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+
+    now = datetime.now(timezone.utc)
+    spans = [(_utc(s), _utc(f) or now) for s, f in windows]
+    lo = min(s for s, _ in spans)
+    hi = max(f for _, f in spans)
+    rows = db.query(ScrapeLog).filter(ScrapeLog.ran_at >= lo, ScrapeLog.ran_at <= hi).all()
+    off_searches = {s.id for s in db.query(Search).filter(Search.active == False).all()}  # noqa: E712
+    off_companies = {c.id for c in db.query(Company).filter(Company.active == False).all()}  # noqa: E712
+    out = []
+    for s, f in spans:
+        mine = [r for r in rows if r.ran_at is not None and s <= _utc(r.ran_at) <= f]
+        out.append(_format_scrape_summary(mine, off_searches, off_companies))
+    return out
 
 
 def _activity_summary(since, log_type: str, noun: str, plural: str = None) -> str:

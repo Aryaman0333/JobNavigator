@@ -103,7 +103,8 @@ def _ats_labels_for(urls) -> str:
     return ", ".join(sorted(labels))
 
 
-def record_company_scrape_log(company_id, company_name: str, result: dict, db=None, run_id=None):
+def record_company_scrape_log(company_id, company_name: str, result: dict, db=None, run_id=None,
+                              scraped_at=None):
     """Write the per-company ScrapeLog row for one career-page scrape; single source of truth for both the batch path and the manual single-company trigger so /api/scrape-log, is_warning and /health/entities see manual runs like scheduled ones. `db` lets a caller reuse an open session. The row belongs to the current account; `run_id` links the rows of every account one shared fetch fed (MT-8)."""
     own_db = db is None
     if own_db:
@@ -117,7 +118,10 @@ def record_company_scrape_log(company_id, company_name: str, result: dict, db=No
             # Deleted while it was being scraped (T5-01): no row to log against.
             logger.info(f"'{company_name}' no longer exists, no scrape log written")
             return
-        comp.last_scraped_at = datetime.now(timezone.utc)
+        # QA V-02: the scheduled batch passes its start time (`scraped_at`), so the
+        # next tick measures the interval from start to start, not from the end of a
+        # fetch that ran minutes into the previous tick.
+        comp.last_scraped_at = scraped_at or datetime.now(timezone.utc)
         is_warning = (
             result.get("jobs_found", 0) == 0
             and not result.get("error")
@@ -346,7 +350,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
 
                 if job.h1b_jd_flag:
                     _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"
-                    logger.info(f"Skipping job (body exclusion): {j['title']} @ {j.get('company', '?')} — matched phrase: {_phrase!r}")
+                    logger.info(f"Skipping job (body exclusion): {j['title']} @ {job.company or company_name} — matched phrase: {_phrase!r}")
                     job.status = "ignored"
 
                 try:
@@ -550,7 +554,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                         logger.debug(f"Skipping {company.name}: scraped {elapsed:.0f}m ago (interval={interval}m)")
                         skipped.append({
                             "name": company.name,
-                            "reason": f"not due ({elapsed:.0f}m of {interval}m)",
+                            "reason": f"not due ({elapsed:.1f}m of {interval}m)",
                         })
                     continue
 
@@ -583,7 +587,8 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                             skipped.append({"name": cname, "reason": "deleted during the run"})
                             continue
                         auto_depth = company.auto_scoring_depth
-                        record_company_scrape_log(cid, cname, result, db=sdb, run_id=run_id)
+                        record_company_scrape_log(cid, cname, result, db=sdb, run_id=run_id,
+                                                  scraped_at=now)
                         scraped += 1
                         if result.get("error"):
                             failed += 1
@@ -622,7 +627,7 @@ async def scrape_career_pages(force: bool = False, account_ids=None,
                             record_company_scrape_log(
                                 cid, cname,
                                 {"jobs_found": 0, "new_jobs": 0, "error": f"{type(e).__name__}: {e}", "duration": 0},
-                                run_id=run_id,
+                                run_id=run_id, scraped_at=now,
                             )
                         except Exception:
                             logger.exception(f"Could not record the failure of '{cname}'")

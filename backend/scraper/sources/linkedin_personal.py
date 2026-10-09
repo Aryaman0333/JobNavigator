@@ -884,7 +884,7 @@ async def run(search: Search) -> dict:
 
                 if job.h1b_jd_flag:
                     _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"
-                    logger.info(f"Skipping job (body exclusion): {j['title']} @ {j.get('company', '?')} — matched phrase: {_phrase!r}")
+                    logger.info(f"Skipping job (body exclusion): {j['title']} @ {job.company or j.get('company') or '?'} — matched phrase: {_phrase!r}")
                     continue
 
                 # Use savepoint so one duplicate doesn't kill the whole batch

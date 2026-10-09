@@ -22,7 +22,9 @@ Target keys
     they are never shared: their key carries the search id.
 
 Due-ness: a target is due when any subscriber is due under its own interval (custom, or
-the global default), so the effective interval is the shortest among subscribers. A due
+the global default), so the effective interval is the shortest among subscribers. Time is
+measured from the start of the batch that last ran it (the scheduled batch stamps its own
+start, QA V-02) and a target runs on the scheduler tick nearest its due time. A due
 target feeds every subscriber. A manual "run now" on one search/company does not use this
 module: it fetches for, and feeds, only the account that pressed it.
 
@@ -256,25 +258,37 @@ def _as_utc(ts):
     return ts
 
 
-def company_due(company, now: datetime, global_interval: int):
-    """(due, elapsed_minutes|None, interval) for one company under its own interval."""
+def _elapsed_due(elapsed: float, interval: int, tick: int) -> bool:
+    """QA V-02: the scheduler only looks on its ticks (every `tick` minutes), so a
+    target runs on the tick NEAREST its due time: due once at most half a tick is
+    left. A strict `elapsed >= interval` skipped every other tick whenever the
+    interval was a multiple of the tick, because the previous stamp lands a little
+    after the previous tick (the default 60 m interval ran every 120 m)."""
+    return elapsed >= interval - max(tick or 0, 0) / 2
+
+
+def company_due(company, now: datetime, global_interval: int, tick: Optional[int] = None):
+    """(due, elapsed_minutes|None, interval) for one company under its own interval.
+    `tick` is the scheduler period, by default the global interval (they are the same
+    setting)."""
     interval = company.scrape_interval_minutes or global_interval
     last = _as_utc(company.last_scraped_at)
     if not last:
         return True, None, interval
     elapsed = (now - last).total_seconds() / 60
-    return elapsed >= interval, elapsed, interval
+    return _elapsed_due(elapsed, interval, global_interval if tick is None else tick), elapsed, interval
 
 
-def search_due(search, now: datetime):
+def search_due(search, now: datetime, tick: int = 0):
     """(due, elapsed_minutes|None, interval). A search without its own interval runs on
-    every scheduler tick (the global scrape interval), as before."""
+    every scheduler tick (the global scrape interval), as before. `tick` is that
+    interval (see _elapsed_due)."""
     interval = search.run_interval_minutes or 0
     last = _as_utc(search.last_run_at)
     if not interval or not last:
         return True, None, interval
     elapsed = (now - last).total_seconds() / 60
-    return elapsed >= interval, elapsed, interval
+    return _elapsed_due(elapsed, interval, tick), elapsed, interval
 
 
 # ── Targets ──────────────────────────────────────────────────────────────────
@@ -318,8 +332,8 @@ def company_target_due(target: Target, now: datetime, global_interval: int):
     return any(s[0] for s in states), min(s[2] for s in states)
 
 
-def search_target_due(target: Target, now: datetime):
-    states = [search_due(s, now) for s in target.subscribers]
+def search_target_due(target: Target, now: datetime, tick: int = 0):
+    states = [search_due(s, now, tick) for s in target.subscribers]
     return any(s[0] for s in states), min(s[2] for s in states)
 
 

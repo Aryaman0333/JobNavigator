@@ -335,7 +335,7 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
         return None
 
     if len(cv_texts) < 1:
-        logger.warning("No CVs uploaded, skipping scoring")
+        logger.info("No base résumés, skipping scoring")
         return None
 
     # Read prompts + model from settings (quick DB read, released immediately)
@@ -539,6 +539,27 @@ async def analyze_unscored_jobs(status: str = "saved"):
         _sweep_claims.difference_update(attempted)
 
 
+# QA V-05: an account without base résumés is a normal state (a member that copied
+# only companies), not a problem. Say so once at info per account, then stay quiet
+# (debug) on every later tick until a base résumé appears.
+NO_BASE_RESUMES_MESSAGE = "No base résumés in this account, skipping the scoring pass"
+_no_resume_logged: set = set()
+
+
+def _account_key():
+    from backend.accounts.context import current_account
+    return current_account.get()
+
+
+def _log_no_base_resumes():
+    key = _account_key()
+    if key in _no_resume_logged:
+        logger.debug(NO_BASE_RESUMES_MESSAGE)
+        return
+    _no_resume_logged.add(key)
+    logger.info(NO_BASE_RESUMES_MESSAGE)
+
+
 async def _analyze_unscored_jobs(status: str, attempted: set):
     from types import SimpleNamespace
     from sqlalchemy import or_, func
@@ -552,8 +573,9 @@ async def _analyze_unscored_jobs(status: str, attempted: set):
     try:
         default_cv_texts = _get_default_resume(db) or _get_resume_texts(db)
         if not default_cv_texts:
-            logger.warning("No CVs uploaded yet, skipping analysis pipeline")
+            _log_no_base_resumes()
             return
+        _no_resume_logged.discard(_account_key())
 
         # For "new" jobs, only score those from entities with auto_scoring_depth != 'off'
         auto_score_filter = None
