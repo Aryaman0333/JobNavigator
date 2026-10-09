@@ -129,6 +129,10 @@ def _newui(c):
                               ('/classic/cover-letters', '/cover-letters')):
                 C.go(pg, old, settle=900)
                 got = pg.evaluate('() => location.pathname + location.search + location.hash')
+                # /feed opens its first job and appends ?job=<id> when the feed has rows;
+                # only the path matters for the redirect.
+                if want == '/feed':
+                    got = got.split('?', 1)[0]
                 c.eq(f'{old} lands on {want}', got, want)
             c.check('no classic shell is left behind', pg.locator('aside.bg-slate-900').count() == 0)
         finally:
