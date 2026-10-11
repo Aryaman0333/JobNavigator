@@ -55,6 +55,8 @@ const KEYLESS = ['claude_code', 'codex_cli', 'antigravity_cli', 'ollama', 'lmstu
 // Provider settings whose value 'claude_code' makes the Claude Code token row relevant.
 const CLAUDE_CODE_SLOTS = ['llm_provider', 'scoring_llm_provider', 'llm_fallback_provider', 'cv_tailor_llm_provider',
   'cover_letter_llm_provider', 'autofill_llm_provider', 'email_llm_provider']
+const SLOT_NAMES = { llm_provider: 'Primary', scoring_llm_provider: 'Scoring', llm_fallback_provider: 'Scoring fallback', cv_tailor_llm_provider: 'Tailoring',
+  cover_letter_llm_provider: 'Cover letters', autofill_llm_provider: 'Autofill', email_llm_provider: 'Email classification' }
 
 // The value rows' fields are `Input` now (adornment slot and all), so the box
 // lives in ui.jsx with every other field. What is left here is the type these
@@ -493,6 +495,8 @@ export default function Settings() {
     const people = !hasMe ? [] : isOwner
       ? [['accounts', 'People', 'Accounts', '', [], 'accounts']]
       : [['account', 'You', 'Your account', '', [], 'account']]
+    // which LLM slots currently run on a given provider (override slots default to empty = follow Primary)
+    const usedBy = (prov) => CLAUDE_CODE_SLOTS.filter((k) => val(k, k === 'llm_provider' ? 'claude_api' : '') === prov).map((k) => SLOT_NAMES[k])
     return [
       ...people,
       // The one group that isn't a DB setting: both rows live in this browser's localStorage (theme.js), so they take no `key` and never PATCH /settings.
@@ -511,9 +515,15 @@ export default function Settings() {
           info: "Providers: Claude API, Claude Code, Codex CLI (your ChatGPT subscription), OpenAI, Ollama (local), LM Studio (local), OpenRouter. The model list shows that provider's models, including any you added under Model catalog. OpenRouter covers every vendor with one key but has no prompt-cache discount. The two subscription CLIs are meant for attended use and have plan limits; a limit hit fails over to the fallback without retrying. Reasoning effort sets how much the model thinks before it answers: higher is slower and costs more. 'default effort' keeps the model's own default. Not every model takes every level; Claude Code steps down to the nearest level, the APIs return an error. Antigravity CLI sets effort in the model name, and Ollama and LM Studio have no effort setting." },
         B('API key', 'API key for the primary provider.', 'llm_api_key', { secret: true, mono: true, w: '340px', hide: () => KEYLESS.includes(val('llm_provider', 'claude_api')) }),
         // MT-15: the Claude Code login per account. Shown while some slot uses Claude Code, to the owner and to a member whose Models section is its own.
-        B('Claude Code token', member ? 'Your own Claude subscription: paste the token from claude setup-token. Empty uses the owner’s.' : 'Token from claude setup-token. Empty uses CLAUDE_CODE_OAUTH_TOKEN from .env.',
+        B('Claude Code token', (member ? 'Your own Claude subscription: paste the token from claude setup-token.' : 'Token from claude setup-token. Empty uses CLAUDE_CODE_OAUTH_TOKEN from .env.')
+            + (usedBy('claude_code').length ? ` Used by: ${usedBy('claude_code').join(', ')}.` : ''),
           'claude_code_oauth_token', { secret: true, mono: true, w: '340px',
-            hide: () => !CLAUDE_CODE_SLOTS.some((k) => val(k, k === 'llm_provider' ? 'claude_api' : '') === 'claude_code') || (member && sidx?.byId?.models?.mode !== 'own') }),
+            hide: () => !usedBy('claude_code').length || (member && sidx?.byId?.models?.mode !== 'own') }),
+        // The other two subscription CLIs keep their login in a folder, not a token: show how to log in.
+        { kind: 'note', label: 'Codex CLI login', help: `No token to paste: Codex signs in once from a terminal. Used by: ${usedBy('codex_cli').join(', ')}.`,
+          text: 'docker compose exec backend python -m backend.scripts.cli_login codex "<account name>"', hide: () => !usedBy('codex_cli').length },
+        { kind: 'note', label: 'Antigravity CLI login', help: `No token to paste: Antigravity signs in once from a terminal. Used by: ${usedBy('antigravity_cli').join(', ')}.`,
+          text: 'docker compose exec backend python -m backend.scripts.cli_login agy "<account name>"', hide: () => !usedBy('antigravity_cli').length },
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
           { info: 'Used only when the scoring call fails or is rate-limited. One retry, then the job stays unscored until the next run. Choose a cheap model from a different provider than the primary.' }),
@@ -1073,6 +1083,8 @@ function Row({ r, ctx }) {
             <ActionBtn label={r.btnLabel} state={trig[r.label] || ''} onClick={() => runAction(r.label, r.act)} ariaLabel={`${r.label} — ${r.btnLabel}`} />
           </>
         )
+      case 'note':
+        return <Mono style={{ fontSize: 11.5, userSelect: 'all', overflowWrap: 'anywhere' }}>{r.text}</Mono>
       case 'apikey':
         return <ApiKeyRow value={val('dashboard_api_key')} save={save} flash={flash} />
       case 'readonly': {
