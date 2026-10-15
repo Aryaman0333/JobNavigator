@@ -25,7 +25,7 @@ async def run_search(search: Search, proxy_url: Optional[str] = None, shared=Non
     """Dispatch one search to its source module by search.search_mode; returns the module's result dict, or raises ValueError on an unknown mode.
 
     `shared` (MT-8 `SharedFetch`) is passed only to the shareable modes (keyword,
-    levels_fyi, freehire) and only when set, so a single search calls exactly as before."""
+    levels_fyi, freehire, caribbeanjobs) and only when set, so a single search calls exactly as before."""
     mode = search.search_mode
     extra = {"shared": shared} if shared is not None else {}
 
@@ -51,7 +51,7 @@ async def run_search(search: Search, proxy_url: Optional[str] = None, shared=Non
         return await run(search)
     if mode == "caribbeanjobs":
         from backend.scraper.sources.caribbeanjobs import run
-        return await run(search)
+        return await run(search, **extra)
     if mode == "linkedin_extension":
         # No scraper — jobs come via POST /api/jobs/linkedin-import (Chrome extension push)
         return {

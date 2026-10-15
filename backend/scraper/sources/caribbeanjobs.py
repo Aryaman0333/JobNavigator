@@ -20,9 +20,10 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 
 from backend.models.db import (
-    SessionLocal, Job, Search, Setting, get_existing_external_ids,
+    SessionLocal, Job, Search, get_existing_external_ids,
     get_global_title_exclude,
 )
+from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
@@ -286,18 +287,26 @@ async def _fetch_listings(client: httpx.AsyncClient, base: dict, keywords: list[
     return out
 
 
-async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict]) -> dict:
+async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None) -> dict:
     """Fetch each kept job's page (bounded concurrency) and parse the full description. Keyed by
-    URL; a detail that fails leaves the listing row's short blurb in place."""
+    URL; a detail that fails leaves the listing row's short blurb in place.
+
+    `cache` (MT-8): the detail pages a shared fetch's earlier subscribers already read, keyed
+    by URL. A page in it is not fetched again; every page read here is added to it."""
     sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
     details: dict[str, dict] = {}
 
     async def one(job: dict) -> None:
+        if cache is not None and job["url"] in cache:
+            details[job["url"]] = dict(cache[job["url"]])
+            return
         async with sem:
             try:
                 resp = await _get(client, job["url"])
                 if resp.status_code == 200:
                     details[job["url"]] = _parse_detail(resp.text, job)
+                    if cache is not None:
+                        cache[job["url"]] = dict(details[job["url"]])
                 await asyncio.sleep(0.15)   # be polite to a small board
             except Exception as e:
                 logger.debug(f"caribbeanjobs detail failed for {job['url']}: {e}")
@@ -323,19 +332,39 @@ def _title_kept(title: str, include_kw: list, exclude_kw: list) -> tuple[bool, s
     return True, None
 
 
-async def run(search: Search) -> dict:
-    """Full scrape entry point. Fetch listings → filter → fetch details → save to DB."""
+async def _fetch_listings_for(search: Search, wanted: int) -> list[dict]:
+    """The listing rows of one search's query plan, in a client of its own (the shared fetch
+    runs this once for every subscriber)."""
+    base, keywords = _query_plan(search)
+    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
+        return await _fetch_listings(client, base, keywords, wanted)
+
+
+async def run(search: Search, shared=None) -> dict:
+    """Full scrape entry point. Fetch listings → filter → fetch details → save to DB.
+
+    `shared` (MT-8 SharedFetch): the listing pages are fetched once, at the largest
+    results_wanted among subscribers, and cut to this search's own; detail pages are fetched
+    per subscriber (only its own new candidates) but each page at most once per shared
+    fetch, through the fetch's `memo`."""
     start = time.time()
+    wanted = search.results_wanted or 100
     try:
         db = SessionLocal()
         try:
             include_kw, exclude_kw = _title_filters(search, db)
             global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
-            base, keywords = _query_plan(search)
+            detail_cache = None
+            if shared is not None:
+                listings = await shared.get(
+                    lambda: _fetch_listings_for(search, shared.params.get("results_wanted") or wanted))
+                listings = listings[:wanted]
+                detail_cache = shared.memo.setdefault("caribbeanjobs_details", {})
 
             async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
-                listings = await _fetch_listings(client, base, keywords, search.results_wanted or 100)
+                if shared is None:
+                    listings = await _fetch_listings_for(search, wanted)
                 candidates = []
                 seen = 0
                 for j in listings:
@@ -349,7 +378,9 @@ async def run(search: Search) -> dict:
                     if make_external_id(j["company"], j["title"], j["url"]) in existing_ids:
                         continue
                     candidates.append(j)
-                details = await _fetch_details(client, candidates)
+                # A single search calls exactly as before; only a shared fetch passes its cache.
+                extra = {"cache": detail_cache} if detail_cache is not None else {}
+                details = await _fetch_details(client, candidates, **extra)
 
             logger.info(f"caribbeanjobs '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
 
@@ -453,11 +484,11 @@ async def preview(search: Search, db) -> dict:
         from collections import Counter
         company_breakdown = dict(Counter(j["company"] for j in unique if j.get("company")).most_common(20))
 
-        body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+        body_raw = get_setting(db, "body_exclusion_phrases")
         body_phrases = []
-        if body_row and body_row.value:
+        if body_raw:
             try:
-                body_phrases = json.loads(body_row.value)
+                body_phrases = json.loads(body_raw)
             except json.JSONDecodeError:
                 pass
 

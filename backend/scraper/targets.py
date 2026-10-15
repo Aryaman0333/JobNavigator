@@ -18,6 +18,8 @@ Target keys
   - levels_fyi: normalised direct_url + max_pages.
   - freehire: the API query the search builds (direct_url filters + term); results_wanted
     is taken as the max and trimmed per account.
+  - caribbeanjobs: the URL filters + the keyword alternatives in order; results_wanted as
+    for freehire. Detail pages are read once per shared fetch (`SharedFetch.memo`).
   - linkedin_personal, jobright and anything unknown read the account's own session, so
     they are never shared: their key carries the search id.
   - apify is never shared either (deliberately, not by omission): every run is paid with
@@ -63,11 +65,16 @@ class SharedFetch:
     scrape has one global concurrency limit), so no lock is needed.
 
     `params` holds the fetch-side values that differ from a subscriber's own, e.g.
-    {"results_wanted": 200, "hours_old": 72} (the max among subscribers)."""
+    {"results_wanted": 200, "hours_old": 72} (the max among subscribers).
+
+    `memo` is scratch space a source may keep across its subscribers for follow-up fetches
+    that are the same for everyone (caribbeanjobs: detail pages by URL). Only raw, account-
+    independent page data goes in it, never anything an ingest filtered or wrote."""
 
     def __init__(self, key=None, params: Optional[dict] = None):
         self.key = key
         self.params = dict(params or {})
+        self.memo: dict = {}
         self.done = False
         self.calls = 0           # how many times the fetch really ran (0 or 1)
         self.duration = 0.0
@@ -169,6 +176,11 @@ def search_key(search) -> tuple:
     if mode == "freehire":
         from backend.scraper.sources.freehire import _base_params
         return ("freehire", tuple(sorted(_base_params(search).items())))
+    if mode == "caribbeanjobs":
+        from backend.scraper.sources.caribbeanjobs import _query_plan
+        base, keywords = _query_plan(search)
+        # Keyword order is kept: the merged listing is cut to results_wanted in query order.
+        return ("caribbeanjobs", tuple(sorted(base.items())), tuple(_norm(k) for k in keywords))
     # linkedin_personal / jobright (the account's own session), apify (each account pays
     # with its own token, see the module docstring) and unknown modes
     return (mode, "own", str(search.id))
@@ -182,7 +194,7 @@ def search_fetch_params(subscribers: list) -> dict:
             "results_wanted": max((s.results_wanted or 50) for s in subscribers),
             "hours_old": max((s.hours_old or 24) for s in subscribers),
         }
-    if mode == "freehire":
+    if mode in ("freehire", "caribbeanjobs"):
         return {"results_wanted": max((s.results_wanted or 100) for s in subscribers)}
     return {}
 
@@ -253,7 +265,7 @@ def split_search_targets(targets: list) -> list:
 
 def is_shareable_search(search) -> bool:
     # Never "apify": each account's run is billed to its own token (see the docstring).
-    return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire")
+    return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire", "caribbeanjobs")
 
 
 # ── Due-ness ─────────────────────────────────────────────────────────────────
