@@ -202,8 +202,10 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
     effort = _supported_effort(provider, cfg["effort"])
     cap = _output_cap(provider, max_tokens, effort)
 
-    if provider in ("claude_api", "openai", "openrouter"):
+    if provider in _KEYED_PROVIDERS:
         _require_own_key(provider, api_key)
+    if provider == "opencode_go":
+        api_key = _opencode_go_key(api_key)
     if provider == "claude_api":
         async for c in _stream_claude(prompt, system, model, api_key, cap, cached_prefix, effort):
             yield c
@@ -325,7 +327,20 @@ async def _stream_openai(prompt, system, model, api_key, max_tokens, base_url=No
             yield delta
 
 
-_KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter": "OpenRouter"}
+_KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter": "OpenRouter",
+                    "opencode_go": "OpenCode Go"}
+OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY"
+
+
+def _opencode_go_key(api_key: str) -> str:
+    """The Go key to send: the resolved setting, else OPENCODE_API_KEY for the owner and members
+    on 'inherit'. A member on its own Models never reaches the env key, which is the owner's
+    (QA F5); `_require_own_key` has already refused it an empty key."""
+    if api_key:
+        return api_key
+    if _own_login_account() is not None:
+        return ""
+    return os.getenv(OPENCODE_GO_KEY_ENV, "")
 
 
 def _require_own_key(provider: str, api_key: str) -> None:
@@ -874,6 +889,7 @@ async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, 
                             effort: str = "") -> dict:
     """OpenCode Go over its OpenAI-compatible HTTP API. A Go API key is required, so a missing
     key is a config error, not a retry."""
+    api_key = _opencode_go_key(api_key)
     try:
         return await _call_openai(prompt, system, model, api_key, max_tokens,
                                   base_url=OPENCODE_GO_BASE_URL, effort=effort)
@@ -884,7 +900,7 @@ async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, 
         body = str(e)
         if status == 401 or "Missing API key" in body:
             raise NonRetryableLLMError(
-                "OpenCode Go needs an API key — paste it under Settings › AI") from e
+                "OpenCode Go needs an API key — paste it under Settings › Models") from e
         if status in (400, 404) and "model" in body.lower():
             # Go serves only some models on /chat/completions; GPT and Grok use /responses, and
             # MiniMax and Qwen use the Anthropic /messages API.

@@ -247,7 +247,7 @@ def test_member_own_models_without_a_key_resolves_empty(test_db, owner_key):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider,label", [("claude_api", "Claude API"), ("openai", "OpenAI"),
-                                            ("openrouter", "OpenRouter")])
+                                            ("openrouter", "OpenRouter"), ("opencode_go", "OpenCode Go")])
 async def test_member_own_models_call_fails_clearly_without_a_key(test_db, owner_key, monkeypatch, provider, label):
     from backend.analyzer import llm_client as L
     a, b = owner_key
@@ -322,6 +322,58 @@ async def test_member_own_models_with_its_key_dispatches_it(test_db, owner_key, 
     with use_account(b):
         await L.call_llm("p", "s", 10)
     assert seen == ["sk-member"]
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_env_key_reaches_owner_and_inherit_never_a_member_on_own(test_db, owner_key, monkeypatch):
+    """#25: OPENCODE_API_KEY is the owner's. Owner and 'inherit' fall back to it; a member on its
+    own Models uses only its own Go key (call and streaming autofill), else a clear error."""
+    from backend.analyzer import llm_client as L
+    from backend.api import routes_llm as rl
+    a, b = owner_key
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-env-go")
+    set_setting(test_db, "llm_provider", "opencode_go")
+    set_setting(test_db, "llm_model", "glm-5.3")
+    set_setting(test_db, "llm_api_key", "")
+    set_setting(test_db, "autofill_llm_provider", "")
+    seen = []
+
+    async def fake_call(prompt, system, model, api_key, max_tokens, base_url=None, extra_body=None, effort=""):
+        seen.append((api_key, base_url))
+        return {"text": "ok", "usage": {}}
+
+    async def fake_stream(prompt, system, model, api_key, max_tokens, base_url=None, effort=""):
+        seen.append((api_key, base_url))
+        yield "ok"
+
+    monkeypatch.setattr(L, "_call_openai", fake_call)
+    monkeypatch.setattr(L, "_stream_openai", fake_stream)
+    with use_account(a):
+        await L.call_llm("p", "s", 10)
+        assert [c async for c in L.call_autofill_llm_stream("p", "s")] == ["ok"]
+    with use_account(b):                          # inherit: the owner's config, env included
+        await L.call_llm("p", "s", 10)
+    assert seen == [("sk-env-go", L.OPENCODE_GO_BASE_URL)] * 3
+
+    seen.clear()
+    _policy(test_db, b, "models", "own")
+    _own(test_db, b, "llm_provider", "opencode_go")
+    with use_account(b):
+        with pytest.raises(L.NonRetryableLLMError, match="No API key for OpenCode Go"):
+            await L.call_llm("p", "s", 10)
+        with pytest.raises(L.NonRetryableLLMError, match="No API key for OpenCode Go"):
+            async for _ in L.call_autofill_llm_stream("p", "s"):
+                pass
+        assert L._opencode_go_key("") == ""       # never the env key
+        assert rl._resolve_key(test_db, "opencode_go") == ""     # catalog: public list, no owner key
+    with use_account(a):
+        assert rl._resolve_key(test_db, "opencode_go") == "sk-env-go"
+    assert seen == []
+
+    _own(test_db, b, "llm_api_key", "sk-member-go")
+    with use_account(b):
+        await L.call_llm("p", "s", 10)
+    assert seen == [("sk-member-go", L.OPENCODE_GO_BASE_URL)]
 
 
 def test_model_catalog_never_uses_the_owner_key_for_a_member_on_own(test_db, owner_key):

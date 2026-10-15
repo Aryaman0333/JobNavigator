@@ -63,7 +63,7 @@ Scrape career pages and aggregators, score jobs against your résumés with an L
 │                              AI RESUME SCORING                              │
 │                                                                             │
 │   Providers ── Claude API/CLI, Codex CLI, Antigravity CLI, OpenCode Go,     │
-│                OpenRouter, Ollama                                           │
+│                OpenAI, OpenRouter, Ollama                                   │
 │   Depths ───── Light (scores only) or Full (report + keyword analysis)      │
 │   Multi ────── Score against multiple resumes, compare fit per role         │
 │                                                                             │
