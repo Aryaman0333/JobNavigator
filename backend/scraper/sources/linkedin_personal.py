@@ -79,6 +79,11 @@ class LinkedInRateLimitError(RuntimeError):
     pass
 
 
+class LinkedInSessionExpiredError(RuntimeError):
+    """Raised when a collection lands on the login wall: every later collection would too."""
+    pass
+
+
 async def _handle_rate_limit(page, context_msg: str = "") -> bool:
     """If rate-limited, wait progressively and return True. Returns False if not rate-limited."""
     if not await _check_rate_limit(page):
@@ -152,8 +157,10 @@ async def _voyager_me_status(page) -> int:
 # A URL that only a signed-out visitor lands on. An anonymous /feed redirects here, so the URL
 # check alone catches the common case; `li_at` (below) covers the public surfaces it does not.
 _SIGNED_OUT_URLS = ("/login", "/checkpoint", "/authwall", "/signup")
-# Surfaces LinkedIn also serves to anonymous visitors, so the cookie is what separates them.
-_SIGNED_IN_SURFACES = ("/feed", "/mynetwork", "/jobs")
+# Surfaces only a session reaches, so with the cookie they count as signed in. /jobs is not one:
+# LinkedIn serves public job pages there to anyone, so a revoked `li_at` still in the jar would
+# pass, and every run would scrape empty collections instead of logging in again.
+_SIGNED_IN_SURFACES = ("/feed", "/mynetwork")
 
 
 async def _has_auth_cookie(context) -> bool:
@@ -171,7 +178,7 @@ async def _is_logged_in(page, context=None) -> bool:
     app-level blocks), and a false negative used to send every run into a credential login that
     an already-authenticated browser redirects straight back to the feed — the fill then times
     out on a username field that never renders. So when /me refuses, a signed-in surface
-    (/feed, /mynetwork, /jobs) reached with the `li_at` cookie still counts as logged in."""
+    (/feed, /mynetwork) reached with the `li_at` cookie still counts as logged in."""
     try:
         url = page.url or ""
     except Exception:
@@ -192,9 +199,10 @@ _LOGIN_EMAIL = 'input[autocomplete="username"]:visible'
 _LOGIN_PASSWORD = 'input[autocomplete="current-password"]:visible'
 
 
-async def _fill_login_form(page, email: str, password: str, timeout: int = 10000):
-    """Fill the credentials on an open LinkedIn login page and submit them. The short wait keeps
-    a page that is redirecting to the feed from stalling for the full default timeout."""
+async def _fill_login_form(page, email: str, password: str, timeout: int = 30000):
+    """Fill the credentials on an open LinkedIn login page and submit them. `_login` passes a
+    short wait so a page redirecting to the feed doesn't stall; the manual session refresh keeps
+    the full wait for a slow login page."""
     await page.locator(_LOGIN_EMAIL).first.fill(email, timeout=timeout)
     await asyncio.sleep(random.uniform(0.5, 1.0))
     pwd = page.locator(_LOGIN_PASSWORD).first
@@ -222,7 +230,7 @@ async def _login(page, context, email: str, password: str):
         return
 
     try:
-        await _fill_login_form(page, email, password)
+        await _fill_login_form(page, email, password, timeout=10000)
     except Exception:
         # Waiting for the username field can time out because the browser is being redirected to
         # the feed (already signed in), so the form never renders. Landing on a signed-in page is
@@ -743,6 +751,12 @@ async def _scrape_collection(page, url: str, collection_name: str) -> list[dict]
         await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(random.uniform(*DELAY_PAGE_LOAD))
 
+        # A session that died mid-run lands on the login wall: say so instead of reporting 0 jobs.
+        if any(part in (page.url or "") for part in _SIGNED_OUT_URLS):
+            raise LinkedInSessionExpiredError(
+                f"LinkedIn session expired — {collection_name} redirected to the login page."
+            )
+
         if await _handle_rate_limit(page, f"page {page_num + 1}"):
             rate_limit_hits += 1
             await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
@@ -809,6 +823,8 @@ async def run(search: Search) -> dict:
             try:
                 coll_jobs = await _scrape_collection(page, coll_url, coll_name)
                 all_jobs.extend(coll_jobs)
+            except LinkedInSessionExpiredError:
+                raise
             except Exception as coll_err:
                 logger.warning(f"Collection '{coll_name}' error (continuing): {coll_err}")
 
