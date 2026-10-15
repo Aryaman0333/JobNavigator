@@ -1,8 +1,10 @@
 // The Apify board list belongs to the backend (GET /searches/apify-boards), so
 // a board the frontend has never heard of must still render, default and label.
+// (3.0 port: the classic SearchManager half now targets screens/Searches.jsx.)
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import SearchManager from '../classic/SearchManager'
+import { MemoryRouter } from 'react-router-dom'
+import Searches from '../screens/Searches'
 import { apifySourceLabel, boardLabel } from '../apifyBoards'
 
 vi.mock('../api', () => ({
@@ -26,9 +28,10 @@ describe('Apify board helpers', () => {
   })
 })
 
-describe('Apify boards · classic SearchManager', () => {
+describe('Apify boards · Searches', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionStorage.clear()
     api.get.mockImplementation((path) => {
       if (path === '/searches/apify-boards') return Promise.resolve({ data: BOARDS })
       if (path === '/searches/countries') return Promise.resolve({ data: [{ value: 'usa', label: 'United States' }] })
@@ -37,21 +40,25 @@ describe('Apify boards · classic SearchManager', () => {
     api.post.mockResolvedValue({ status: 200, data: {} })
   })
 
+  const chip = (name) => screen.getAllByRole('button').find((b) => b.textContent.endsWith(name))
+
   it('offers every backend board, picks the first by default and saves the choice', async () => {
-    render(<SearchManager />)
-    fireEvent.click(screen.getByText('New Search'))
-    fireEvent.change(screen.getByDisplayValue('Keyword (JobSpy)'), { target: { value: 'apify' } })
+    render(<MemoryRouter><Searches /></MemoryRouter>)
+    fireEvent.click((await screen.findAllByText('+ New search'))[0])
+    fireEvent.click(await screen.findByLabelText('Mode'))
+    fireEvent.click(await screen.findByRole('option', { name: /Apify/ }))
 
-    const box = (name) => screen.getByText(name, { selector: 'label' }).querySelector('input')
-    await waitFor(() => expect(box('Glassdoor')).toBeTruthy())
-    expect(box('Glassdoor').checked).toBe(true)
-    expect(box('Indeed').checked).toBe(false)
-    expect(screen.getByText(': Glassdoor hint', { exact: false })).toBeTruthy()
-    expect(screen.queryByText(': Indeed hint', { exact: false })).toBeNull()   // hints only for ticked boards
+    await waitFor(() => expect(chip('Glassdoor')).toBeTruthy())
+    expect(chip('Glassdoor').getAttribute('aria-pressed')).toBe('true')
+    expect(chip('Indeed').getAttribute('aria-pressed')).toBe('false')
+    expect(screen.getByText('Glassdoor: Glassdoor hint')).toBeTruthy()
+    expect(screen.queryByText('Indeed: Indeed hint')).toBeNull()   // hints only for ticked boards
 
-    fireEvent.click(box('Indeed'))
-    expect(screen.getByText(': Indeed hint', { exact: false })).toBeTruthy()
-    fireEvent.click(screen.getByTitle('Save'))
+    fireEvent.click(chip('Indeed'))
+    expect(screen.getByText('Indeed: Indeed hint')).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText('e.g. TPM roles — Tier 1'), { target: { value: 'PM' } })
+    fireEvent.change(screen.getByPlaceholderText('e.g. technical program manager'), { target: { value: 'pm' } })
+    fireEvent.click(screen.getByText('Create search'))
     await waitFor(() => expect(api.post).toHaveBeenCalled())
     const [, payload] = api.post.mock.calls.find(([p]) => p === '/searches')
     expect(payload.search_mode).toBe('apify')

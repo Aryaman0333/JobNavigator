@@ -36,7 +36,8 @@ from backend.countries import (
     DEFAULT_COUNTRY, compose_location, indeed_host, normalize_country, split_country_suffix,
     supported_countries,
 )
-from backend.models.db import SessionLocal, Job, Search, Setting, get_existing_external_ids
+from backend.accounts.settings import get_setting
+from backend.models.db import SessionLocal, Job, Search, get_existing_external_ids
 from backend.analyzer.salary_extractor import extract_salary
 from backend.scraper._shared.analysis import analyze_inline
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
@@ -383,8 +384,7 @@ async def _run_actor(client: httpx.AsyncClient, actor: str, body: dict, limit: i
 def _token() -> str:
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == TOKEN_SETTING).first()
-        token = (row.value or "").strip() if row else ""
+        token = (get_setting(db, TOKEN_SETTING) or "").strip()
     finally:
         db.close()
     if not token:
@@ -480,9 +480,9 @@ def _rejection(j: dict, include_kw, exclude_kw, global_ex: set, search_ex: set) 
 
 
 def _body_phrases(db) -> list:
-    row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+    raw = get_setting(db, "body_exclusion_phrases")
     try:
-        return json.loads(row.value) if row and row.value else []
+        return json.loads(raw) if raw else []
     except json.JSONDecodeError:
         return []
 

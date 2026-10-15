@@ -9,6 +9,15 @@ from backend.models.db import Job, Search, Setting
 from backend.scraper.sources import apify
 
 
+@pytest.fixture
+def api_client(api_client, test_db):
+    """Open access for the route tests: with INITIAL_API_KEY set in the environment the
+    middleware wants a key unless the dashboard_api_key row exists and is empty."""
+    test_db.add(Setting(key="dashboard_api_key", value=""))
+    test_db.commit()
+    return api_client
+
+
 def _search(**kw):
     base = dict(name="t", search_mode="apify", search_term="program manager", location="",
                 country="usa", is_remote=None, hours_old=24, results_wanted=30,

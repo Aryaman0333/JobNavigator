@@ -94,6 +94,9 @@ _SECTIONS = [
         "tracer_links_enabled", "tracer_links_base_url", "tracer_links_url_style"]),
     ("jobright", "Jobright.ai", POLICY, OWN, ["jobright"], [
         "jobright_email", "jobright_password", "jobright_session_id", "jobright_session_obtained_at"]),
+    # PR #28: a paid credential. 'own' (default) = the member's own token or none, never the
+    # owner's; 'inherit' = the member's Apify searches bill the owner's Apify account.
+    ("apify", "Apify", POLICY, OWN, ["apify"], ["apify_api_key"]),
     ("linkedin", "LinkedIn", POLICY, OWN, ["linkedin"], [
         "linkedin_email", "linkedin_password", "linkedin_mock_email", "linkedin_mock_password",
         "linkedin_use_mock_account"]),
