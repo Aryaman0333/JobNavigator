@@ -71,13 +71,30 @@ async def test_other_errors_still_retry(monkeypatch):
         await llm_client._call_opencode_go("p", "s", "x", "sk", 10)
 
 
-def test_output_cap_gives_opencode_go_reasoning_headroom():
-    """OpenCode Go's models reason by default and the picker has no effort to lower, so without
-    headroom the whole cap went to reasoning and returned no text."""
+def test_output_cap_gives_opencode_go_headroom_only_with_an_effort():
+    """Same rule as OpenAI/OpenRouter: headroom only when an effort is set, so a Go model whose
+    output ceiling is below max_tokens + 16,000 is not refused on every call."""
     from backend.analyzer.llm_client import _output_cap, REASONING_HEADROOM
-    assert _output_cap("opencode_go", 600, "") == 600 + REASONING_HEADROOM
+    assert _output_cap("opencode_go", 600, "") == 600
     assert _output_cap("opencode_go", 600, "none") == 600
-    assert _output_cap("openai", 600, "") == 600   # OpenAI still requires an effort for headroom
+    assert _output_cap("opencode_go", 600, "high") == 600 + REASONING_HEADROOM
+    assert _output_cap("openai", 600, "") == 600
+    assert _output_cap("openai", 600, "high") == 600 + REASONING_HEADROOM
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sends_the_plain_cap_to_go(monkeypatch):
+    """Go has no effort values, so a left-over effort is dropped and the cap goes out unpadded."""
+    captured = {}
+
+    async def fake_openai(prompt, system, model, api_key, max_tokens, base_url=None, extra_body=None, effort=""):
+        captured.update(max_tokens=max_tokens, effort=effort)
+        return {"text": "ok", "usage": {}}
+
+    monkeypatch.setattr(llm_client, "_call_openai", fake_openai)
+    await llm_client._dispatch(provider="opencode_go", model="glm-5.3", api_key="sk-go",
+                               prompt="p", system="s", max_tokens=600, effort="high")
+    assert captured == {"max_tokens": 600, "effort": ""}
 
 
 def test_client_sends_identity_and_session_headers(monkeypatch):
@@ -112,6 +129,40 @@ async def test_a_model_on_another_endpoint_is_named(monkeypatch):
     monkeypatch.setattr(llm_client, "_call_openai", boom)
     with pytest.raises(NonRetryableLLMError, match="chat/completions"):
         await llm_client._call_opencode_go("p", "s", "grok-4.7", "sk", 10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,message", [
+    (400, "Model grok-4.7 is not supported on this endpoint"),
+    (404, "{'error': {'code': 'model_not_found', 'message': 'not served'}}"),
+    (400, "Unknown model: qwen-4-coder"),
+    (404, "The model `deepseek-v9.1-flash` was not found"),
+])
+async def test_unknown_model_errors_are_named(monkeypatch, status, message):
+    async def boom(*_a, **_k):
+        raise _StatusError(status, f"Error code: {status} - {message}")
+
+    monkeypatch.setattr(llm_client, "_call_openai", boom)
+    with pytest.raises(NonRetryableLLMError, match="does not serve"):
+        await llm_client._call_opencode_go("p", "s", "x", "sk", 10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [
+    "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
+    "max_tokens is too large: 30000. This model supports at most 16384 completion tokens.",
+    "Unsupported parameter: 'max_tokens' is not supported with this model.",
+    "Invalid value for 'temperature' with this model",
+])
+async def test_other_400s_that_mention_the_model_take_the_normal_path(monkeypatch, message):
+    """A context-length or max_tokens 400 is not "model not served": it re-raises as is, so
+    call_llm retries and the fallback model can take over, as for every other provider."""
+    async def boom(*_a, **_k):
+        raise _StatusError(400, f"Error code: 400 - {message}")
+
+    monkeypatch.setattr(llm_client, "_call_openai", boom)
+    with pytest.raises(_StatusError):
+        await llm_client._call_opencode_go("p", "s", "glm-5.3", "sk", 10)
 
 
 @pytest.mark.asyncio

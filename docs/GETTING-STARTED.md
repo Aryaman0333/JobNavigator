@@ -42,7 +42,7 @@ Pick the model from the list (or search the provider's catalog under Model catal
 - Codex CLI: `docker compose exec backend codex login --device-auth`, follow the URL, then `docker compose exec backend codex login status` to confirm. The login persists in the `codex_auth` Docker volume.
 - Claude Code: `docker compose exec backend claude setup-token`, follow the URL and paste the code; it prints a long-lived token. Put it in `.env` as `CLAUDE_CODE_OAUTH_TOKEN=...` and run `docker compose up -d backend` so the container picks it up (or paste it into Settings › Models › Claude Code token).
   - Several accounts: a member whose Models section is set to Own logs in with its own subscription. `docker compose exec backend python -m backend.scripts.cli_login <codex|agy|claude> "<account name>"` prints the exact command for that account (Codex and Antigravity get their own login folder; for Claude Code the member pastes its `claude setup-token` token into Settings › Models).
-- OpenCode Go: no container login. It is an OpenAI-compatible endpoint, so just paste the Go API key under **Settings › AI** and pick **OpenCode Go**. A member whose Models section is Own pastes its own Go key there; it never uses the owner's.
+- OpenCode Go: no container login. It is an OpenAI-compatible endpoint, so just paste the Go API key under **Settings › AI** and pick **OpenCode Go**. A member whose Models section is Own pastes its own Go key there; it never uses the owner's. Go is a coding-agent plan meant for the key holder's own use, so on a household install each member should set their own key rather than inherit the owner's.
 
 When a plan limit is hit, the call fails over to the fallback provider instead of retrying.
 

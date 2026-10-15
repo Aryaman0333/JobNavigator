@@ -29,7 +29,7 @@ REASONING_EFFORTS = {
 # by default (Sonnet 5, Opus 5.5, GPT-6 Sol). A cap sized for the answer alone can then go entirely to
 # reasoning and return no text, so these calls get this much more room. Tokens are billed as used.
 REASONING_HEADROOM = 16000
-_CAPPED_PROVIDERS = ("claude_api", "openai", "openrouter")
+_CAPPED_PROVIDERS = ("claude_api", "openai", "openrouter", "opencode_go")
 
 
 def _get_setting(db, key, default=""):
@@ -254,6 +254,7 @@ OPENROUTER_HEADERS = {"HTTP-Referer": "https://github.com/vesaias/JobNavigator",
 # its own user agent and to send a stable session id per conversation (`x-opencode-session`) for
 # routing and prompt caching; a missing session id is a 400 MissingSessionID, and a generic SDK
 # user agent is what the docs warn against.
+# The current Go docs list https://opencode.ai/inference/go/openai/v1 (chat) and /inference/go/v1/models.
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_USER_AGENT = "JobNavigator/1.0 (+https://github.com/vesaias/JobNavigator)"
 _OPENCODE_SESSION = str(uuid.uuid4())   # stable for this backend process
@@ -301,12 +302,10 @@ def _output_cap(provider: str, max_tokens: int, effort: str) -> int:
     REASONING_HEADROOM. OpenAI and OpenRouter get it only when an effort is set: with the
     empty default a non-reasoning model such as gpt-4o (16,384 output ceiling) would be
     sent max_completion_tokens=16,600 and refuse every call. "none" never reasons.
-    opencode_go also reasons by default and its picker has no effort to lower, so it always
-    gets the room too."""
+    opencode_go follows the OpenAI rule: a Go model whose output ceiling is below the headroom
+    would refuse every call, and Go has no effort values yet, so today it gets none."""
     if effort == "none":
         return max_tokens
-    if provider == "opencode_go":
-        return max_tokens + REASONING_HEADROOM
     if provider not in _CAPPED_PROVIDERS:
         return max_tokens
     if provider != "claude_api" and not effort:
@@ -885,6 +884,21 @@ async def _call_openai(prompt: str, system: str, model: str, api_key: str, max_t
     }
 
 
+# A 400/404 counts as "this model is not served here" only when the message says the model is
+# unknown, unsupported or not found. Context-length, max_tokens and other request 400s that merely
+# mention "model" take the normal error path (retry, then the fallback model).
+_UNKNOWN_MODEL_RE = re.compile(
+    r"model_not_found|no such model|(?:unknown|unsupported|invalid) model"
+    r"|\bmodel\b.{0,80}?\b(?:does not exist|doesn't exist|not found|not supported|is not available|unsupported|unknown)",
+    re.IGNORECASE)
+_REQUEST_LIMIT_RE = re.compile(r"context (?:length|window)|max_tokens|max_completion_tokens|maximum|parameter",
+                               re.IGNORECASE)
+
+
+def _is_unknown_model_error(body: str) -> bool:
+    return bool(_UNKNOWN_MODEL_RE.search(body)) and not _REQUEST_LIMIT_RE.search(body)
+
+
 async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, max_tokens: int,
                             effort: str = "") -> dict:
     """OpenCode Go over its OpenAI-compatible HTTP API. A Go API key is required, so a missing
@@ -901,7 +915,7 @@ async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, 
         if status == 401 or "Missing API key" in body:
             raise NonRetryableLLMError(
                 "OpenCode Go needs an API key — paste it under Settings › Models") from e
-        if status in (400, 404) and "model" in body.lower():
+        if status in (400, 404) and _is_unknown_model_error(body):
             # Go serves only some models on /chat/completions; GPT and Grok use /responses, and
             # MiniMax and Qwen use the Anthropic /messages API.
             raise NonRetryableLLMError(
