@@ -100,6 +100,7 @@ def _counts(pg):
 @case('mt-flows')
 def _mt_flows(c):
     os.makedirs(SHOTS, exist_ok=True)
+    C.single_account_only(c)   # 2+ accounts: skip before touching anything
     st, data = _api('GET', '/accounts')
     if st != 200 or not isinstance(data, dict):
         c.skip(f'GET /api/accounts answered {st}')

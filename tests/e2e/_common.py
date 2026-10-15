@@ -16,6 +16,22 @@ import h  # noqa: E402  the harness, copied in beside these files
 BASE = h.BASE
 KEY = h.KEY
 LIVE = os.environ.get('JN_E2E_LIVE') == '1'
+
+# Pin h.owner_mode() now, before any case runs: with 2+ accounts every context and
+# h.api call acts as the owner; on a one-account install nothing changes, even after
+# an mt-* case adds its scratch member (it expects the picker then).
+try:
+    h.owner_mode()
+except Exception as _e:  # backend down: h.api retries the decision on first use
+    print(f'_common: account check deferred ({_e})', flush=True)
+
+
+def single_account_only(ctx):
+    """Skip the calling case unless the install has exactly one account right now
+    (the mt-* cases add and remove a scratch member and refuse to touch a real one)."""
+    n = h.account_count()
+    if n != 1:
+        ctx.skip(f'install has {n} accounts — this case needs exactly one (it adds and removes its own member)')
 PREFIX = 'ZZE'
 # Both global overlays have to be marked seen for a driving case to reach the app
 # at all: `jobnavigator_welcomed` retires the first-run tour, and this retires the
@@ -57,6 +73,8 @@ def raw_ctx(b, ls=None, width=1440, height=900, api_key=True):
     ctx.add_init_script(
         f"try{{if(!localStorage.getItem({json.dumps(_SEED_GUARD)})){{"
         f"localStorage.setItem({json.dumps(_SEED_GUARD)},'1');{sets}}}}}catch(e){{}}")
+    if api_key:
+        h.owner_cookie(ctx)   # 2+ accounts: the owner's jn_account, so no picker
     return ctx
 
 

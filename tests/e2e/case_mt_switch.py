@@ -78,6 +78,7 @@ def _wait_text(pg, text, ms=8000):
 @case('mt-switch')
 def _mt_switch(c):
     os.makedirs(SHOTS, exist_ok=True)
+    C.single_account_only(c)   # 2+ accounts: skip before touching anything
     st, data = _api('GET', '/accounts')
     if st != 200 or not isinstance(data, dict):
         c.skip(f'GET /api/accounts answered {st}')
