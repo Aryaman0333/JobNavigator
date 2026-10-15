@@ -44,6 +44,11 @@ async def run_search(search: Search, proxy_url: Optional[str] = None, shared=Non
     if mode == "freehire":
         from backend.scraper.sources.freehire import run
         return await run(search, **extra)
+    if mode == "apify":
+        # Never shared across accounts (no SharedFetch): each account runs and pays
+        # with its own token. See targets.is_shareable_search.
+        from backend.scraper.sources.apify import run
+        return await run(search)
     if mode == "linkedin_extension":
         # No scraper — jobs come via POST /api/jobs/linkedin-import (Chrome extension push)
         return {
@@ -97,7 +102,11 @@ SOURCE_LABELS = {
 
 def source_label(key: str) -> str:
     """"zip_recruiter" -> "ZipRecruiter"; unknown boards keep their raw key."""
-    return SOURCE_LABELS.get(str(key or "").lower(), str(key or ""))
+    k = str(key or "").lower()
+    if k in SOURCE_LABELS:
+        return SOURCE_LABELS[k]
+    from backend.scraper.sources.apify import PRESETS   # Apify boards name themselves
+    return PRESETS[k].label if k in PRESETS else str(key or "")
 
 
 def source_errors(breakdown) -> list:
@@ -158,7 +167,7 @@ def run_is_warning(result: dict, breakdown) -> bool:
 
 
 def filtered_count(breakdown) -> int:
-    """Postings the title filters rejected, summed across boards; rejected postings are still written as `ignored` for dedup, so a run's stored rows can exceed its "N seen" count."""
+    """Postings the title filters rejected, summed across boards; JobSpy still writes them as `ignored` for dedup (so its stored rows can exceed "N seen"), Apify does not store them."""
     if not isinstance(breakdown, dict):
         return 0
     return sum(int(v.get("filtered") or 0) for v in breakdown.values()
@@ -212,6 +221,7 @@ def _source_for_search(search: Search) -> str:
         "linkedin_personal": "linkedin_personal",
         "jobright": "jobright",
         "freehire": "freehire",
+        "apify": "apify",
     }
     return source_map.get(search.search_mode, search.search_mode)
 
@@ -227,6 +237,9 @@ def _search_mode_is_valid(search: Search) -> bool:
         return True
     if mode == "freehire":
         return bool(search.direct_url or search.search_term)
+    if mode == "apify":
+        from backend.scraper.sources.apify import configured_presets
+        return bool((search.search_term or "").strip() and configured_presets(search))
     return False
 
 
