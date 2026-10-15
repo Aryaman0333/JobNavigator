@@ -12,7 +12,7 @@ vi.mock('../api', () => ({
 }))
 const api = (await import('../api')).default
 
-const ZIP_TEXT = 'the server refuses the requests that this scraper sends: HTTP 403'
+const ZIP_TEXT = 'the US site redirects this location to a regional ZipRecruiter site, which this scraper does not read: HTTP 307'
 const SEARCH = {
   id: 's1', name: 'TPM', search_mode: 'keyword', search_term: 'tpm', location: '',
   country: 'usa', active: true, sources: ['indeed', 'zip_recruiter'],

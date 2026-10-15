@@ -102,24 +102,28 @@ def _condense_error(msg: str) -> str:
 # change helps. Each signature maps to a stable text. Every other failure keeps
 # its condensed text, so a failure nobody diagnosed stays visible as it is.
 # The frontend flags the same two boards in frontend/src/sourceBlocks.js.
+ZIP_RECRUITER_REDIRECTED = "the US site redirects this location to a regional ZipRecruiter site, which this scraper does not read: HTTP 307"
 ZIP_RECRUITER_BLOCKED = "the server refuses the requests that this scraper sends: HTTP 403"
 # The capture sees the log line, not the page. A real page with zero jobs logs the
-# same warning, so the Google text names the likely cause, not a certain one.
+# same error, so the Google text names the likely cause, not a certain one.
 GOOGLE_BLOCKED = "the server returned no job data, which is usually a JavaScript check page that this scraper cannot read"
 _KNOWN_BLOCKS = {
-    # jobspy/ziprecruiter/__init__.py logs the 403 body at ERROR. "forbidden aa"
-    # comes from the server, "forbidden cf-waf" from Cloudflare in front of it.
-    "zip_recruiter": (re.compile(r"forbidden (aa|cf-waf)", re.I), ZIP_RECRUITER_BLOCKED),
-    # jobspy/google/__init__.py logs this at WARNING when page 1 has no cursor.
-    "google": (re.compile(r"initial cursor not found", re.I), GOOGLE_BLOCKED),
+    # jobspy/ziprecruiter/__init__.py logs only "response status code <n>" at ERROR,
+    # without the body. From an EU address the US site answers 307 to its .de site.
+    "zip_recruiter": [
+        (re.compile(r"response status code 307\b", re.I), ZIP_RECRUITER_REDIRECTED),
+        (re.compile(r"response status code 403\b", re.I), ZIP_RECRUITER_BLOCKED),
+    ],
+    # jobspy/google/__init__.py logs this at ERROR when page 1 has neither jobs nor a cursor.
+    "google": [(re.compile(r"returned no job data", re.I), GOOGLE_BLOCKED)],
 }
 
 
 def _describe_error(key: str, msg: str) -> str:
     """The stable text for a known block signature of this board, else _condense_error(msg)."""
-    signature, text = _KNOWN_BLOCKS.get(key, (None, None))
-    if signature and signature.search(str(msg)):
-        return text
+    for signature, text in _KNOWN_BLOCKS.get(key, ()):
+        if signature.search(str(msg)):
+            return text
     return _condense_error(msg)
 
 
@@ -130,10 +134,9 @@ def _board_errors(errors: dict, jobs_df, sources) -> dict:
     overlaps another run also receives that run's records. Only the boards this
     run asked for are kept. Cross-talk on a board that both runs use stays.
 
-    jobspy logs the Google cursor warning also when page 1 held up to 10 jobs
-    (jobspy/google/__init__.py). A Google board that returned rows was not
-    blocked, so it gets no error. A different Google failure, for example on
-    page 2, keeps its text.
+    A Google board that returned rows was not blocked, so a "no job data" error
+    on it is dropped (cross-talk from another run, or a later page). A different
+    Google failure keeps its text.
     """
     returned = set()
     if jobs_df is not None and not jobs_df.empty and "site" in jobs_df.columns:
@@ -142,20 +145,17 @@ def _board_errors(errors: dict, jobs_df, sources) -> dict:
             if k in sources and not (k == "google" and v == GOOGLE_BLOCKED and k in returned)}
 
 
-# The Indeed scraper reports an HTTP failure through log.info, not log.warning
-# (jobspy/indeed/__init__.py: "responded with status code: <code>"), so a
-# WARNING threshold never saw an Indeed failure. The threshold is INFO now, and
-# this pattern — not the level — decides what an INFO record has to say to count
-# as a failure, so ordinary progress lines ("finished scraping") stay out of
-# source_breakdown.
-_INFO_FAILURE_RE = re.compile(r"responded with status code:\s*\d+", re.IGNORECASE)
-
-
 class _SourceLogCapture(logging.Handler):
-    """Keeps the first failure record each JobSpy board logger emits."""
+    """Keeps the first ERROR record each JobSpy board logger emits.
+
+    Since python-jobspy 1.2.0 every board-level failure (HTTP status, exception,
+    blocked page) is logged at ERROR. WARNING is per-job trouble or advice, for
+    example LinkedIn's "job_type isn't supported, ignoring it" on every run that
+    sets job_type, so a WARNING never marks a board failed.
+    """
 
     def __init__(self):
-        super().__init__(level=logging.INFO)
+        super().__init__(level=logging.ERROR)
         self.errors = {}
 
     def emit(self, record):
@@ -163,7 +163,7 @@ class _SourceLogCapture(logging.Handler):
             if not str(record.name).startswith("JobSpy"):
                 return
             message = record.getMessage()
-            if record.levelno < logging.WARNING and not _INFO_FAILURE_RE.search(message):
+            if record.levelno < logging.ERROR:
                 return
             key = _site_key(record.name)
             if not key or key in self.errors:
@@ -450,11 +450,11 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
                     search_id=search.id,
                     description=_clean(row.get("description")),
                     location=_clean(row.get("location")),
-                    # JobSpy's own `is_remote` is a substring test over the whole
-                    # description, so "remote state" (Terraform) and "remote dev
-                    # environments" mark a job remote. It is deliberately unused.
+                    # JobSpy's own `is_remote` was a substring test over the whole
+                    # description up to 1.1.82, so "remote state" (Terraform) marked
+                    # a job remote. It stays deliberately unused.
                     # `work_from_home_type` below is no help either: in
-                    # python-jobspy 1.1.82 only the Naukri scraper sets that field.
+                    # python-jobspy 1.3.0 only the Naukri scraper sets that field.
                     # Indeed, LinkedIn, ZipRecruiter and Google rows always carry
                     # None there, so the arrangement comes from the JD cascade.
                     remote=None,

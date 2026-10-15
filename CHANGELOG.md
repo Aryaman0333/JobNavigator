@@ -7,9 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Model Catalog for Claude Code without an API key**: choosing Claude Code (Subscription) in Settings › Model Catalog no longer fails with "No Anthropic API key configured". With no Anthropic key the catalog lists the built-in Claude models; with a key it still loads Anthropic's live list.
-- **LinkedIn Personal login no longer treats a live session as logged out:** the session check asks Voyager `/me` first; when `/me` refuses a session that is in fact live, a signed-in surface (`/feed`, `/mynetwork`, `/jobs`) reached with the `li_at` auth cookie counts as logged in. A `/login` that redirects to the feed is taken as already signed in, and a login form that never renders because the page went to the feed is treated as a login rather than a timeout.
+Nothing yet.
 
 ## [3.0.0] — unreleased
 
@@ -30,9 +28,14 @@ Draft; the date and tag are set at release. JobNavigator becomes a household ins
 ### Changed
 - **Unique per account:** company names, job ids and the Persona are unique within an account, not across the install.
 - **Settings values** may now live per account (`settings.account_id`; empty = the install value). The `dashboard_api_key` and the other install secrets stay install-wide.
+- **JobSpy 1.3.0** (#30), from 1.1.82; pandas and numpy are pinned to the versions it brings. A board counts as failed only on the library's error lines, so LinkedIn's "job_type isn't supported" warning no longer marks a LinkedIn run that returned jobs as failed. Google's block reads again ("returned no job data"), and ZipRecruiter's HTTP 307 says the US site redirects this location to a regional site the scraper does not read (1.3.0 no longer logs why ZipRecruiter refused, so a 403 reads as a plain refusal). The markdownify CVE exception in CI is gone.
 
 ### Removed
 - **The classic dashboard.** `/classic` and `/classic/…` redirect to the same path without the prefix (`/classic/applications` opens `/applications`), so old bookmarks keep working. The Settings › Display "Classic dashboard" row, the classic upgrade banner and the Tailwind setup that only the v1 screens used are gone; the page reset the redesign relies on is now plain CSS in `frontend/src/base.css`.
+
+### Fixed
+- **Model Catalog for Claude Code without an API key** (by @anthony-df-nguyen, #31): choosing Claude Code (Subscription) in Settings › Model Catalog no longer fails with "No Anthropic API key configured". With no Anthropic key the catalog lists the built-in Claude models; with a key it still loads Anthropic's live list. A member on their own Models never falls back to the owner's key.
+- **LinkedIn Personal login no longer treats a live session as logged out** (by @mreid-tt, #27): the session check asks Voyager `/me` first; when `/me` refuses a session that is in fact live, a signed-in surface (`/feed`, `/mynetwork`) reached with the `li_at` auth cookie counts as logged in. A `/login` that redirects to the feed is taken as already signed in, and a login form that never renders because the page went to the feed is treated as a login rather than a timeout. `/jobs` is not a signed-in surface (LinkedIn shows public jobs there), so a revoked cookie still in the jar leads to a fresh login, and a collection that lands on the login wall fails the run with "LinkedIn session expired" instead of reporting 0 jobs. The manual session refresh keeps the 30 s wait for a slow login page.
 
 ## [2.2.0] — 2026-10-04
 
