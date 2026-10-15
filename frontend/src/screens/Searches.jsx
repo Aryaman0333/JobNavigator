@@ -6,7 +6,7 @@ import ConfirmDialog from '../ConfirmDialog'
 import CopyFrom from '../CopyFrom'
 import { useSettled, useWarm, NBSP, DASH } from '../hooks'
 import { Button, Card, Check, CopyGlyph, Dot, FlaskGlyph, FooterRow, HeaderRow, Heading, Helper, IconButton, Input, Label, Link, Menu, MenuItem, ModalPanel, PageTitle, Pill, Rule, Segmented, Select, Spinner, TableHead, Tag } from '../ui'
-import { BLOCKED_BADGE, SOURCE_BLOCKS } from '../sourceBlocks'
+import { BLOCKED_BADGE, MODE_BLOCKS, MODE_TERMS, SOURCE_BLOCKS } from '../sourceBlocks'
 import { useApifyBoards, boardLabel, testCost, usd } from '../apifyBoards'
 import '../theme.css'
 
@@ -115,7 +115,7 @@ const noteFor = (mode) => {
   if (mode === 'levels_fyi') return ['Set your filters on levels.fyi and paste the URL here. The URL contains location, job family, salary and date filters.', 'sm-levels']
   if (mode === 'jobright') return ['Recommendations from your Jobright.ai account. Enter a search term to search instead. Credentials are in Settings › Accounts.', 'sm-jobright']
   if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted (at most 200) caps every board on every run, each run carries a spend cap and stops after 15 minutes, and Test fetches 20 jobs per board at most. A new Apify search starts paused: check the boards, then press Paused to resume it.', 'sm-apify']
-  if (mode === 'caribbeanjobs') return ['Set the filters on caribbeanjobs.com and paste the search URL, or enter a term. The description of each result is read from its own page.', 'sm-caribbeanjobs']
+  if (mode === 'caribbeanjobs') return ['Set the filters on caribbeanjobs.com and paste the search URL, or enter a term. The description of each result is read from its own page; Test reads at most 20 of those pages. A salary in a local currency is kept as text in the description, not as a number.', 'sm-caribbeanjobs']
   if (mode === 'extension') return ['Jobs come from the “Save to Job Feed” button on any website. The filters and auto-score depth below apply to each job as it is saved.', 'sm-levels']
   if (mode === 'linkedin_extension') return ['Jobs are captured while you browse linkedin.com/jobs/collections pages. The filters below are applied on import.', 'sm-levels']
   return null
@@ -365,6 +365,13 @@ function ConfigForm({ d, set }) {
 
       {note && (
         <div className={note[1]} style={{ padding: '9px 12px', borderRadius: 'var(--radius-cell)', fontSize: 11.5, lineHeight: '17px', textWrap: 'pretty' }}>{note[0]}</div>
+      )}
+      {/* Visible text, like the keyword boards' blocked note: the site's block and its terms. */}
+      {(MODE_BLOCKS[m] || MODE_TERMS[m]) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {MODE_BLOCKS[m] && <Helper>{BLOCKED_BADGE}: {MODE_BLOCKS[m]}</Helper>}
+          {MODE_TERMS[m] && <Helper style={{ color: 'var(--warn)' }}>{MODE_TERMS[m]}</Helper>}
+        </div>
       )}
 
       {m === 'keyword' && (
@@ -990,6 +997,13 @@ function TestModal({ test, tab, setTab, onClose }) {
                 {srcErrors.map(([k, e]) => (
                   <span key={k}><span style={{ fontFamily: 'var(--mono)' }}>{srcName(k)}</span> failed: {e}</span>
                 ))}
+              </HeaderRow>
+            )}
+
+            {/* A preview that read only some detail pages (caribbeanjobs) says which. */}
+            {d.preview_note && (
+              <HeaderRow pad="7px 22px" soft align="center">
+                <Helper>{d.preview_note}</Helper>
               </HeaderRow>
             )}
 

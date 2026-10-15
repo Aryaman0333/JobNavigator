@@ -181,7 +181,8 @@ async def test_run_stores_a_detail_salary_as_posting(monkeypatch, test_db):
     test_db.commit()
 
     listing = _job("Paid Role", "Acme", "https://cj/1")
-    details = {"https://cj/1": {**listing, "salary_min": 85000, "salary_max": 95000}}
+    # Stored as numbers only when the posting says USD (see test_caribbeanjobs_review.py).
+    details = {"https://cj/1": {**listing, "salary_min": 85000, "salary_max": 95000, "salary_currency": "USD"}}
     _patch_fetch(monkeypatch, [listing], details=details)
 
     async def noop_analyze(job, db=None, h1b_median=None, arrangement=None):

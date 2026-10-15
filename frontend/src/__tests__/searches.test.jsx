@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Searches from '../screens/Searches'
-import { BLOCKED_BADGE, SOURCE_BLOCKS } from '../sourceBlocks'
+import { BLOCKED_BADGE, MODE_BLOCKS, MODE_TERMS, SOURCE_BLOCKS } from '../sourceBlocks'
 
 vi.mock('../api', () => ({
   default: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -121,5 +121,41 @@ describe('Country · v2 Searches', () => {
     fireEvent.click(screen.getByText('Save changes'))
     await waitFor(() => expect(api.patch).toHaveBeenCalled())
     expect(api.patch.mock.calls[0][1]).not.toHaveProperty('country')
+  })
+})
+
+describe('CaribbeanJobs · v2 Searches', () => {
+  beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear() })
+
+  const CJ = { ...SEARCH, id: 's3', name: 'Caribbean', search_mode: 'caribbeanjobs', search_term: 'accountant', sources: [] }
+  const CF_TEXT = 'CaribbeanJobs is behind a Cloudflare challenge from this network; the scraper cannot pass it (HTTP 403)'
+
+  it('the editor shows the Cloudflare block and the terms notice', async () => {
+    mockApi([CJ])
+    renderScreen()
+    fireEvent.click(await screen.findByText('Caribbean'))
+    await screen.findByText('Save changes')
+    expect(screen.getByText(MODE_BLOCKS.caribbeanjobs, { exact: false })).toBeTruthy()
+    expect(screen.getByText(MODE_TERMS.caribbeanjobs)).toBeTruthy()
+  })
+
+  it('a Test that hits the challenge shows the readable error', async () => {
+    mockApi([CJ])
+    api.post.mockImplementation(() => Promise.resolve({ status: 200, data: { search_name: 'Caribbean', error: CF_TEXT } }))
+    renderScreen()
+    fireEvent.click(await screen.findByTitle(/^Preview run/))
+    expect(await screen.findByText(CF_TEXT)).toBeTruthy()
+  })
+
+  it('a Test that sampled the detail pages says so', async () => {
+    const note = 'Details sampled: the job pages of the first 20 of 31 jobs that passed the title and company filters were read.'
+    mockApi([CJ])
+    api.post.mockImplementation(() => Promise.resolve({ status: 200, data: {
+      search_name: 'Caribbean', duration: 1, raw_count: 31, after_filter: 31, source_breakdown: { caribbeanjobs: 31 },
+      company_breakdown: {}, jobs: [], preview_note: note, config: { mode: 'caribbeanjobs', search_term: 'accountant' },
+    } }))
+    renderScreen()
+    fireEvent.click(await screen.findByTitle(/^Preview run/))
+    expect(await screen.findByText(note)).toBeTruthy()
   })
 })

@@ -6,10 +6,10 @@ JobNavigator is a local, open-source tool -- NOT a hosted service. It runs entir
 
 ## 2. Third-Party Platforms
 
-JobNavigator can interact with job boards, career pages, and job platforms including but not limited to LinkedIn, Indeed, ZipRecruiter, Jobright.ai, Greenhouse, Lever, Workday, Ashby, and others.
+JobNavigator can interact with job boards, career pages, and job platforms including but not limited to LinkedIn, Indeed, ZipRecruiter, Jobright.ai, CaribbeanJobs.com, Greenhouse, Lever, Workday, Ashby, and others.
 
 - **Users must comply with the Terms of Service of every platform they interact with.**
-- Some features (LinkedIn Personal scraping, LinkedIn Extension import, Jobright.ai recommendations) may violate the respective platform's Terms of Service.
+- Some features (LinkedIn Personal scraping, LinkedIn Extension import, Jobright.ai recommendations, the CaribbeanJobs.com search mode) may violate the respective platform's Terms of Service. CaribbeanJobs.com puts its pages behind a Cloudflare bot check; JobNavigator does not try to pass it, and a run from a challenged network fails with that reason.
 - These features are **disabled by default** and require users to explicitly provide their own credentials to enable them.
 - Do not use this tool to spam employers, overwhelm ATS systems, or submit mass applications.
 - Any consequences from ToS violations -- including IP bans, account restrictions, or legal action from platforms -- are **solely the responsibility of the user**.

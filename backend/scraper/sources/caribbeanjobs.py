@@ -27,6 +27,7 @@ from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
+from backend.scraper._shared.bot_wall import is_bot_wall
 
 logger = logging.getLogger("jobnavigator.caribbeanjobs")
 
@@ -34,8 +35,44 @@ BASE = "https://www.caribbeanjobs.com"
 LIST_URL = f"{BASE}/ShowResults.aspx"
 _MAX_PAGES = 50         # defensive cap: 1250 listing rows / scrape
 _DETAIL_CONCURRENCY = 4
+# Test previews read at most this many detail pages, so one click can't fetch a hundred.
+PREVIEW_DETAIL_LIMIT = 20
 _DROP_PARAMS = {"page"}
 _UA = "JobNavigator/1.0 (+https://github.com/vesaias/JobNavigator)"
+
+# The run error, Test error and health reason when the board answers with a Cloudflare
+# challenge (seen from our install on every request, with any User-Agent). The scraper does
+# not try to pass the challenge. The editor shows the same block in
+# frontend/src/sourceBlocks.js (`MODE_BLOCKS.caribbeanjobs`); change both places together.
+CLOUDFLARE_BLOCKED = ("CaribbeanJobs is behind a Cloudflare challenge from this network; "
+                      "the scraper cannot pass it (HTTP {status})")
+
+
+class CloudflareChallenge(RuntimeError):
+    """The board answered with a Cloudflare challenge page instead of content."""
+
+    def __init__(self, status: int):
+        super().__init__(CLOUDFLARE_BLOCKED.format(status=status))
+        self.status = status
+
+
+def _is_cloudflare_challenge(resp) -> bool:
+    """True if a response is a Cloudflare challenge rather than the page. A 403/503 counts on
+    the `cf-mitigated: challenge` header, a challenge marker in the body, or `server:
+    cloudflare`; any status counts when the body is the challenge interstitial itself."""
+    headers = getattr(resp, "headers", None) or {}
+    if (headers.get("cf-mitigated") or "").strip().lower() == "challenge":
+        return True
+    body = getattr(resp, "text", "") or ""
+    if is_bot_wall(body):
+        return True
+    if resp.status_code in (403, 503):
+        low = body.lower()
+        if "cf-chl" in low or "challenge-platform" in low:
+            return True
+        if "cloudflare" in (headers.get("server") or "").lower():
+            return True
+    return False
 
 
 def _strip_html(html_str: str) -> str:
@@ -108,6 +145,74 @@ def _parse_salary(text: str) -> tuple[int | None, int | None]:
     return min(nums[0], nums[1]), max(nums[0], nums[1])
 
 
+# The board's salaries are in the local currency of each island (TTD, JMD, BBD, KYD, …) or
+# in USD, and a bare "$" is usually local dollars. `Job` has no currency column, so only a
+# salary that is explicitly USD and annual becomes salary_min/max; any other is kept as text.
+_CURRENCY_PATTERNS = (
+    ("USD", r"\bUSD\b|\bUS\s?\$"),
+    ("TTD", r"\bTTD\b|\bTT\s?\$"),
+    ("JMD", r"\bJMD\b|\bJ\$"),
+    ("BBD", r"\bBBD\b|\bBDS?\$"),
+    ("XCD", r"\bXCD\b|\bEC\$"),
+    ("KYD", r"\bKYD\b|\bCI\$"),
+    ("BSD", r"\bBSD\b|\bB\$"),
+    ("GYD", r"\bGYD\b|\bG\$"),
+    ("BZD", r"\bBZD\b|\bBZ\$"),
+    ("BMD", r"\bBMD\b"),
+    ("ANG", r"\bANG\b"),
+    ("AWG", r"\bAWG\b"),
+    ("EUR", r"\bEUR\b|€"),
+    ("GBP", r"\bGBP\b|£"),
+)
+_UNIT_PATTERNS = (
+    ("YEAR", r"per\s+(?:year|annum)|annual|yearly|/\s*(?:yr|year|annum)\b|\bp\.?a\.?\b"),
+    ("MONTH", r"per\s+month|monthly|/\s*(?:mo|month)\b"),
+    ("WEEK", r"per\s+week|weekly|/\s*(?:wk|week)\b"),
+    ("DAY", r"per\s+day|daily|/\s*day\b"),
+    ("HOUR", r"per\s+hour|hourly|/\s*(?:hr|hour)\b"),
+)
+
+
+def _currency_of(text: str) -> str:
+    """The ISO code a salary string names (`TT$ 8,000` → TTD), or "" when it names none."""
+    for code, pattern in _CURRENCY_PATTERNS:
+        if re.search(pattern, text or "", re.IGNORECASE):
+            return code
+    return ""
+
+
+def _unit_of(text: str) -> str:
+    for unit, pattern in _UNIT_PATTERNS:
+        if re.search(pattern, text or "", re.IGNORECASE):
+            return unit
+    return ""
+
+
+def _usd_annual(j: dict) -> tuple[int | None, int | None]:
+    """(min, max) to store as a structured salary: only an explicit-USD, annual (or unstated
+    period) amount. Anything else is not comparable with the US salaries the app shows."""
+    if not j.get("salary_min") or (j.get("salary_currency") or "") != "USD":
+        return None, None
+    if (j.get("salary_unit") or "YEAR").upper() != "YEAR":
+        return None, None
+    return j["salary_min"], j.get("salary_max")
+
+
+def _salary_display(j: dict) -> str | None:
+    """A readable salary as posted (`TTD 8,000 – 10,000 / month`), or None without one."""
+    lo, hi = j.get("salary_min"), j.get("salary_max")
+    if not lo:
+        return None
+    out = f"{j['salary_currency']} " if j.get("salary_currency") else ""
+    out += f"{lo:,}"
+    if hi and hi != lo:
+        out += f" – {hi:,}"
+    unit = (j.get("salary_unit") or "").lower()
+    if unit:
+        out += f" / {unit}"
+    return out
+
+
 def _parse_listing_date(text: str) -> str | None:
     """`Updated 18/09/2026` → `2026-09-18`."""
     m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text or "")
@@ -125,7 +230,8 @@ def _parse_card(card) -> dict:
     sal = card.select_one("ul.job-overview li.salary")
     upd = card.select_one("ul.job-overview li.updated-time")
     desc = card.select_one('p[itemprop="description"]')
-    sal_min, sal_max = _parse_salary(_text(sal))
+    sal_text = _text(sal)
+    sal_min, sal_max = _parse_salary(sal_text)
     return {
         "title": _text(title_a),
         "company": _text(company_a),
@@ -134,6 +240,8 @@ def _parse_card(card) -> dict:
         "description": _strip_html(str(desc)) if desc else "",
         "salary_min": sal_min,
         "salary_max": sal_max,
+        "salary_currency": _currency_of(sal_text),
+        "salary_unit": _unit_of(sal_text),
         "posted": _parse_listing_date(_text(upd)),
         "employment_type": "",
         "expired": False,
@@ -189,12 +297,25 @@ def _parse_detail(html: str, fallback: dict) -> dict:
         et = ld.get("employmentType")
         if et and str(et).lower() != "default":
             out["employment_type"] = str(et)
-        value = ((ld.get("baseSalary") or {}).get("value")) or {}
+        base_salary = ld.get("baseSalary") or {}
+        value = (base_salary.get("value") if isinstance(base_salary, dict) else None) or {}
+        if not isinstance(value, dict):
+            value = {"minValue": value}
         sal_min, sal_max = _parse_salary(str(value.get("minValue") or ""))
         if sal_min is None:
             sal_min, sal_max = _parse_salary(str(value.get("maxValue") or ""))
+        elif sal_max is None:
+            # schema.org proper: minValue and maxValue as two separate amounts
+            top, _ = _parse_salary(str(value.get("maxValue") or ""))
+            if top and top > sal_min:
+                sal_max = top
         if sal_min:
             out["salary_min"], out["salary_max"] = sal_min, sal_max
+            raw = f"{value.get('minValue') or ''} {value.get('maxValue') or ''}"
+            currency = str(base_salary.get("currency") or value.get("currency") or "").strip().upper()
+            out["salary_currency"] = currency or _currency_of(raw) or fallback.get("salary_currency") or ""
+            out["salary_unit"] = (str(value.get("unitText") or "").strip().upper()
+                                  or _unit_of(raw) or fallback.get("salary_unit") or "")
         valid = ld.get("validThrough")
         if valid:
             try:
@@ -218,7 +339,10 @@ def _parse_detail(html: str, fallback: dict) -> dict:
     if out.get("salary_min") is None:
         sal_node = soup.select_one("ul.job-overview li.salary")
         if sal_node:
-            out["salary_min"], out["salary_max"] = _parse_salary(_text(sal_node))
+            sal_text = _text(sal_node)
+            out["salary_min"], out["salary_max"] = _parse_salary(sal_text)
+            out["salary_currency"] = _currency_of(sal_text)
+            out["salary_unit"] = _unit_of(sal_text)
     return out
 
 
@@ -258,6 +382,8 @@ async def _fetch_keyword(client: httpx.AsyncClient, base: dict, keyword: str, wa
         if keyword:
             params["Keywords"] = keyword
         resp = await _get(client, LIST_URL, params=params)
+        if _is_cloudflare_challenge(resp):
+            raise CloudflareChallenge(resp.status_code)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         cards = soup.select("div.job-result")
@@ -303,7 +429,10 @@ async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cach
         async with sem:
             try:
                 resp = await _get(client, job["url"])
-                if resp.status_code == 200:
+                if _is_cloudflare_challenge(resp):
+                    # The listing row (short blurb) stays; never cache a challenge page.
+                    logger.info(f"caribbeanjobs detail behind a Cloudflare challenge: {job['url']}")
+                elif resp.status_code == 200:
                     details[job["url"]] = _parse_detail(resp.text, job)
                     if cache is not None:
                         cache[job["url"]] = dict(details[job["url"]])
@@ -388,12 +517,29 @@ async def run(search: Search, shared=None) -> dict:
             for j in candidates:
                 if j["url"] in details:
                     j.update(details[j["url"]])
+                    # The detail page's JSON-LD can rename the job or its company, and the
+                    # stored row carries those names, so the filters see them too.
+                    ok, why = _title_kept(j["title"], include_kw, exclude_kw)
+                    company_lower = (j.get("company") or "").lower()
+                    if ok and (company_lower in global_exclude_set or company_lower in search_exclude_set):
+                        ok, why = False, "company excluded"
+                    if not ok:
+                        seen -= 1
+                        logger.info(f"caribbeanjobs: '{j['title']}' @ {j.get('company')} dropped after the detail page ({why})")
+                        continue
                 if j.get("expired"):
                     continue
                 if not j["company"]:
                     continue
 
                 ext_id = make_external_id(j["company"], j["title"], j["url"])
+                # Only an explicit-USD annual salary is stored as numbers; a local-currency
+                # (or unstated-currency) one is kept as text at the end of the description.
+                usd_min, usd_max = _usd_annual(j)
+                local_salary = None if usd_min else _salary_display(j)
+                description = j.get("description") or ""
+                if local_salary:
+                    description = f"{description}\n\nSalary (as posted): {local_salary}".strip()
                 job = Job(
                     external_id=ext_id,
                     content_hash=make_content_hash(j["company"], j["title"]),
@@ -403,24 +549,30 @@ async def run(search: Search, shared=None) -> dict:
                     source="caribbeanjobs",
                     search_id=search.id,
                     location=j.get("location") or None,
-                    description=j.get("description") or None,
+                    description=description or None,
                     status="new",
                     seen=False,
                     saved=False,
                 )
 
-                # Structured salary from the detail page — set before analyze_inline so the JD
+                # Structured salary from the posting — set before analyze_inline so the JD
                 # extractor doesn't override it.
-                if j.get("salary_min"):
-                    job.salary_min = j["salary_min"]
-                    if j.get("salary_max"):
-                        job.salary_max = j["salary_max"]
+                if usd_min:
+                    job.salary_min = usd_min
+                    if usd_max:
+                        job.salary_max = usd_max
                     job.salary_source = "posting"
 
                 try:
                     await analyze_inline(job, db=db)
                 except Exception as e:
                     logger.warning(f"caribbeanjobs inline analysis failed for {j['title']}: {e}")
+
+                if local_salary and job.salary_source == "posting":
+                    # The JD extractor reads any "$" as USD; on a posting whose salary is in
+                    # local dollars that figure is the same local amount, so drop it.
+                    job.salary_min = job.salary_max = None
+                    job.salary_source = "unknown"
 
                 if job.h1b_jd_flag:
                     logger.info(f"Skipping (body exclusion): {j['title']} @ {j.get('company', '?')}")
@@ -478,7 +630,11 @@ async def preview(search: Search, db) -> dict:
                     cl = (j.get("company") or "").lower()
                     if cl not in global_exclude_set and cl not in search_exclude_set:
                         survivors.append(j)
-            details = await _fetch_details(client, survivors)
+            # A Test reads at most PREVIEW_DETAIL_LIMIT detail pages; the rest keep the
+            # listing's blurb, and the preview says so.
+            sampled = survivors[:PREVIEW_DETAIL_LIMIT]
+            details = await _fetch_details(client, sampled)
+        sampled_urls = {j["url"] for j in sampled}
 
         raw_count = len(unique)
         from collections import Counter
@@ -494,6 +650,7 @@ async def preview(search: Search, db) -> dict:
 
         results = []
         for j in unique:
+            unsampled = j["url"] not in sampled_urls
             j = details.get(j["url"], j)
             kept, reason = _title_kept(j["title"], include_kw, exclude_kw)
             if kept:
@@ -511,14 +668,16 @@ async def preview(search: Search, db) -> dict:
                     kept = False
                     reason = f"Body exclusion: {(br['jd_snippet'] or 'matched')[:80]}"
 
-            salary = None
-            if j.get("salary_min"):
-                salary = f"{j['salary_min']:,}"
-                if j.get("salary_max") and j["salary_max"] != j["salary_min"]:
-                    salary += f" – {j['salary_max']:,}"
+            # As posted, with its currency; the run stores numbers only for USD per year.
+            salary = _salary_display(j)
 
             desc = j.get("description") or ""
+            row_extra = {}
+            if unsampled and kept and body_phrases:
+                # Not one of the sampled detail pages: the body scan saw only the blurb.
+                row_extra["body_checked"] = False
             results.append({
+                **row_extra,
                 "title": j["title"],
                 "company": j.get("company", ""),
                 "url": j.get("url", ""),
@@ -534,11 +693,20 @@ async def preview(search: Search, db) -> dict:
             })
 
         after_filter = sum(1 for r in results if r["kept"])
+        preview_note = None
+        if len(survivors) > len(sampled):
+            preview_note = (f"Details sampled: the job pages of the first {len(sampled)} of "
+                            f"{len(survivors)} jobs that passed the title and company filters were read. "
+                            f"The rest show the listing's short blurb; a run reads every new job's page.")
         return {
             "search_name": search.name,
             "duration": round(time.time() - start, 1),
             "raw_count": raw_count,
             "after_filter": after_filter,
+            "details_sampled": len(sampled),
+            "detail_limit": PREVIEW_DETAIL_LIMIT,
+            "preview_note": preview_note,
+            "body_phrase_count": len(body_phrases),
             "source_breakdown": {"caribbeanjobs": raw_count},
             "company_breakdown": company_breakdown,
             "include_keywords": include_kw,
