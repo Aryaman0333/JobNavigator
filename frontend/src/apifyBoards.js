@@ -25,11 +25,26 @@ export function useApifyBoards() {
   return boards
 }
 
-/** "indeed" -> "Indeed"; an unknown key comes back as is. */
+/** "apify_indeed" -> "Indeed"; an unknown key comes back as is. Board keys carry the
+ *  `apify_` prefix so they never collide with the JobSpy boards ("indeed", "linkedin"). */
 export const boardLabel = (boards, key) => (boards.find((b) => b.value === key) || {}).label || key
 
-/** Job.source of an Apify job is `apify_<board>`: "apify_indeed" -> "Indeed (Apify)", any other source -> null. */
+/** Job.source of an Apify job is its board key, `apify_<board>`: "apify_indeed" -> "Indeed (Apify)",
+ *  a board this page has not heard of -> "<board> (Apify)", any other source -> null. */
 export const apifySourceLabel = (boards, source, suffix = ' (Apify)') => {
   const s = String(source || '')
-  return s.startsWith('apify_') ? `${boardLabel(boards, s.slice(6))}${suffix}` : null
+  if (!s.startsWith('apify_')) return null
+  const b = boards.find((x) => x.value === s)
+  return `${b ? b.label : s.slice(6)}${suffix}`
 }
+
+/** Estimated and capped cost of one Test run over `keys`: { est, max } in USD, from each
+ *  board's preview_limit × price_per_1k and the spend cap the backend sends (test_max_usd). */
+export const testCost = (boards, keys) => (keys || []).reduce((acc, k) => {
+  const b = boards.find((x) => x.value === k)
+  if (!b) return acc
+  return { est: acc.est + (b.preview_limit || 0) * (b.price_per_1k || 0) / 1000, max: acc.max + (b.test_max_usd || 0) }
+}, { est: 0, max: 0 })
+
+/** Dollars, rounded up to whole cents (float noise dropped first: 0.1 + 0.18 is $0.28). */
+export const usd = (n) => `$${(Math.ceil(Number((n * 100).toFixed(6))) / 100).toFixed(2)}`

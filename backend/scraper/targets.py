@@ -20,6 +20,10 @@ Target keys
     is taken as the max and trimmed per account.
   - linkedin_personal, jobright and anything unknown read the account's own session, so
     they are never shared: their key carries the search id.
+  - apify is never shared either (deliberately, not by omission): every run is paid with
+    the token of the account it runs for, so a shared fetch would bill one subscriber for
+    another's results. Sharing it would need the payer in the key (the owner's token for
+    the owner and members on 'inherit', the member's own otherwise); deferred past 3.0.
 
 Due-ness: a target is due when any subscriber is due under its own interval (custom, or
 the global default), so the effective interval is the shortest among subscribers. Time is
@@ -165,7 +169,8 @@ def search_key(search) -> tuple:
     if mode == "freehire":
         from backend.scraper.sources.freehire import _base_params
         return ("freehire", tuple(sorted(_base_params(search).items())))
-    # linkedin_personal / jobright (the account's own session) and unknown modes
+    # linkedin_personal / jobright (the account's own session), apify (each account pays
+    # with its own token, see the module docstring) and unknown modes
     return (mode, "own", str(search.id))
 
 
@@ -247,6 +252,7 @@ def split_search_targets(targets: list) -> list:
 
 
 def is_shareable_search(search) -> bool:
+    # Never "apify": each account's run is billed to its own token (see the docstring).
     return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire")
 
 

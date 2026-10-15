@@ -92,9 +92,32 @@ def list_countries():
 
 @router.get("/apify-boards")
 def list_apify_boards():
-    """The boards an Apify search can pick, in PRESETS order; the first one is the default for a new search."""
+    """The boards an Apify search can pick, in PRESETS order; the first one is the default for a new search.
+    `price_per_1k` (USD, Free plan) and `test_max_usd` (the spend cap a Test run of that board is
+    started with) let the Test button name the cost before a paid preview; `max_results` is the
+    per-board cap on Results wanted."""
+    from backend.scraper.sources.apify import MAX_RESULTS, PREVIEW_LIMIT, PRESETS, charge_cap_usd
+    return [{"value": key, "label": p.label, "hint": p.hint, "actor": p.actor,
+             "price_per_1k": p.price_per_1k, "test_max_usd": charge_cap_usd(p, PREVIEW_LIMIT),
+             "preview_limit": PREVIEW_LIMIT, "max_results": MAX_RESULTS}
+            for key, p in PRESETS.items()]
+
+
+def _apify_sources(sources) -> list:
+    """The boards of an Apify search, or 400: a non-empty list of Apify board keys only.
+
+    The JobSpy default list (SearchCreate.sources) or a keyword search patched to
+    `apify` would otherwise reach the paid source with boards nobody picked."""
     from backend.scraper.sources.apify import PRESETS
-    return [{"value": key, "label": p.label, "hint": p.hint, "actor": p.actor} for key, p in PRESETS.items()]
+    sources = sources if isinstance(sources, list) else []
+    unknown = [s for s in sources if s not in PRESETS]
+    if not sources or unknown:
+        raise HTTPException(
+            status_code=400,
+            detail="An Apify search needs at least one Apify board from GET /api/searches/apify-boards"
+                   + (f"; not Apify boards: {', '.join(map(str, unknown))}" if unknown else ""),
+        )
+    return sources
 
 
 def _validated_country(value) -> str:
@@ -136,6 +159,15 @@ def create_search(data: SearchCreate, db: Session = Depends(get_db)):
     # (Jobright, Levels.fyi, freehire, LinkedIn Personal) country means nothing and must not reject a row.
     if payload.get("search_mode", "keyword") in COUNTRY_MODES:
         payload["location"] = _validated_location(payload["location"], payload["country"])
+    if payload.get("search_mode") == "apify":
+        from backend.scraper.sources.apify import clamp_results
+        payload["sources"] = _apify_sources(payload.get("sources"))
+        if payload.get("results_wanted") is not None:
+            payload["results_wanted"] = clamp_results(payload["results_wanted"])
+        # A paid source starts paused unless the client asked for an active search, so
+        # nothing bills before the user has looked at the boards and Results wanted.
+        if "active" not in data.model_fields_set:
+            payload["active"] = False
     search = Search(**payload)
     db.add(search)
     db.commit()
@@ -185,6 +217,19 @@ def update_search(search_id: str, updates: dict, db: Session = Depends(get_db)):
             updates.get("location", search.location),
             updates.get("country", search.country) or DEFAULT_COUNTRY,
         )
+    if mode == "apify":
+        from backend.scraper.sources.apify import clamp_results
+        switching = search.search_mode != "apify"
+        if switching or "sources" in updates:
+            updates["sources"] = _apify_sources(updates.get("sources", search.sources))
+        if switching or "results_wanted" in updates:
+            rw = updates.get("results_wanted", search.results_wanted)
+            if rw is not None:
+                updates["results_wanted"] = clamp_results(rw)
+        # Switching an existing search to the paid source pauses it too, unless the
+        # patch sets `active` itself (same rule as a new Apify search).
+        if switching and "active" not in updates:
+            updates["active"] = False
     for key, value in updates.items():
         if key in allowed:
             setattr(search, key, value)

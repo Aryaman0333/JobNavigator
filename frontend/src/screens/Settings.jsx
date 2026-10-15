@@ -688,10 +688,10 @@ export default function Settings() {
       ['apify', '', 'Apify', '', [
         B('Apify API key', 'Used by Apify searches. Apify bills this account for each result.', 'apify_api_key',
           { secret: true, mono: true, w: '340px', placeholder: 'apify_api_…',
-            info: 'Copy the token from console.apify.com › Settings › API & Integrations. It is stored in your database and is never sent back to the browser. The Apify Creator plan cannot run Store actors, so every board fails on it: use the Free plan or a paid plan.' }),
+            info: 'Copy the token from console.apify.com › Settings › API & Integrations. It is stored in your database and is never sent back to the browser. The Apify Creator plan cannot run Store actors, so every board fails on it: use the Free plan or a paid plan. Each account has its own key; a member who inherits this section runs on the owner’s key, and the owner’s Apify account pays.' }),
         BT('Key check', 'Confirms the key and that its Apify plan can run Store actors. Runs no search.', 'Check key', async () => {
           const { data } = await api.post('/settings/apify/check')
-          flash(`Key works — Apify account ${data.username}`)
+          flash(data.inherited ? 'Key works — the owner’s Apify key, shared with you' : `Key works — Apify account ${data.username}`)
         }),
       ]],
       ['jobright', '', 'Jobright.ai', '', [

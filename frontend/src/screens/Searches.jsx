@@ -7,7 +7,7 @@ import CopyFrom from '../CopyFrom'
 import { useSettled, useWarm, NBSP, DASH } from '../hooks'
 import { Button, Card, Check, CopyGlyph, Dot, FlaskGlyph, FooterRow, HeaderRow, Heading, Helper, IconButton, Input, Label, Link, Menu, MenuItem, ModalPanel, PageTitle, Pill, Rule, Segmented, Select, Spinner, TableHead, Tag } from '../ui'
 import { BLOCKED_BADGE, SOURCE_BLOCKS } from '../sourceBlocks'
-import { useApifyBoards, boardLabel } from '../apifyBoards'
+import { useApifyBoards, boardLabel, testCost, usd } from '../apifyBoards'
 import '../theme.css'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ const noteFor = (mode) => {
   if (mode === 'keyword') return ['Listings link to the board (LinkedIn, Indeed, ZipRecruiter, Google), not to the company’s own page. The same job found later by a company scrape or the extension is only recognised as a duplicate when company and title match exactly.', 'sm-keyword']
   if (mode === 'levels_fyi') return ['Set your filters on levels.fyi and paste the URL here. The URL contains location, job family, salary and date filters.', 'sm-levels']
   if (mode === 'jobright') return ['Recommendations from your Jobright.ai account. Enter a search term to search instead. Credentials are in Settings › Accounts.', 'sm-jobright']
-  if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted caps every board on every run, and Test fetches 20 jobs per board at most.', 'sm-apify']
+  if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted (at most 200) caps every board on every run, each run carries a spend cap and stops after 15 minutes, and Test fetches 20 jobs per board at most. A new Apify search starts paused: check the boards, then press Paused to resume it.', 'sm-apify']
   if (mode === 'extension') return ['Jobs come from the “Save to Job Feed” button on any website. The filters and auto-score depth below apply to each job as it is saved.', 'sm-levels']
   if (mode === 'linkedin_extension') return ['Jobs are captured while you browse linkedin.com/jobs/collections pages. The filters below are applied on import.', 'sm-levels']
   return null
@@ -175,6 +175,7 @@ const BOUNDS = {
   hours_old: [0, 720],
   results_wanted: [1, 500],
   results_wanted_jobright: [20, 500],
+  results_wanted_apify: [1, 200],   // backend/scraper/sources/apify.py MAX_RESULTS (per board)
   max_pages: [1, 50],
   min_fit_score: [0, 100],
   run_interval_minutes: [0, 10080],
@@ -188,7 +189,7 @@ const toPayload = (d) => {
   // Clamp to the bounds the inputs declare — a label like "20–500" enforces
   // nothing on its own; a cleared field still goes out as null.
   const clamp = (v, key) => { const n = num(v); if (n == null) return null; const [lo, hi] = BOUNDS[key]; return Math.min(hi, Math.max(lo, n)) }
-  const rwKey = d.search_mode === 'jobright' ? 'results_wanted_jobright' : 'results_wanted'
+  const rwKey = d.search_mode === 'jobright' ? 'results_wanted_jobright' : d.search_mode === 'apify' ? 'results_wanted_apify' : 'results_wanted'
   const p = {
     name: d.name, search_mode: d.search_mode,
     search_term: d.search_term || null, direct_url: d.direct_url || null,
@@ -329,7 +330,7 @@ function ConfigForm({ d, set }) {
       <Cell key="rem" label="Remote" value={d.is_remote} options={[['', 'Any'], ['true', 'Remote only']]} onChange={(v) => set({ is_remote: v })} />,
       <Cell key="ho" label="Hours old · 0–720" mono type="number" min={BOUNDS.hours_old[0]} max={BOUNDS.hours_old[1]} value={d.hours_old} onChange={(v) => set({ hours_old: v })}
         sub="Rounded up to the steps of each board (see Boards)" />,
-      <Cell key="rw" label="Results wanted · 1–500 per board" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
+      <Cell key="rw" label="Results wanted · 1–200 per board" mono type="number" min={BOUNDS.results_wanted_apify[0]} max={BOUNDS.results_wanted_apify[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
     )
   }
 
@@ -548,17 +549,25 @@ export default function Searches() {
   // The shell re-reads its rail badges on this event — every mutation that
   // changes how many searches exist fires it.
   const bumpCounts = () => window.dispatchEvent(new CustomEvent('jn:counts-changed'))
+  // The backend starts a new (or newly switched) Apify search paused, since every run bills
+  // the Apify account; say so, or the card's "Paused" would look like a glitch.
+  const notePaused = (row, verb) => {
+    if (row?.search_mode === 'apify' && row.active === false) pushToast({ kind: 'success', msg: `“${row.name}” ${verb} paused. Apify bills every run, so resume it once the boards and Results wanted look right` })
+  }
   const save = async (s) => {
     if (busy) return
     setBusy(s.id)
-    try { await api.patch(`/searches/${s.id}`, toPayload(draft)); setEditing(null); load(); loadAux() } catch (e) { fail(e, 'Could not save this search') }
+    try {
+      const { data } = await api.patch(`/searches/${s.id}`, toPayload(draft)); setEditing(null); load(); loadAux()
+      if (s.search_mode !== 'apify' && data?.search_mode === 'apify' && s.active) { bumpCounts(); notePaused(data, 'is') }
+    } catch (e) { fail(e, 'Could not save this search') }
     finally { if (mounted.current) setBusy(null) }
   }
   const create = async () => {
     if (busy) return
     if (!newDraft.name.trim()) { pushToast({ kind: 'error', msg: 'Name is required' }); return }
     setBusy('new')
-    try { await api.post('/searches', toPayload(newDraft)); setNewOpen(false); setNewDraft(NEW_DRAFT); load(); loadAux(); bumpCounts() }
+    try { const { data } = await api.post('/searches', toPayload(newDraft)); setNewOpen(false); setNewDraft(NEW_DRAFT); load(); loadAux(); bumpCounts(); notePaused(data, 'created') }
     catch (e) { fail(e, 'Could not create this search') }
     finally { if (mounted.current) setBusy(null) }
   }
@@ -608,7 +617,7 @@ export default function Searches() {
   }
   const duplicate = async (s) => {
     setMenuFor(null)
-    try { await api.post('/searches', { ...toPayload(draftOf(s)), name: `${s.name} (copy)` }); load(); loadAux(); bumpCounts() } catch (e) { fail(e, `Could not duplicate “${s.name}”`) }
+    try { const { data } = await api.post('/searches', { ...toPayload(draftOf(s)), name: `${s.name} (copy)` }); load(); loadAux(); bumpCounts(); notePaused(data, 'created') } catch (e) { fail(e, `Could not duplicate “${s.name}”`) }
   }
 
   // Every landing point goes through here, so the outcome is both shown and parked.
@@ -642,6 +651,24 @@ export default function Searches() {
     if (rec.runId && rec.id) { setTestingId(rec.id); setTestTab('all'); pollTest(rec.id, rec.name, rec.runId) }
   }, [pollTest])
 
+  // An Apify Test is a paid run: name the cost and ask first (the other modes test for free).
+  const askTest = (s) => {
+    if (testingId) return
+    if (s.search_mode !== 'apify') { runTest(s); return }
+    setMenuFor(null)
+    const keys = (s.sources || []).filter((k) => apifyBoards.some((b) => b.value === k))
+    const { est, max } = testCost(apifyBoards, keys)
+    const per = (apifyBoards[0] && apifyBoards[0].preview_limit) || 20
+    const names = keys.map((k) => boardLabel(apifyBoards, k)).join(', ')
+    setConfirm({
+      title: `Run a paid test of “${s.name}”?`,
+      body: max > 0
+        ? `Apify bills this test: up to ${per} jobs from each of ${keys.length} board${keys.length === 1 ? '' : 's'} (${names}). Estimated cost ${usd(est)}; each run carries a spend cap, ${usd(max)} at most in all. Nothing is saved.`
+        : `Apify bills this test: up to ${per} jobs from each board. Nothing is saved.`,
+      label: 'Run paid test',
+      onConfirm: () => { setConfirm(null); runTest(s) },
+    })
+  }
   const runTest = async (s) => {
     if (testingId) return                       // one Test at a time
     setMenuFor(null); setTestingId(s.id); setTestTab('all')
@@ -691,7 +718,7 @@ export default function Searches() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 16px', background: 'var(--recessed)', borderBottomLeftRadius: 8, borderBottomRightRadius: 8 }}>
               <ConfigForm d={newDraft} set={(p) => setNewDraft((x) => ({ ...x, ...p }))} />
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, borderTop: '1px solid var(--line-soft)' }}>
-                <Helper>Runs at the next scheduled scrape after you create it</Helper>
+                <Helper>{newDraft.search_mode === 'apify' ? 'Starts paused: resume it on its card when the boards look right' : 'Runs at the next scheduled scrape after you create it'}</Helper>
                 <Button variant="secondary" size="sm" onClick={() => { setNewOpen(false); setNewDraft(NEW_DRAFT) }} style={{ marginLeft: 'auto' }}>Cancel</Button>
                 <Button size="sm" onClick={create} busy={busy === 'new'}>{busy === 'new' ? 'Creating…' : 'Create search'}</Button>
               </div>
@@ -773,7 +800,7 @@ export default function Searches() {
                     </Pill>
                     {/* ui: keep — running-state box: 0 9 like its twin above, so the spinner branch keeps the width it was measured at. */}
                     {TESTABLE.includes(s.search_mode) && (
-                      <Pill size="xs" line="inherit" disabled={testBlocked} onClick={() => runTest(s)}
+                      <Pill size="xs" line="inherit" disabled={testBlocked} onClick={() => askTest(s)}
                         title={testBlocked ? 'A test is already running' : 'Preview run. Shows results and why each job was kept or filtered. Saves nothing.'}
                         style={{ padding: '0 9px' }}>
                         {testingId === s.id ? <Spinner /> : <FlaskGlyph size={11} />}Test
@@ -867,8 +894,11 @@ function TestModal({ test, tab, setTab, onClose }) {
   const bySource = d.source_breakdown || d.by_source || {}
   // {board: text} for each board that failed; only the keyword preview sends it.
   const srcErrors = Object.entries(d.source_errors || {})
+  // Apify boards are keyed `apify_<board>`; the chip names them by their label
+  const srcName = (k) => (k.startsWith('apify_') ? boardLabel(apifyBoards, k) : k)
   // per-board chip colours from the design: linkedin blue, indeed plum, zip amber, google red
   const srcChip = (k) => {
+    if (k.startsWith('apify_')) return { className: 'sm-apify' }
     if (k === 'linkedin') return { className: 'sm-keyword' }
     if (k === 'indeed') return { className: 'sm-lipersonal' }
     if (k.startsWith('zip')) return { style: { background: 'var(--warn-soft)', color: 'var(--warn)' } }
@@ -920,7 +950,7 @@ function TestModal({ test, tab, setTab, onClose }) {
                 {Object.entries(bySource).map(([k, v]) => {
                   const c = srcChip(k)
                   /* ui: keep — mono source badge on the cc- / sm- hue taxonomy (colour from `c.className`/`c.style`, which an inline Tag tone would beat). */
-                  return <span key={k} className={c.className} style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '1px 7px', borderRadius: 'var(--radius-control)', ...(c.style || {}) }}>{k} {v}</span>
+                  return <span key={k} className={c.className} style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '1px 7px', borderRadius: 'var(--radius-control)', ...(c.style || {}) }}>{srcName(k)} {v}</span>
                 })}
               </span>
             </HeaderRow>
@@ -928,7 +958,7 @@ function TestModal({ test, tab, setTab, onClose }) {
             {srcErrors.length > 0 && (
               <HeaderRow pad="7px 22px" soft align="center" style={{ flexWrap: 'wrap', gap: 12, fontSize: 11, color: 'var(--bad)' }}>
                 {srcErrors.map(([k, e]) => (
-                  <span key={k}><span style={{ fontFamily: 'var(--mono)' }}>{k}</span> failed: {e}</span>
+                  <span key={k}><span style={{ fontFamily: 'var(--mono)' }}>{srcName(k)}</span> failed: {e}</span>
                 ))}
               </HeaderRow>
             )}

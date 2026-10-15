@@ -1,5 +1,6 @@
 """Apify source: actor input, item parsing, the run/poll/abort cycle, the save pipeline and the wiring (no network)."""
 import json
+import uuid as uuid_mod
 from types import SimpleNamespace
 
 import httpx
@@ -21,12 +22,12 @@ def api_client(api_client, test_db):
 def _search(**kw):
     base = dict(name="t", search_mode="apify", search_term="program manager", location="",
                 country="usa", is_remote=None, hours_old=24, results_wanted=30,
-                sources=["indeed", "greenhouse"])
+                sources=["apify_indeed", "apify_greenhouse"])
     base.update(kw)
     return SimpleNamespace(**base)
 
 
-def _job(title, company, url, source="indeed", desc="Great role", **kw):
+def _job(title, company, url, source="apify_indeed", desc="Great role", **kw):
     j = {"title": title, "company": company, "url": url, "location": "Austin, TX",
          "description": desc, "salary_min": None, "salary_max": None,
          "arrangement": None, "posted": None, "source": source}
@@ -73,7 +74,7 @@ def test_indeed_fromage_rounds_up_and_never_narrows(hours, expected):
 
 
 def _gh(search, limit):
-    return apify.PRESETS["greenhouse"].build_input(search, limit)
+    return apify.PRESETS["apify_greenhouse"].build_input(search, limit)
 
 
 def test_greenhouse_input_filters_ats_and_clamps_limit():
@@ -88,8 +89,8 @@ def test_greenhouse_input_filters_ats_and_clamps_limit():
     assert _gh(_search(location="Austin"), 50)["locationSearch"] == ["Austin"]
 
 
-@pytest.mark.parametrize("key,ats,label", [("greenhouse", "greenhouse", "Greenhouse"), ("lever", "lever.co", "Lever"),
-                                           ("ashby", "ashby", "Ashby"), ("workday", "workday", "Workday")])
+@pytest.mark.parametrize("key,ats,label", [("apify_greenhouse", "greenhouse", "Greenhouse"), ("apify_lever", "lever.co", "Lever"),
+                                           ("apify_ashby", "ashby", "Ashby"), ("apify_workday", "workday", "Workday")])
 def test_ats_boards_share_the_career_site_actor(key, ats, label):
     preset = apify.PRESETS[key]
     assert preset.actor == "fantastic-jobs/career-site-job-listing-api"
@@ -101,8 +102,8 @@ def test_ats_boards_share_the_career_site_actor(key, ats, label):
 def test_source_label_names_apify_boards():
     from backend.scraper.orchestrator import source_label
     assert source_label("zip_recruiter") == "ZipRecruiter"
-    assert source_label("workday") == "Workday"
-    assert source_label("lever") == "Lever"
+    assert source_label("apify_workday") == "Workday"
+    assert source_label("apify_lever") == "Lever"
     assert source_label("monster") == "monster"
 
 
@@ -225,10 +226,78 @@ def _transport(statuses, items=None, fail=None):
 async def test_run_actor_polls_until_success_and_reads_the_dataset():
     transport, seen = _transport(["RUNNING", "SUCCEEDED"], items=[{"positionName": "PM"}])
     async with httpx.AsyncClient(transport=transport) as client:
-        items = await apify._run_actor(client, "misceres/indeed-scraper", {"position": "pm"}, 7)
+        items = await apify._run_actor(client, "misceres/indeed-scraper", {"position": "pm"}, 7, 0.25)
     assert items == [{"positionName": "PM"}]
-    assert seen[0][1] == "/v2/acts/misceres~indeed-scraper/runs" and seen[0][2] == {"maxItems": "7"}
+    # C1: every start carries the item cap, a spend cap and the platform-side timeout
+    assert seen[0][1] == "/v2/acts/misceres~indeed-scraper/runs"
+    assert seen[0][2] == {"maxItems": "7", "maxTotalChargeUsd": "0.25", "timeout": str(15 * 60)}
     assert seen[-1][2]["limit"] == "7"
+
+
+@pytest.mark.asyncio
+async def test_run_actor_without_a_cap_still_sends_the_ceiling():
+    transport, seen = _transport(["SUCCEEDED"])
+    async with httpx.AsyncClient(transport=transport) as client:
+        await apify._run_actor(client, "a/b", {}, 5)
+    assert float(seen[0][2]["maxTotalChargeUsd"]) == apify._MAX_CHARGE_USD
+    assert int(seen[0][2]["timeout"]) == apify._MAX_WAIT
+
+
+@pytest.mark.parametrize("key,limit,expected", [
+    ("apify_greenhouse", 50, 0.90),      # 50 × $12/1k × 1.5
+    ("apify_indeed", 200, 1.80),         # 200 × $6/1k × 1.5
+    ("apify_linkedin", 20, 0.10),        # cents, raised to the floor
+    ("apify_greenhouse", 100000, 5.00),  # never above the ceiling
+])
+def test_charge_cap_follows_results_and_price(key, limit, expected):
+    assert apify.charge_cap_usd(apify.PRESETS[key], limit) == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+async def test_collect_sends_each_board_its_own_cap(monkeypatch, test_db):
+    test_db.add(Setting(key="apify_api_key", value="tok"))
+    test_db.commit()
+    caps = {}
+
+    async def fake_run_actor(client, actor, body, limit, max_charge_usd=None):
+        caps[actor] = (limit, max_charge_usd)
+        return []
+    monkeypatch.setattr(apify, "_run_actor", fake_run_actor)
+    await apify._collect(_search(sources=["apify_indeed", "apify_greenhouse"]), 40)
+    assert caps["misceres/indeed-scraper"] == (40, apify.charge_cap_usd(apify.PRESETS["apify_indeed"], 40))
+    assert caps["fantastic-jobs/career-site-job-listing-api"] == (
+        40, apify.charge_cap_usd(apify.PRESETS["apify_greenhouse"], 40))
+
+
+@pytest.mark.parametrize("value,expected", [(None, 50), (0, 1), (-5, 1), (30, 30), (200, 200),
+                                            (5000, 200), ("x", 50)])
+def test_clamp_results(value, expected):
+    assert apify.clamp_results(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_run_clamps_results_wanted(monkeypatch, test_db):
+    search = Search(name="big", search_mode="apify", search_term="pm", sources=["apify_linkedin"],
+                    results_wanted=5000, company_exclude=[])
+    test_db.add(search)
+    test_db.commit()
+    seen = {}
+
+    async def fake_collect(_search, limit):
+        seen["limit"] = limit
+        return [], {"apify_linkedin": {"seen": 0, "new": 0, "returned": 0}}
+    monkeypatch.setattr(apify, "_collect", fake_collect)
+    await apify.run(search)
+    assert seen["limit"] == apify.MAX_RESULTS
+
+
+def test_board_keys_never_collide_with_jobspy_boards():
+    """C4: a search whose sources still hold JobSpy boards picks no Apify board."""
+    from backend.api.routes_searches import SearchCreate
+    jobspy = set(SearchCreate.model_fields["sources"].default) | {"glassdoor", "zip_recruiter", "google", "direct"}
+    assert all(k.startswith("apify_") for k in apify.PRESETS)
+    assert not jobspy & set(apify.PRESETS)
+    assert apify.configured_presets(_search(sources=sorted(jobspy))) == []
 
 
 @pytest.mark.asyncio
@@ -268,7 +337,7 @@ async def test_collect_keeps_the_board_that_worked(monkeypatch, test_db):
     test_db.add(Setting(key="apify_api_key", value="tok"))
     test_db.commit()
 
-    async def fake_run_actor(client, actor, body, limit):
+    async def fake_run_actor(client, actor, body, limit, max_charge_usd=None):
         if "indeed" in actor:
             raise apify.ApifyError("HTTP 402: the Apify account has no credit left")
         return [{"title": "TPM", "organization": "Stripe", "url": "https://gh/1"},
@@ -277,15 +346,15 @@ async def test_collect_keeps_the_board_that_worked(monkeypatch, test_db):
 
     jobs, breakdown = await apify._collect(_search(), 5)
     assert [j["url"] for j in jobs] == ["https://gh/1"]
-    assert breakdown["indeed"]["error"].startswith("HTTP 402")
-    assert breakdown["greenhouse"] == {"seen": 0, "new": 0, "returned": 2}
+    assert breakdown["apify_indeed"]["error"].startswith("HTTP 402")
+    assert breakdown["apify_greenhouse"] == {"seen": 0, "new": 0, "returned": 2}
 
 
 # ── save pipeline ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_run_saves_dedups_filters_and_counts_per_board(monkeypatch, test_db):
-    search = Search(name="t", search_mode="apify", search_term="engineer", sources=["indeed", "greenhouse"],
+    search = Search(name="t", search_mode="apify", search_term="engineer", sources=["apify_indeed", "apify_greenhouse"],
                     results_wanted=10, title_exclude_keywords=["intern"], company_exclude=[])
     test_db.add(search)
     test_db.commit()
@@ -294,8 +363,8 @@ async def test_run_saves_dedups_filters_and_counts_per_board(monkeypatch, test_d
         return [
             _job("Backend Engineer", "Acme", "https://www.indeed.com/viewjob?jk=1", salary_min=150000, salary_max=180000),
             _job("Data Intern", "Acme", "https://www.indeed.com/viewjob?jk=2"),
-            _job("Platform Engineer", "Stripe", "https://gh/1", source="greenhouse", arrangement="remote"),
-        ], {"indeed": {"seen": 0, "new": 0, "returned": 2}, "greenhouse": {"seen": 0, "new": 0, "returned": 1}}
+            _job("Platform Engineer", "Stripe", "https://gh/1", source="apify_greenhouse", arrangement="remote"),
+        ], {"apify_indeed": {"seen": 0, "new": 0, "returned": 2}, "apify_greenhouse": {"seen": 0, "new": 0, "returned": 1}}
     monkeypatch.setattr(apify, "_collect", fake_collect)
     arrangements = []
 
@@ -306,8 +375,8 @@ async def test_run_saves_dedups_filters_and_counts_per_board(monkeypatch, test_d
 
     res = await apify.run(search)
     assert res["error"] is None and res["new_jobs"] == 2 and res["jobs_found"] == 2
-    assert res["source_breakdown"]["indeed"] == {"seen": 1, "new": 1, "returned": 2, "filtered": 1}
-    assert res["source_breakdown"]["greenhouse"] == {"seen": 1, "new": 1, "returned": 1}
+    assert res["source_breakdown"]["apify_indeed"] == {"seen": 1, "new": 1, "returned": 2, "filtered": 1}
+    assert res["source_breakdown"]["apify_greenhouse"] == {"seen": 1, "new": 1, "returned": 1}
     assert arrangements == [None, "remote"]
     from backend.scraper.orchestrator import summarize_search_run
     assert summarize_search_run("apify", res) == "apify - 2 seen, +2 new, 1 filtered out"
@@ -325,17 +394,17 @@ async def test_run_saves_dedups_filters_and_counts_per_board(monkeypatch, test_d
 
 @pytest.mark.asyncio
 async def test_run_reports_an_error_when_every_board_failed(monkeypatch, test_db):
-    search = Search(name="t", search_mode="apify", search_term="x", sources=["indeed"], company_exclude=[])
+    search = Search(name="t", search_mode="apify", search_term="x", sources=["apify_indeed"], company_exclude=[])
     test_db.add(search)
     test_db.commit()
 
     async def fake_collect(_search, limit):
-        return [], {"indeed": {"seen": 0, "new": 0, "error": "HTTP 401: bad key"}}
+        return [], {"apify_indeed": {"seen": 0, "new": 0, "error": "HTTP 401: bad key"}}
     monkeypatch.setattr(apify, "_collect", fake_collect)
     monkeypatch.setattr("backend.activity.log_activity", lambda *a, **k: None)
 
     res = await apify.run(search)
-    assert res["error"] == "indeed: HTTP 401: bad key"
+    assert res["error"] == "Indeed: HTTP 401: bad key"
 
 
 @pytest.mark.asyncio
@@ -349,10 +418,10 @@ async def test_preview_caps_the_fetch_and_explains_rejections(monkeypatch, test_
         return [_job("Backend Engineer", "Acme", "https://a/1"),
                 _job("Data Intern", "Acme", "https://a/2"),
                 _job("Senior Engineer", "Acme", "https://a/3", desc="US citizen only please")], \
-            {"indeed": {"seen": 0, "new": 0, "returned": 3}, "greenhouse": {"seen": 0, "new": 0, "error": "HTTP 402"}}
+            {"apify_indeed": {"seen": 0, "new": 0, "returned": 3}, "apify_greenhouse": {"seen": 0, "new": 0, "error": "HTTP 402"}}
     monkeypatch.setattr(apify, "_collect", fake_collect)
 
-    search = Search(name="t", search_mode="apify", search_term="engineer", sources=["indeed", "greenhouse"],
+    search = Search(name="t", search_mode="apify", search_term="engineer", sources=["apify_indeed", "apify_greenhouse"],
                     results_wanted=400, title_exclude_keywords=["intern"], company_exclude=[])
     r = await apify.preview(search, test_db)
 
@@ -361,8 +430,8 @@ async def test_preview_caps_the_fetch_and_explains_rejections(monkeypatch, test_
     assert by["Backend Engineer"]["kept"] is True
     assert "intern" in by["Data Intern"]["reason"].lower()
     assert by["Senior Engineer"]["reason"].startswith("Body exclusion")
-    assert r["source_breakdown"] == {"indeed": 3}
-    assert r["source_errors"] == {"greenhouse": "HTTP 402"}
+    assert r["source_breakdown"] == {"apify_indeed": 3}
+    assert r["source_errors"] == {"apify_greenhouse": "HTTP 402"}
 
 
 # ── wiring ──────────────────────────────────────────────────────────────────
@@ -370,9 +439,9 @@ async def test_preview_caps_the_fetch_and_explains_rejections(monkeypatch, test_
 def test_validity_needs_a_term_and_a_known_board():
     from backend.scraper import orchestrator
     ok = orchestrator._search_mode_is_valid
-    assert ok(Search(search_mode="apify", search_term="pm", sources=["indeed"])) is True
+    assert ok(Search(search_mode="apify", search_term="pm", sources=["apify_indeed"])) is True
     assert ok(Search(search_mode="apify", search_term="pm", sources=["monster"])) is False
-    assert ok(Search(search_mode="apify", search_term=" ", sources=["indeed"])) is False
+    assert ok(Search(search_mode="apify", search_term=" ", sources=["apify_indeed"])) is False
 
 
 @pytest.mark.asyncio
@@ -384,7 +453,7 @@ async def test_dispatch_routes_to_apify(monkeypatch):
         called["ok"] = True
         return {"jobs_found": 0, "new_jobs": 0, "error": None, "duration": 0}
     monkeypatch.setattr(apify, "run", fake_run)
-    await orchestrator.run_search(Search(search_mode="apify", search_term="pm", sources=["indeed"]))
+    await orchestrator.run_search(Search(search_mode="apify", search_term="pm", sources=["apify_indeed"]))
     assert called.get("ok") is True
     assert orchestrator._source_for_search(Search(search_mode="apify")) == "apify"
 
@@ -392,7 +461,10 @@ async def test_dispatch_routes_to_apify(monkeypatch):
 def test_boards_endpoint_lists_every_preset_in_order(api_client):
     boards = api_client.get("/api/searches/apify-boards").json()
     assert [b["value"] for b in boards] == list(apify.PRESETS)
-    assert {k: boards[0][k] for k in ("value", "label", "actor")} ==         {"value": "indeed", "label": "Indeed", "actor": "misceres/indeed-scraper"}
+    assert {k: boards[0][k] for k in ("value", "label", "actor")} ==         {"value": "apify_indeed", "label": "Indeed", "actor": "misceres/indeed-scraper"}
+    assert boards[0]["price_per_1k"] == 6.0 and boards[0]["preview_limit"] == apify.PREVIEW_LIMIT
+    assert boards[0]["test_max_usd"] == apify.charge_cap_usd(apify.PRESETS["apify_indeed"], apify.PREVIEW_LIMIT)
+    assert all(b["max_results"] == apify.MAX_RESULTS for b in boards)
     assert all(b["hint"] for b in boards)
 
 
@@ -476,3 +548,78 @@ def test_key_check_names_the_account(monkeypatch, api_client):
 def test_key_check_without_a_key_is_400(api_client):
     r = api_client.post("/api/settings/apify/check")
     assert r.status_code == 400 and "not set" in r.json()["detail"]
+
+
+# ── cost guards on the search routes (C2, C3, C4) ───────────────────────────
+
+def _new_apify(api_client, **kw):
+    body = {"name": "Apify PM", "search_mode": "apify", "search_term": "pm",
+            "sources": ["apify_linkedin"], **kw}
+    return api_client.post("/api/searches", json=body)
+
+
+def test_new_apify_search_starts_paused(api_client):
+    r = _new_apify(api_client)
+    assert r.status_code == 200 and r.json()["active"] is False
+
+
+def test_new_apify_search_active_when_asked(api_client):
+    assert _new_apify(api_client, active=True).json()["active"] is True
+
+
+def test_new_keyword_search_still_starts_active(api_client):
+    r = api_client.post("/api/searches", json={"name": "kw", "search_term": "pm"})
+    assert r.status_code == 200 and r.json()["active"] is True
+
+
+def test_apify_results_wanted_is_clamped_on_create_and_patch(api_client):
+    r = _new_apify(api_client, results_wanted=5000)
+    assert r.json()["results_wanted"] == apify.MAX_RESULTS
+    sid = r.json()["id"]
+    assert api_client.patch(f"/api/searches/{sid}", json={"results_wanted": 900}).json()["results_wanted"] == apify.MAX_RESULTS
+    assert api_client.patch(f"/api/searches/{sid}", json={"results_wanted": 30}).json()["results_wanted"] == 30
+
+
+def test_apify_search_without_apify_boards_is_400(api_client):
+    # no `sources`: the JobSpy default list must not reach the paid source
+    r = api_client.post("/api/searches", json={"name": "x", "search_mode": "apify", "search_term": "pm"})
+    assert r.status_code == 400 and "not Apify boards: linkedin, indeed" in r.json()["detail"]
+    assert _new_apify(api_client, sources=[]).status_code == 400
+    assert _new_apify(api_client, sources=["apify_indeed", "indeed"]).status_code == 400
+
+
+def test_patching_a_keyword_search_to_apify_needs_boards_and_pauses_it(api_client):
+    sid = api_client.post("/api/searches", json={"name": "kw", "search_term": "pm",
+                                                 "results_wanted": 400}).json()["id"]
+    r = api_client.patch(f"/api/searches/{sid}", json={"search_mode": "apify"})
+    assert r.status_code == 400                     # stored sources are JobSpy boards
+    assert api_client.get("/api/searches").json()[-1]["search_mode"] == "keyword"   # row untouched
+    r = api_client.patch(f"/api/searches/{sid}", json={"search_mode": "apify", "sources": ["apify_glassdoor"]})
+    assert r.status_code == 200
+    assert (r.json()["active"], r.json()["results_wanted"], r.json()["sources"]) == (False, apify.MAX_RESULTS, ["apify_glassdoor"])
+
+
+def test_patching_an_apify_search_keeps_active_when_not_switching(api_client):
+    sid = _new_apify(api_client, active=True).json()["id"]
+    r = api_client.patch(f"/api/searches/{sid}", json={"search_term": "tpm"})
+    assert r.status_code == 200 and r.json()["active"] is True
+    assert api_client.patch(f"/api/searches/{sid}", json={"sources": ["linkedin"]}).status_code == 400
+
+
+def test_copied_apify_search_is_paused():
+    from backend.accounts.admin import _search_copy
+    import uuid
+    src = Search(name="a", search_mode="apify", active=True, sources=["apify_indeed"])
+    assert _search_copy(src, Search, uuid.uuid4()).active is False
+    kw = Search(name="k", search_mode="keyword", active=True, sources=["indeed"])
+    assert _search_copy(kw, Search, uuid.uuid4()).active is True
+
+
+def test_apify_searches_are_never_a_shared_target():
+    """M3 (deferred): each account runs and pays separately, so no shared key."""
+    from backend.scraper import targets
+    a = Search(id=uuid_mod.uuid4(), search_mode="apify", search_term="pm", sources=["apify_indeed"])
+    b = Search(id=uuid_mod.uuid4(), search_mode="apify", search_term="pm", sources=["apify_indeed"])
+    assert targets.is_shareable_search(a) is False
+    assert targets.search_key(a) == ("apify", "own", str(a.id))
+    assert targets.search_key(a) != targets.search_key(b)

@@ -6,19 +6,26 @@ actor's input, and how one dataset item becomes a job. A search picks presets in
 its own row into `source_breakdown`. GET /api/searches/apify-boards serves the
 list to both UIs, so a new board is one entry here and no frontend change.
 
-| preset     | actor                                       | why it is here                                  |
-| ---------- | ------------------------------------------- | ----------------------------------------------- |
-| indeed     | misceres/indeed-scraper, fed one search URL | JobSpy's direct Indeed requests get blocked     |
-| linkedin   | valig/linkedin-jobs-scraper                 | JobSpy gets rate-limited on LinkedIn            |
-| glassdoor  | valig/glassdoor-jobs-scraper                | JobSpy's Glassdoor path is not offered at all   |
-| greenhouse | fantastic-jobs/career-site-job-listing-api  | keyword search across every company on that     |
-| lever      | with ats=[<that ATS>]                       | ATS; the built-in ATS handlers need a known     |
-| ashby      |                                             | company                                         |
-| workday    |                                             |                                                 |
+| preset           | actor                                       | why it is here                                  |
+| ---------------- | ------------------------------------------- | ----------------------------------------------- |
+| apify_indeed     | misceres/indeed-scraper, fed one search URL | JobSpy's direct Indeed requests get blocked     |
+| apify_linkedin   | valig/linkedin-jobs-scraper                 | JobSpy gets rate-limited on LinkedIn            |
+| apify_glassdoor  | valig/glassdoor-jobs-scraper                | JobSpy's Glassdoor path is not offered at all   |
+| apify_greenhouse | fantastic-jobs/career-site-job-listing-api  | keyword search across every company on that     |
+| apify_lever      | with ats=[<that ATS>]                       | ATS; the built-in ATS handlers need a known     |
+| apify_ashby      |                                             | company                                         |
+| apify_workday    |                                             |                                                 |
 
-Apify charges per result. `results_wanted` caps every run, and a preview (the
-Test button) caps it at PREVIEW_LIMIT.
+The keys carry the `apify_` prefix so they can never collide with a JobSpy board
+("indeed", "linkedin", "glassdoor"): a search whose `sources` still holds JobSpy
+boards cannot run a paid board by accident. A key is also the stored Job.source.
+
+Apify charges per result. Every run is bounded three ways: `maxItems` (results_wanted,
+clamped to MAX_RESULTS; a preview, the Test button, uses PREVIEW_LIMIT), a spend cap
+`maxTotalChargeUsd` (charge_cap_usd) and a platform-side `timeout` equal to our own
+_MAX_WAIT, so the platform stops the run even when this process dies mid-poll.
 """
+import math
 import asyncio
 import json
 import logging
@@ -49,9 +56,26 @@ logger = logging.getLogger("jobnavigator.apify")
 API_BASE = "https://api.apify.com/v2"
 TOKEN_SETTING = "apify_api_key"
 PREVIEW_LIMIT = 20
+# results_wanted is clamped to this per board for every Apify search: on create, on
+# PATCH and at run time (the API accepts any integer; the UI's field stops here too).
+MAX_RESULTS = 200
 _WAIT_STEP = 60          # the API holds one status request open for 60 s at most
 _MAX_WAIT = 15 * 60      # a run still going after this is aborted, so it stops billing
 _TERMINAL = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
+# Spend cap per run (maxTotalChargeUsd): results × the board's price × a margin for
+# start and compute charges, never below a few cents, never above the ceiling.
+_CHARGE_MARGIN = 1.5
+_MIN_CHARGE_USD = 0.10
+_MAX_CHARGE_USD = 5.00
+
+
+def clamp_results(value) -> int:
+    """results_wanted of an Apify search, within 1..MAX_RESULTS (empty = the column default 50)."""
+    try:
+        n = int(value) if value is not None else 50
+    except (TypeError, ValueError):
+        n = 50
+    return min(MAX_RESULTS, max(1, n))
 
 
 class ApifyError(Exception):
@@ -288,6 +312,9 @@ class Preset:
     hint: str                                    # one line under the board picker: scope and posting-age steps
     build_input: Callable[[Search, int], dict]
     parse: Callable[[dict], dict]
+    # USD per 1,000 results on the Free plan (the Store price when this was written);
+    # feeds the per-run spend cap and the Test button's cost estimate.
+    price_per_1k: float
 
 
 def _career_site(ats: str, label: str) -> Preset:
@@ -295,32 +322,39 @@ def _career_site(ats: str, label: str) -> Preset:
     return Preset(
         "fantastic-jobs/career-site-job-listing-api", label,
         f"Every company that hires through {label}. Hours old rounds up to 1 h, 24 h, 7 days or 6 months.",
-        _career_site_input(ats), _parse_career_site)
+        _career_site_input(ats), _parse_career_site, 12.0)
 
 
 PRESETS = {
-    "indeed": Preset(
+    "apify_indeed": Preset(
         "misceres/indeed-scraper", "Indeed",
         "Indeed in the selected country. Hours old rounds up to 1, 3, 7 or 14 days; past 14 days, no age limit.",
-        _indeed_input, _parse_indeed),
-    "linkedin": Preset(
+        _indeed_input, _parse_indeed, 6.0),
+    "apify_linkedin": Preset(
         "valig/linkedin-jobs-scraper", "LinkedIn",
         "LinkedIn public job search. Hours old is exact; Remote only uses LinkedIn's remote filter.",
-        _linkedin_input, _parse_linkedin),
-    "glassdoor": Preset(
+        _linkedin_input, _parse_linkedin, 0.40),
+    "apify_glassdoor": Preset(
         "valig/glassdoor-jobs-scraper", "Glassdoor",
         "Glassdoor, newest first. Hours old rounds up to whole days; empty means the last 30 days.",
-        _glassdoor_input, _parse_glassdoor),
-    "greenhouse": _career_site("greenhouse", "Greenhouse"),
-    "lever": _career_site("lever.co", "Lever"),
-    "ashby": _career_site("ashby", "Ashby"),
-    "workday": _career_site("workday", "Workday"),
+        _glassdoor_input, _parse_glassdoor, 0.40),
+    "apify_greenhouse": _career_site("greenhouse", "Greenhouse"),
+    "apify_lever": _career_site("lever.co", "Lever"),
+    "apify_ashby": _career_site("ashby", "Ashby"),
+    "apify_workday": _career_site("workday", "Workday"),
 }
 
 
 def configured_presets(search: Search) -> list:
     """The preset keys of a search that this module knows, in their stored order."""
     return [s for s in (search.sources or []) if s in PRESETS]
+
+
+def charge_cap_usd(preset: Preset, limit: int) -> float:
+    """The maxTotalChargeUsd a run of `preset` for `limit` results is started with."""
+    raw = limit * preset.price_per_1k / 1000 * _CHARGE_MARGIN
+    cents = math.ceil(round(raw * 100, 6))     # whole cents, rounded up (float noise removed first)
+    return min(_MAX_CHARGE_USD, max(_MIN_CHARGE_USD, cents / 100))
 
 
 # ── Apify REST API ──────────────────────────────────────────────────────────
@@ -355,11 +389,16 @@ async def _call(client: httpx.AsyncClient, method: str, path: str, **kw) -> dict
     return resp.json()
 
 
-async def _run_actor(client: httpx.AsyncClient, actor: str, body: dict, limit: int) -> list:
+async def _run_actor(client: httpx.AsyncClient, actor: str, body: dict, limit: int,
+                     max_charge_usd: float = _MAX_CHARGE_USD) -> list:
     """Start the actor, wait for it, return its dataset items (at most `limit`)."""
-    # maxItems caps what a pay-per-result actor may charge for, whatever its input says.
+    # maxItems caps what a pay-per-result actor may charge for, whatever its input says;
+    # maxTotalChargeUsd caps the money whatever the actor bills for; timeout makes the
+    # platform end the run at our own deadline even if this process dies mid-poll.
     run = (await _call(client, "POST", f"/acts/{actor.replace('/', '~')}/runs",
-                       params={"maxItems": limit}, json=body))["data"]
+                       params={"maxItems": limit, "maxTotalChargeUsd": max_charge_usd,
+                               "timeout": _MAX_WAIT},
+                       json=body))["data"]
     deadline = time.monotonic() + _MAX_WAIT
     while run.get("status") not in _TERMINAL:
         if time.monotonic() > deadline:
@@ -443,7 +482,8 @@ async def _collect(search: Search, limit: int) -> tuple[list, dict]:
     # A status request is held open for _WAIT_STEP seconds, so the read timeout must exceed it.
     async with _client(_token(), _WAIT_STEP + 30) as client:
         outcomes = await asyncio.gather(
-            *(_run_actor(client, PRESETS[k].actor, PRESETS[k].build_input(search, limit), limit)
+            *(_run_actor(client, PRESETS[k].actor, PRESETS[k].build_input(search, limit), limit,
+                         charge_cap_usd(PRESETS[k], limit))
               for k in keys),
             return_exceptions=True,
         )
@@ -490,7 +530,8 @@ def _body_phrases(db) -> list:
 def _all_failed(breakdown: dict) -> str | None:
     """The run-level error when no board answered, so the run is not recorded as a quiet day."""
     if breakdown and all(v.get("error") for v in breakdown.values()):
-        return " · ".join(f"{k}: {v['error']}" for k, v in breakdown.items())
+        # the board's label, not its key: "Indeed: HTTP 401 ..." reads as the run-history line
+        return " · ".join(f"{PRESETS[k].label if k in PRESETS else k}: {v['error']}" for k, v in breakdown.items())
     return None
 
 
@@ -501,7 +542,7 @@ async def run(search: Search) -> dict:
     start = time.time()
     breakdown = {}
     try:
-        unique, breakdown = await _collect(search, search.results_wanted or 50)
+        unique, breakdown = await _collect(search, clamp_results(search.results_wanted))
         logger.info(f"apify '{search.name}': {len(unique)} jobs fetched")
 
         db = SessionLocal()
@@ -529,7 +570,7 @@ async def run(search: Search) -> dict:
                     company=j["company"],
                     title=j["title"],
                     url=j["url"],
-                    source=f"apify_{j['source']}",
+                    source=j["source"],             # the board key, already "apify_<board>"
                     search_id=search.id,
                     location=j.get("location") or None,
                     description=j.get("description") or None,
@@ -621,7 +662,7 @@ async def preview(search: Search, db) -> dict:
                 "title": j["title"],
                 "company": j.get("company", ""),
                 "url": j["url"],
-                "source": f"apify_{j['source']}",
+                "source": j["source"],
                 "location": j.get("location", ""),
                 "salary": salary,
                 "has_description": len(desc) > 50,

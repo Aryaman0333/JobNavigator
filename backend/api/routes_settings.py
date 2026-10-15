@@ -316,12 +316,23 @@ def update_policy(body: dict, db: Session = Depends(get_db)):
 
 
 @router.post("/apify/check")
-async def check_apify_key():
-    """Confirm the stored Apify key works, without running a paid actor."""
+async def check_apify_key(db: Session = Depends(get_db)):
+    """Confirm the stored Apify key works, without running a paid actor.
+
+    A member whose Apify section inherits the owner's key checks the owner's key: the
+    answer then says only that it works (`inherited: true`), never the owner's Apify
+    username, unless the caller holds a live owner unlock."""
     import httpx
     from backend.scraper.sources.apify import ApifyError, account_name
+    member = acct_settings.member_account(db)
+    inherited = (member is not None
+                 and acct_settings.section_mode(db, member, "apify") == acct_settings.INHERIT
+                 and not acct_settings.acts_as_owner(db))
     try:
-        return {"ok": True, "username": await account_name()}
+        username = await account_name()
+        if inherited:
+            return {"ok": True, "username": None, "inherited": True}
+        return {"ok": True, "username": username}
     except ApifyError as e:
         raise HTTPException(status_code=400, detail=f"Apify: {e}") from e
     except httpx.HTTPError as e:
