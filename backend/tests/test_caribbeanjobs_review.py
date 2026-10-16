@@ -127,7 +127,7 @@ async def test_scheduled_run_stores_the_challenge_as_the_search_error(test_db, m
 
 
 @pytest.mark.asyncio
-async def test_a_challenged_detail_page_keeps_the_blurb_and_is_not_cached(monkeypatch):
+async def test_a_challenged_detail_page_is_not_returned_and_not_cached(monkeypatch):
     async def fake_get(client, url, params=None):
         return _Resp(403, CF_PAGE, {"cf-mitigated": "challenge"})
 
@@ -317,7 +317,7 @@ async def test_run_keeps_a_local_salary_as_text_and_drops_the_extractors_dollar_
         return [dict(r) for r in rows]
 
     async def fake_details(client, candidates, cache=None):
-        return {}
+        return {c["url"]: dict(c) for c in candidates}   # each page read, nothing new on it
 
     async def extractor_like(job, db=None, **kw):
         # what apply_salary_to_job does with "$8,000 - $10,000" in the text: read it as USD
@@ -360,7 +360,7 @@ async def test_run_reads_only_an_explicit_usd_salary_from_the_description(test_d
         return [dict(r) for r in rows]
 
     async def fake_details(client, candidates, cache=None):
-        return {}
+        return {c["url"]: dict(c) for c in candidates}   # each page read, nothing new on it
 
     async def real_salary(job, db=None, **kw):
         job.h1b_jd_flag = False

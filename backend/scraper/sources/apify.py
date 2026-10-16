@@ -48,7 +48,8 @@ from backend.models.db import SessionLocal, Job, Search, get_existing_external_i
 from backend.analyzer.salary_extractor import extract_salary
 from backend.scraper._shared.analysis import analyze_inline
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
-from backend.scraper._shared.filters import build_search_exclude_sets, search_title_filters, title_kept
+from backend.scraper._shared.filters import (build_search_exclude_sets, company_included,
+                                             search_title_filters, title_kept)
 from backend.scraper._shared.html_text import html_to_text
 
 logger = logging.getLogger("jobnavigator.apify")
@@ -507,8 +508,14 @@ async def _collect(search: Search, limit: int) -> tuple[list, dict]:
     return jobs, breakdown
 
 
-def _rejection(j: dict, include_kw, exclude_kw, global_ex: set, search_ex: set) -> str | None:
+def _rejection(j: dict, include_kw, exclude_kw, global_ex: set, search_ex: set,
+               company_filter=None) -> str | None:
     ok, reason = title_kept(j["title"], include_kw, exclude_kw)
+    if not ok:
+        return reason
+    # The search's Company include (R30 S-06): the boards take no company parameter, so the
+    # list narrows what they return, like JobSpy's apply_company_filter.
+    ok, reason = company_included(j.get("company"), company_filter)
     if not ok:
         return reason
     company = (j.get("company") or "").lower()
@@ -553,7 +560,7 @@ async def run(search: Search) -> dict:
             existing_ids = get_existing_external_ids(db)
 
             for j in unique:
-                if _rejection(j, include_kw, exclude_kw, global_ex, search_ex):
+                if _rejection(j, include_kw, exclude_kw, global_ex, search_ex, search.company_filter):
                     # Counted so the Run-history line says "N filtered out" instead of a bare "0 seen".
                     row = breakdown[j["source"]]
                     row["filtered"] = row.get("filtered", 0) + 1
@@ -646,7 +653,7 @@ async def preview(search: Search, db) -> dict:
         from backend.analyzer.h1b_checker import scan_jd_for_h1b_flags
         results = []
         for j in unique:
-            reason = _rejection(j, include_kw, exclude_kw, global_ex, search_ex)
+            reason = _rejection(j, include_kw, exclude_kw, global_ex, search_ex, search.company_filter)
             # run() drops these through analyze_inline; the preview names the phrase.
             if reason is None and phrases and j.get("description"):
                 hit = scan_jd_for_h1b_flags(j["description"], phrases)

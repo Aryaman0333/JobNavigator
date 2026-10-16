@@ -182,6 +182,16 @@ def title_kept(title: str, include_kw: list, exclude_kw: list) -> tuple[bool, st
     return True, None
 
 
+def company_included(company: str, company_filter: list) -> tuple[bool, str | None]:
+    """(kept, reason) for a search's "Company include · exact" list: an exact,
+    case-insensitive name match (as JobSpy's `apply_company_filter`); an empty list keeps
+    every company. The reason reads as the keyword preview's."""
+    names = {(c or "").strip().lower() for c in (company_filter or []) if (c or "").strip()}
+    if not names or (company or "").strip().lower() in names:
+        return True, None
+    return False, f"Company filter: {', '.join(c for c in company_filter if c)}"
+
+
 # ── Job validation ────────────────────────────────────────────────────────────
 
 def _validate_job(title: str, url: str) -> str | None:

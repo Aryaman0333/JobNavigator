@@ -214,3 +214,15 @@ def make_content_hash(company: str, title: str) -> str:
     """Hash of company+title only (no URL) for cross-source dedup."""
     raw = f"{(company or '').lower().strip()}{(title or '').lower().strip()}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def mark_ignored(job) -> None:
+    """Turn a Job about to be stored into an "ignored" row: one the filters dropped, kept only
+    so its external_id stays in the dedup set and its page is not read again.
+
+    An ignored row carries no content_hash (R30 S-10), in every source. The content hash is the
+    cross-source key that save-from-extension and the manual add match on, and a match on an
+    ignored row would refuse the user's own save of the same company + title from another URL
+    because one search's filters dropped it once. Scrapers dedup on external_id only."""
+    job.status = "ignored"
+    job.content_hash = None

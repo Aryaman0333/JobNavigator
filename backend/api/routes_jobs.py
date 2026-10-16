@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, func
 from backend.models.db import get_db, Job, find_company_by_name
 from backend.api._input import str_field, uuid_filter
-from backend.scraper._shared.dedup import make_external_id, make_content_hash
+from backend.scraper._shared.dedup import make_external_id, make_content_hash, mark_ignored
 from backend.analyzer.salary_extractor import apply_salary_to_job
 from backend.analyzer.work_arrangement import apply_arrangement_to_job
 from backend.analyzer.location import apply_location_to_job
@@ -680,6 +680,21 @@ def job_facets(
     }
 
 
+def _known_posting(db, external_id: str, content_hash: str):
+    """The stored row a saved posting already is. Two-layer dedup: the same URL
+    (external_id), or the same company + title reached by another URL (content_hash).
+
+    An `ignored` row matches on its URL only (R30 S-10). It is a scraper's dedup memory of a
+    job one search's filters dropped, and it must not refuse the user's own save of the same
+    role from another site. New ignored rows carry no content_hash (`mark_ignored`); the
+    status test covers the ones stored with a hash before that."""
+    return db.query(Job).filter(
+        (Job.external_id == external_id)
+        | ((Job.content_hash == content_hash)
+           & ((Job.status.is_(None)) | (Job.status != "ignored")))
+    ).first()
+
+
 @router.post("/save-from-extension")
 async def save_from_extension(body: dict, db: Session = Depends(get_db)):
     """Save a job from the Chrome Extension to the Job Feed (no application created), running the same enrichment as LinkedIn passive capture: Extension search title/company filters, salary extraction, H-1B/body-exclusion scan, and auto-score when configured."""
@@ -705,9 +720,7 @@ async def save_from_extension(body: dict, db: Session = Depends(get_db)):
 
     # Two-layer dedup: external_id (URL-based) first, falling back to content_hash
     # (company+title) for cross-source catches where the same job was saved via a different URL.
-    existing = db.query(Job).filter(
-        (Job.external_id == external_id) | (Job.content_hash == content_hash)
-    ).first()
+    existing = _known_posting(db, external_id, content_hash)
     if existing:
         if existing.status == "skip":
             existing.status = "new"
@@ -785,11 +798,11 @@ async def save_from_extension(body: dict, db: Session = Depends(get_db)):
     # Skip flagged jobs OR jobs that hit the search-filter set.
     if filter_reject_reason:
         logger.info(f"save-from-extension: filtered — '{title}' @ '{company}' — {filter_reject_reason}")
-        job.status = "ignored"
+        mark_ignored(job)
     elif job.h1b_jd_flag:
         _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"
         logger.info(f"save-from-extension: skipping (body exclusion) — '{title}' @ '{company}' — phrase: {_phrase!r}")
-        job.status = "ignored"
+        mark_ignored(job)
         reject_message = f"description matched the excluded phrase '{_phrase}'"
 
     db.add(job)
@@ -860,9 +873,7 @@ def create_manual_job(body: dict, background_tasks: BackgroundTasks, db: Session
     # content_hash (company+title) for the same posting reached by another URL.
     external_id = make_external_id(company, title, url)
     content_hash = make_content_hash(company, title)
-    existing = db.query(Job).filter(
-        (Job.external_id == external_id) | (Job.content_hash == content_hash)
-    ).first()
+    existing = _known_posting(db, external_id, content_hash)
     if existing:
         # Report the row, change nothing: an `applied` or `ignored` posting must
         # not fall back to `new` because the user pasted its URL a second time.

@@ -22,8 +22,8 @@ from backend.models.db import (
 )
 from backend.accounts.settings import get_setting
 from backend.analyzer import salary_extractor
-from backend.scraper._shared.dedup import make_external_id, make_content_hash
-from backend.scraper._shared.filters import build_search_exclude_sets
+from backend.scraper._shared.dedup import make_external_id, make_content_hash, mark_ignored
+from backend.scraper._shared.filters import build_search_exclude_sets, company_included
 from backend.scraper._shared.analysis import analyze_inline
 
 logger = logging.getLogger("jobnavigator.trulyremote")
@@ -235,7 +235,8 @@ async def _fetch_roster_standalone() -> list[dict]:
         return await _fetch_roster(client)
 
 
-async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None) -> dict:
+async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None,
+                         halt: dict | None = None) -> dict:
     """Fetch each kept job's `.md` twin (bounded concurrency) for the full description. Keyed by
     URL. Only a page that answered 200 with a `## Description` section is returned: a job
     whose page failed, is gone (404/410) or came back in another shape is left out, and the run
@@ -246,26 +247,29 @@ async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cach
 
     `cache` (MT-8): the `.md` pages a shared fetch's earlier subscribers already read, keyed by
     job URL. A page in it is not fetched again; every page parsed here is added to it (a
-    failure or a non-200 never is)."""
+    failure or a non-200 never is).
+
+    `halt` (R30 S-05): where the throttle stop is recorded. A shared fetch passes one dict from
+    its memo to every subscriber, so once one subscriber's reads were stopped the next ones
+    request no page this run either. Without it the stop holds for this call only."""
     sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
     details: dict[str, dict] = {}
-    throttled = False
+    halt = {} if halt is None else halt
 
     async def one(job: dict) -> None:
-        nonlocal throttled
         if cache is not None and job["url"] in cache:
             details[job["url"]] = dict(cache[job["url"]])
             return
         async with sem:
-            if throttled:
+            if halt.get("reason"):
                 return
             try:
                 resp = await _get(client, _get_url(job["url"]))
                 if resp.status_code == 429:
-                    if not throttled:
+                    if not halt.get("reason"):
                         logger.warning("trulyremote still rate-limited after retries; "
                                        "the remaining job pages wait for the next run")
-                    throttled = True
+                    halt["reason"] = "still rate-limited (429) after retries"
                     return
                 if resp.status_code == 200 and _DESCRIPTION_RE.search(resp.text or ""):
                     details[job["url"]] = _parse_detail(resp.text, job)
@@ -305,14 +309,13 @@ def _title_kept(title: str, include_kw: list, exclude_kw: list) -> tuple[bool, s
 def _remember_ignored(db, j: dict, search: Search, existing_ids: set) -> bool:
     """Write a job dropped after its detail page as `ignored`, so the next run's dedup skips it
     before fetching the page again (jobspy and company_pages do the same for filtered rows).
-    The row keeps its description and belongs to the account the run ingests for. True if a
-    row was written."""
+    The row keeps its description and belongs to the account the run ingests for. Like every
+    ignored row it has no content_hash (`dedup.mark_ignored`). True if a row was written."""
     ext_id = make_external_id(j["company"], j["title"], j["url"])
     if not ext_id or ext_id in existing_ids:
         return False
     row = Job(
         external_id=ext_id,
-        content_hash=make_content_hash(j["company"], j["title"]),
         company=j.get("company") or "",
         title=j.get("title") or "",
         url=j.get("apply_url") or j["url"],
@@ -352,10 +355,12 @@ async def run(search: Search, shared=None) -> dict:
             include_kw, exclude_kw = _title_filters(search, db)
             global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
-            detail_cache = None
+            detail_cache = halt = None
             if shared is not None:
                 listings = await shared.get(_fetch_roster_standalone)
                 detail_cache = shared.memo.setdefault("trulyremote_details", {})
+                # A throttle stop holds for every later subscriber of this fetch (R30 S-05).
+                halt = shared.memo.setdefault("trulyremote_halt", {})
 
             async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
                 # The roster is the whole corpus and is not query-filtered, so the title and
@@ -371,6 +376,8 @@ async def run(search: Search, shared=None) -> dict:
                     ok, _ = _title_kept(j["title"], include_kw, exclude_kw)
                     if not ok:
                         continue
+                    if not company_included(j.get("company"), search.company_filter)[0]:
+                        continue
                     company_lower = (j.get("company") or "").lower()
                     if company_lower in global_exclude_set or company_lower in search_exclude_set:
                         continue
@@ -379,8 +386,9 @@ async def run(search: Search, shared=None) -> dict:
                         continue
                     candidates.append(j)
                 candidates = candidates[:search.results_wanted or 100]
-                # A single search calls exactly as before; only a shared fetch passes its cache.
-                extra = {"cache": detail_cache} if detail_cache is not None else {}
+                # A single search calls exactly as before; only a shared fetch passes its cache
+                # and its stop.
+                extra = {"cache": detail_cache, "halt": halt} if detail_cache is not None else {}
                 details = await _fetch_details(client, candidates, **extra)
 
             logger.info(f"trulyremote '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
@@ -399,6 +407,8 @@ async def run(search: Search, shared=None) -> dict:
                 # The detail page's canonical title can differ from the listing's, so run the
                 # filters over it too (preview already does this).
                 kept, why = _title_kept(j["title"], include_kw, exclude_kw)
+                if kept:
+                    kept, why = company_included(j.get("company"), search.company_filter)
                 company_lower = (j.get("company") or "").lower()
                 if kept and (company_lower in global_exclude_set or company_lower in search_exclude_set):
                     kept, why = False, "company excluded"
@@ -461,7 +471,7 @@ async def run(search: Search, shared=None) -> dict:
                     # Kept as "ignored" (as company scrapes do), so its URL is in the dedup set
                     # and its page is read once rather than on every run. Not a new job.
                     logger.info(f"Ignored (body exclusion): {j['title']} @ {j.get('company', '?')}")
-                    job.status = "ignored"
+                    mark_ignored(job)
 
                 try:
                     with db.begin_nested():
@@ -516,7 +526,7 @@ async def preview(search: Search, db) -> dict:
             survivors = []
             for j in unique:
                 kept, _ = _title_kept(j["title"], include_kw, exclude_kw)
-                if kept:
+                if kept and company_included(j.get("company"), search.company_filter)[0]:
                     cl = (j.get("company") or "").lower()
                     if cl not in global_exclude_set and cl not in search_exclude_set:
                         survivors.append(j)
@@ -543,6 +553,8 @@ async def preview(search: Search, db) -> dict:
             unread = j["url"] not in details
             j = details.get(j["url"], j)
             kept, reason = _title_kept(j["title"], include_kw, exclude_kw)
+            if kept:
+                kept, reason = company_included(j.get("company"), search.company_filter)
             if kept:
                 cl = (j.get("company") or "").lower()
                 if cl in global_exclude_set:

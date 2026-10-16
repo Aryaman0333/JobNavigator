@@ -27,8 +27,8 @@ from backend.models.db import (
 from backend.accounts.settings import get_setting
 from backend.analyzer import salary_extractor
 from backend.analyzer.salary_extractor import extract_salary
-from backend.scraper._shared.dedup import make_external_id, make_content_hash
-from backend.scraper._shared.filters import build_search_exclude_sets
+from backend.scraper._shared.dedup import make_external_id, make_content_hash, mark_ignored
+from backend.scraper._shared.filters import build_search_exclude_sets, company_included
 from backend.scraper._shared.analysis import analyze_inline
 from backend.scraper._shared.bot_wall import is_bot_wall
 
@@ -397,29 +397,53 @@ def _detail_gap() -> float:
     return _DETAIL_GAP + random.uniform(-_DETAIL_JITTER, _DETAIL_JITTER)
 
 
-async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None) -> dict:
+async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None,
+                         halt: dict | None = None) -> dict:
     """Fetch each kept job's page (bounded concurrency) and parse the full description. Keyed by
-    URL; a detail that fails leaves the listing row's short blurb in place.
+    URL. Only a page that answered 200 is returned: a job whose page failed, was challenged or
+    stayed throttled is left out, and the run skips it until a later run reads the page (R30
+    S-04, as trulyremote), rather than storing the listing's short blurb.
+
+    Once one page is still answering 429 after its retries, or comes back as a Cloudflare
+    challenge, the remaining pages are not requested this run (they wait for the next one), so
+    a throttling board can't stretch a run by a minute per page (R30 S-05).
 
     `cache` (MT-8): the detail pages a shared fetch's earlier subscribers already read, keyed
-    by URL. A page in it is not fetched again; every page read here is added to it."""
+    by URL. A page in it is not fetched again; every page read here is added to it (a failure,
+    a challenge or a non-200 never is).
+
+    `halt` (R30 S-05): where the stop is recorded. A shared fetch passes one dict from its memo
+    to every subscriber, so once one subscriber's reads were stopped the next ones request no
+    page this run either. Without it the stop holds for this call only."""
     sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
     details: dict[str, dict] = {}
+    halt = {} if halt is None else halt
 
     async def one(job: dict) -> None:
         if cache is not None and job["url"] in cache:
             details[job["url"]] = dict(cache[job["url"]])
             return
         async with sem:
+            if halt.get("reason"):
+                return
             try:
                 resp = await _get(client, job["url"])
-                if _is_cloudflare_challenge(resp):
-                    # The listing row (short blurb) stays; never cache a challenge page.
-                    logger.info(f"caribbeanjobs detail behind a Cloudflare challenge: {job['url']}")
-                elif resp.status_code == 200:
+                stop = ("still rate-limited (429) after retries" if resp.status_code == 429
+                        else "behind a Cloudflare challenge" if _is_cloudflare_challenge(resp) else None)
+                if stop:
+                    # Never cached; the job stays out of the dedup set and is read next run.
+                    if not halt.get("reason"):
+                        logger.warning(f"caribbeanjobs job pages {stop}; "
+                                       f"the remaining job pages wait for the next run")
+                    halt["reason"] = stop
+                    return
+                if resp.status_code == 200:
                     details[job["url"]] = _parse_detail(resp.text, job)
                     if cache is not None:
                         cache[job["url"]] = dict(details[job["url"]])
+                else:
+                    logger.info(f"caribbeanjobs job page not read (HTTP {resp.status_code}): "
+                                f"{job['url']}; tried again next run")
                 await asyncio.sleep(_detail_gap())   # be polite to a small board
             except Exception as e:
                 logger.debug(f"caribbeanjobs detail failed for {job['url']}: {e}")
@@ -492,7 +516,8 @@ async def run(search: Search, shared=None) -> dict:
     `shared` (MT-8 SharedFetch): the listing pages are fetched once, at the largest
     results_wanted among subscribers, and cut to this search's own; detail pages are fetched
     per subscriber (only its own new candidates) but each page at most once per shared
-    fetch, through the fetch's `memo`."""
+    fetch, through the fetch's `memo`. A throttle or challenge stop on the job pages is kept
+    in the memo too, so the later subscribers of the fetch request no page this run."""
     start = time.time()
     wanted = search.results_wanted or 100
     try:
@@ -501,12 +526,13 @@ async def run(search: Search, shared=None) -> dict:
             include_kw, exclude_kw = _title_filters(search, db)
             global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
-            detail_cache = None
+            detail_cache = halt = None
             if shared is not None:
                 listings = await shared.get(
                     lambda: _fetch_listings_for(search, shared.params.get("results_wanted") or wanted))
                 listings = listings[:wanted]
                 detail_cache = shared.memo.setdefault("caribbeanjobs_details", {})
+                halt = shared.memo.setdefault("caribbeanjobs_halt", {})
 
             async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
                 if shared is None:
@@ -517,6 +543,8 @@ async def run(search: Search, shared=None) -> dict:
                     ok, _ = _title_kept(j["title"], include_kw, exclude_kw)
                     if not ok:
                         continue
+                    if not company_included(j.get("company"), search.company_filter)[0]:
+                        continue
                     company_lower = (j.get("company") or "").lower()
                     if company_lower in global_exclude_set or company_lower in search_exclude_set:
                         continue
@@ -524,30 +552,40 @@ async def run(search: Search, shared=None) -> dict:
                     if make_external_id(j["company"], j["title"], j["url"]) in existing_ids:
                         continue
                     candidates.append(j)
-                # A single search calls exactly as before; only a shared fetch passes its cache.
-                extra = {"cache": detail_cache} if detail_cache is not None else {}
+                # A single search calls exactly as before; only a shared fetch passes its cache
+                # and its stop.
+                extra = {"cache": detail_cache, "halt": halt} if detail_cache is not None else {}
                 details = await _fetch_details(client, candidates, **extra)
 
             logger.info(f"caribbeanjobs '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
 
             new_jobs = 0
             ignored_jobs = 0
+            unread = 0
             for j in candidates:
-                if j["url"] in details:
-                    j.update(details[j["url"]])
-                    # The detail page's JSON-LD can rename the job or its company, and the
-                    # stored row carries those names, so the filters see them too.
-                    ok, why = _title_kept(j["title"], include_kw, exclude_kw)
-                    company_lower = (j.get("company") or "").lower()
-                    if ok and (company_lower in global_exclude_set or company_lower in search_exclude_set):
-                        ok, why = False, "company excluded"
-                    if not ok:
-                        # Kept as "ignored", as JobSpy keeps a title-filtered row, so the next run
-                        # dedups its URL instead of reading the page again. Not a new job.
-                        logger.info(f"caribbeanjobs: '{j['title']}' @ {j.get('company')} ignored after the detail page ({why})")
-                        if _store_ignored(db, search, j, existing_ids):
-                            ignored_jobs += 1
-                        continue
+                if j["url"] not in details:
+                    # No job page this run (failed, challenged, throttled or not 200): the
+                    # listing's blurb is not stored, so the body-exclusion phrases and the
+                    # expiry date never miss the real page. The job stays out of the dedup set
+                    # and the next run tries its page again (R30 S-04). Not counted as new.
+                    unread += 1
+                    continue
+                j.update(details[j["url"]])
+                # The detail page's JSON-LD can rename the job or its company, and the
+                # stored row carries those names, so the filters see them too.
+                ok, why = _title_kept(j["title"], include_kw, exclude_kw)
+                if ok:
+                    ok, why = company_included(j.get("company"), search.company_filter)
+                company_lower = (j.get("company") or "").lower()
+                if ok and (company_lower in global_exclude_set or company_lower in search_exclude_set):
+                    ok, why = False, "company excluded"
+                if not ok:
+                    # Kept as "ignored", as JobSpy keeps a title-filtered row, so the next run
+                    # dedups its URL instead of reading the page again. Not a new job.
+                    logger.info(f"caribbeanjobs: '{j['title']}' @ {j.get('company')} ignored after the detail page ({why})")
+                    if _store_ignored(db, search, j, existing_ids):
+                        ignored_jobs += 1
+                    continue
                 if j.get("expired"):
                     continue
                 if not j["company"]:
@@ -601,7 +639,7 @@ async def run(search: Search, shared=None) -> dict:
                     # Kept as "ignored" (as company scrapes do), so its URL is in the dedup set
                     # and the page is read once rather than on every run. Not a new job.
                     logger.info(f"Ignored (body exclusion): {j['title']} @ {j.get('company', '?')}")
-                    job.status = "ignored"
+                    mark_ignored(job)
 
                 try:
                     with db.begin_nested():
@@ -630,6 +668,7 @@ async def run(search: Search, shared=None) -> dict:
         from backend.activity import log_activity
         log_activity("scrape", f"caribbeanjobs '{search.name}': {new_jobs} new / {seen} seen"
                      + (f" ({ignored_jobs} filtered out after the job page)" if ignored_jobs else "")
+                     + (f" ({unread} job pages not read; the next run tries them again)" if unread else "")
                      + f" in {duration:.1f}s")
         return {"jobs_found": seen, "new_jobs": new_jobs, "ignored_jobs": ignored_jobs,
                 "error": None, "duration": duration}
@@ -657,7 +696,7 @@ async def preview(search: Search, db) -> dict:
             survivors = []
             for j in unique:
                 kept, _ = _title_kept(j["title"], include_kw, exclude_kw)
-                if kept:
+                if kept and company_included(j.get("company"), search.company_filter)[0]:
                     cl = (j.get("company") or "").lower()
                     if cl not in global_exclude_set and cl not in search_exclude_set:
                         survivors.append(j)
@@ -665,7 +704,6 @@ async def preview(search: Search, db) -> dict:
             # listing's blurb, and the preview says so.
             sampled = survivors[:PREVIEW_DETAIL_LIMIT]
             details = await _fetch_details(client, sampled)
-        sampled_urls = {j["url"] for j in sampled}
 
         raw_count = len(unique)
         from collections import Counter
@@ -681,9 +719,12 @@ async def preview(search: Search, db) -> dict:
 
         results = []
         for j in unique:
-            unsampled = j["url"] not in sampled_urls
+            # Not sampled, or its page could not be read: only the listing's blurb is known.
+            unread = j["url"] not in details
             j = details.get(j["url"], j)
             kept, reason = _title_kept(j["title"], include_kw, exclude_kw)
+            if kept:
+                kept, reason = company_included(j.get("company"), search.company_filter)
             if kept:
                 cl = (j.get("company") or "").lower()
                 if cl in global_exclude_set:
@@ -704,8 +745,8 @@ async def preview(search: Search, db) -> dict:
 
             desc = j.get("description") or ""
             row_extra = {}
-            if unsampled and kept and body_phrases:
-                # Not one of the sampled detail pages: the body scan saw only the blurb.
+            if unread and kept and body_phrases:
+                # No job page read for this row: the body scan saw only the blurb.
                 row_extra["body_checked"] = False
             results.append({
                 **row_extra,

@@ -11,7 +11,7 @@ from backend.models.db import (
 )
 from backend.scraper._shared.browser import _get_browser, _new_page, _close_page
 from backend.scraper._shared.filters import _apply_company_filters
-from backend.scraper._shared.dedup import make_external_id, make_content_hash, _normalize_url
+from backend.scraper._shared.dedup import make_external_id, make_content_hash, mark_ignored, _normalize_url
 from backend.scraper.ats import (
     workday, greenhouse, lever, ashby, oracle_hcm,
     phenom, talentbrew, rippling, smartrecruiters, meta, google, amazon, generic,
@@ -351,7 +351,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                 if job.h1b_jd_flag:
                     _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"
                     logger.info(f"Skipping job (body exclusion): {j['title']} @ {job.company or company_name} — matched phrase: {_phrase!r}")
-                    job.status = "ignored"
+                    mark_ignored(job)
 
                 try:
                     with db.begin_nested():
@@ -375,7 +375,6 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
 
                 job = Job(
                     external_id=ext_id,
-                    content_hash=make_content_hash(company.name, j["title"]),
                     company=company.name,
                     title=j["title"],
                     url=_normalize_url(j["url"]) or j["url"],

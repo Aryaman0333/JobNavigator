@@ -76,7 +76,8 @@ class SharedFetch:
 
     `memo` is scratch space a source may keep across its subscribers for follow-up fetches
     that are the same for everyone (caribbeanjobs: detail pages by URL; trulyremote: `.md`
-    job pages by URL). Only raw, account-
+    job pages by URL; both: the board's throttle stop, `<source>_halt`, so once one subscriber
+    was stopped by a 429 the later ones request no page that run). Only raw, account-
     independent page data goes in it, never anything an ingest filtered or wrote."""
 
     def __init__(self, key=None, params: Optional[dict] = None):
