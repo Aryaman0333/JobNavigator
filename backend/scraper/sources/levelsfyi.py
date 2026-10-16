@@ -40,6 +40,10 @@ def _parse_levelsfyi_salary(location_text: str) -> tuple[str, str | None, int | 
         if part_lower in ("remote", "on-site", "hybrid"):
             work_arrangement = part.strip()
         elif "$" in part:
+            # "$45/hr" is not a yearly figure (the rule below would read $45 as $45K).
+            from backend.analyzer.salary_extractor import is_non_annual
+            if is_non_annual(part):
+                continue
             amounts = re.findall(r'\$(\d+(?:\.\d+)?)\s*[Kk]?', part)
             for i, amt in enumerate(amounts):
                 val = int(float(amt))

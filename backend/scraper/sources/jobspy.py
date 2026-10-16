@@ -30,6 +30,19 @@ def _clean(v):
     return s or None
 
 
+def _jobspy_yearly(interval, *amounts) -> bool:
+    """True when a JobSpy row's pay may be stored as a yearly salary: its interval is yearly or
+    unstated, and each amount given is at least 1000 (JobSpy runs without enforce_annual_salary,
+    so an hourly row carries the hourly figure). Not annualised, as no source does that."""
+    unit = (_clean(interval) or "yearly").lower()
+    if unit not in ("yearly", "annual", "year"):
+        return False
+    try:
+        return all(float(a) >= 1000 for a in amounts if _clean(a) is not None)
+    except (TypeError, ValueError):
+        return False
+
+
 def _apply_h1b_inline(job, db=None, company_lookup=None, phrases=None, loop=None) -> None:
     """Sync-safe H-1B JD scan: runs check_job_h1b in an event loop for asyncio.to_thread() workers; batch callers should pass a shared `loop` plus `company_lookup`/`phrases` to skip per-job DB lookups."""
     import asyncio as _asyncio
@@ -463,9 +476,13 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
                     saved=False,
                 )
 
-                # Extract salary if present in JobSpy results
+                # Extract salary if present in JobSpy results. Only a yearly amount (or one
+                # with no interval) is stored; hourly/daily/weekly/monthly pay is not a yearly
+                # figure, and a "yearly" one under 1000 is not a salary.
                 min_amount = row.get("min_amount")
                 max_amount = row.get("max_amount")
+                if not _jobspy_yearly(row.get("interval"), min_amount, max_amount):
+                    min_amount = max_amount = None
                 if min_amount and str(min_amount) != "nan":
                     try:
                         job.salary_min = int(float(min_amount))

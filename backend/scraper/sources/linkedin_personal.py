@@ -303,6 +303,12 @@ def _parse_salary_text(text: str) -> dict:
         return result
 
     text = text.strip()
+    # "$45/hr" or "$8K/mo" is not a yearly figure (the bare-number rule below would read
+    # $45 as $45K); keep it as text only.
+    from backend.analyzer.salary_extractor import is_non_annual
+    if is_non_annual(text):
+        result["salary_text"] = text
+        return result
     # Match $120K, $120,000, $120000, $120.5K etc.
     amounts = []
     for m in re.finditer(r'\$([\d,]+(?:\.\d+)?)\s*([Kk])?', text):

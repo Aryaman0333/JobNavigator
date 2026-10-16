@@ -189,6 +189,11 @@ def _parse_salary(salary_desc: str) -> tuple:
     """Parse salary string like '$120K - $180K/yr' into (min, max) integers."""
     if not salary_desc:
         return None, None
+    # "$45/hr" or "$8K/mo" is not a yearly figure (the bare-number rule below would read
+    # $45 as $45K); the text stays in salary_text.
+    from backend.analyzer.salary_extractor import is_non_annual
+    if is_non_annual(salary_desc):
+        return None, None
 
     # Match patterns like $120K, $120,000, $120000
     amounts = re.findall(r'\$[\d,]+(?:\.\d+)?[Kk]?', salary_desc)
