@@ -671,8 +671,10 @@ export function ScopeTag({ tag }) {
 // Owner: "<member>'s policy: Inherit | Own" for one policy section (T7-06: it sets the
 // member's policy, never the owner's own state).
 export function PolicyToggle({ memberName, mode, onChange, sectionTitle }) {
+  // height 26 = the section head's line: the inset control (28-30px) centres in it and
+  // overflows into the head's padding instead of growing the head by 2-4px
   return (
-    <span data-policy-for={memberName} style={{ display: 'flex', alignItems: 'center', gap: 7, marginLeft: 'auto', flex: '0 0 auto' }}>
+    <span data-policy-for={memberName} style={{ display: 'flex', alignItems: 'center', gap: 7, marginLeft: 'auto', flex: '0 0 auto', height: 26 }}>
       <Helper size="xs">{memberName}’s policy:</Helper>
       <Segmented variant="inset" grow={false} value={mode} onChange={onChange}
         ariaLabel={`${sectionTitle} for ${memberName}`}
