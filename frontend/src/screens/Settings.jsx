@@ -244,6 +244,7 @@ export default function Settings() {
   const [adding, setAdding] = useState(false)
   // MT-14: settings by role (all of it only with two or more accounts)
   const [meta, setMeta] = useState(null)           // member: GET /settings `_meta`
+  const [effective, setEffective] = useState({})   // owner: GET /settings `_effective` (local model server addresses in use)
   const [sidx, setSidx] = useState(null)           // indexSections(GET /settings/sections)
   const [policies, setPolicies] = useState({})     // owner: {memberId: {section: mode}}
   const [policyFor, setPolicyFor] = useState('')   // owner: the member whose Inherit/Own controls are shown ('' = hidden)
@@ -341,9 +342,10 @@ export default function Settings() {
       const [s, d, e] = await Promise.all([api.get('/settings'), api.get('/settings/defaults').catch(() => ({ data: {} })),
         api.get('/llm/efforts').catch(() => ({ data: {} }))])
       // A member's GET /settings carries `_meta` {key: {section, source, editable}} (MT-9);
-      // it is not a setting, so it lives beside the map, never in it.
-      const { _meta: metaMap, ...values } = s.data || {}
-      setS(values); setMeta(metaMap || null); setDefaults(d.data || {}); setEfforts(e.data?.efforts || {})
+      // it is not a setting, so it lives beside the map, never in it. The owner's `_effective` (the LM Studio /
+      // Ollama addresses in use, env or default when the box is empty) likewise.
+      const { _meta: metaMap, _effective: eff, ...values } = s.data || {}
+      setS(values); setMeta(metaMap || null); setEffective(eff || {}); setDefaults(d.data || {}); setEfforts(e.data?.efforts || {})
       // an override row starts open when it actually has a provider or an effort set
       const o = {}
       for (const k of ['scoring_llm', 'llm_fallback', 'cv_tailor_llm', 'cover_letter_llm', 'autofill_llm', 'email_llm']) {
@@ -529,10 +531,10 @@ export default function Settings() {
         // The local model servers' addresses: owner-only settings (one host per install), shown to the owner while some slot uses that provider.
         B('LM Studio address', 'Empty uses LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker: http://host.docker.internal:1234/v1.'
             + (usedBy('lmstudio').length ? ` Used by: ${usedBy('lmstudio').join(', ')}.` : ''),
-          'lmstudio_base_url', { mono: true, w: '340px', hide: () => member || !usedBy('lmstudio').length }),
+          'lmstudio_base_url', { mono: true, w: '340px', placeholder: effective.lmstudio_base_url, hide: () => member || !usedBy('lmstudio').length }),
         B('Ollama address', 'Empty uses OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker: http://host.docker.internal:11434.'
             + (usedBy('ollama').length ? ` Used by: ${usedBy('ollama').join(', ')}.` : ''),
-          'ollama_base_url', { mono: true, w: '340px', hide: () => member || !usedBy('ollama').length }),
+          'ollama_base_url', { mono: true, w: '340px', placeholder: effective.ollama_base_url, hide: () => member || !usedBy('ollama').length }),
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
           { info: 'Used only when the scoring call fails or is rate-limited. One retry, then the job stays unscored until the next run. Choose a cheap model from a different provider than the primary.' }),
@@ -729,7 +731,7 @@ export default function Settings() {
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, hasMe, sidx, gmail])
+  }, [S, resumes, personaAvailable, trig, li, multi, isOwner, hasMe, sidx, gmail, effective])
 
   // The rail's account menu lands here: `#accounts` (Manage accounts) scrolls to the
   // Accounts / Your account section, `#add-account` also opens the Add dialog. The hash is

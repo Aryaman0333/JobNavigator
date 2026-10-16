@@ -19,7 +19,8 @@ _REDACT_SUFFIXES = ("_password", "_api_key", "_session_id", "_secret")
 _REDACT_KEYS = {"dashboard_api_key", "gmail_refresh_token", "claude_code_oauth_token",
                 "telegram_bot_token"}
 # Server-side only, never listed (not even redacted) and not writable (not a known key).
-_HIDDEN_KEYS = {"account_cookie_secret", "telegram_own_webhook_secret", "gmail_token_status"}
+_HIDDEN_KEYS = {"account_cookie_secret", "telegram_own_webhook_secret", "gmail_token_status",
+                "llm_local_seed_cleared"}
 
 
 def _is_secret(key: str) -> bool:
@@ -119,7 +120,7 @@ def _check_telegram_chat(db, updates: dict, targets: dict) -> None:
 @router.get("")
 def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key section, source, editable); always on for members"),
                  db: Session = Depends(get_db)):
-    """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values (the response is unchanged unless `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`. A member never receives the owner's addresses, chat ids or secrets: those come back empty (secrets as "••••••") with `set_by_owner: true` in `_meta`, and `proxy_url` with its credentials masked."""
+    """Return the settings the current account sees as a key-value map. Sensitive values are redacted. For the owner these are the install values plus `_effective` {lmstudio_base_url, ollama_base_url: the address in use} (`_meta` only with `?meta=1`); a member gets inherited install values plus its own rows, and a `_meta` key with `{key: {section, source, editable}}`. A member never receives the owner's addresses, chat ids or secrets: those come back empty (secrets as "••••••") with `set_by_owner: true` in `_meta`, and `proxy_url` with its credentials masked."""
     rows = [r for r in acct_settings.effective_rows(db) if r[0] not in _HIDDEN_KEYS]
     member_caller = not acct_settings.is_owner_caller(db)
     result = {}
@@ -144,6 +145,13 @@ def get_settings(meta: bool = Query(False, description="Add `_meta` (per-key sec
             result[key] = json.loads(value)
         except (json.JSONDecodeError, TypeError):
             result[key] = value
+    if not member_caller:
+        # L-03: the address each local model server uses now (setting, else env, else default),
+        # which Settings › Models shows as the placeholder of an empty box. Owner only: it can
+        # carry the owner's env address, which a member never receives in clear.
+        from backend.analyzer.llm_client import LOCAL_LLM_URLS, local_base_url
+        result["_effective"] = {key: local_base_url(provider, db=db)
+                                for provider, (key, _env, _default) in LOCAL_LLM_URLS.items()}
     if meta or member_caller:
         info = acct_settings.key_meta(db, [k for k, _v, _s in rows])
         for key, _value, source in rows:

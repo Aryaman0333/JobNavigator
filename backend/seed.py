@@ -1,7 +1,6 @@
 """Seed settings and companies tables with defaults on first run."""
 import logging
 import json
-import os
 import re
 import secrets
 from backend.models.db import SessionLocal, Setting, Company, Search, Resume
@@ -58,12 +57,11 @@ DEFAULT_SETTINGS = {
     "llm_api_key": ("", "API key for API-backed providers (for OpenCode Go paste its API key; not needed for subscription CLIs or Ollama)"),
     "llm_effort": ("", "Reasoning effort for the Primary model (empty = the model's default; values depend on the provider)"),
     "claude_code_oauth_token": ("", "Claude Code subscription token from `claude setup-token` (empty = CLAUDE_CODE_OAUTH_TOKEN from .env; a member with its own Models section can set its own)"),
-    # Owner-only (section llm_local): the host's local model servers. Seeded with LMSTUDIO_BASE_URL /
-    # OLLAMA_BASE_URL when set, else the address used before these settings existed.
-    "lmstudio_base_url": (os.getenv(LOCAL_LLM_URLS["lmstudio"][1], "").strip() or LOCAL_LLM_URLS["lmstudio"][2],
-                          "LM Studio server address (OpenAI-compatible, ends in /v1). Empty = LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker use http://host.docker.internal:1234/v1"),
-    "ollama_base_url": (os.getenv(LOCAL_LLM_URLS["ollama"][1], "").strip() or LOCAL_LLM_URLS["ollama"][2],
-                        "Ollama server address. Empty = OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker use http://host.docker.internal:11434"),
+    # Owner-only (section llm_local): the host's local model servers. Seeded empty, so the address
+    # is read at call time from LMSTUDIO_BASE_URL / OLLAMA_BASE_URL, else the built-in default (L-03:
+    # a seeded env value froze .env at first boot, and /settings/defaults served it to members).
+    "lmstudio_base_url": ("", "LM Studio server address (OpenAI-compatible, ends in /v1). Empty = LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker use http://host.docker.internal:1234/v1"),
+    "ollama_base_url": ("", "Ollama server address. Empty = OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker use http://host.docker.internal:11434"),
     "llm_fallback_provider": ("", "Fallback LLM provider (empty = no fallback)"),
     "llm_fallback_model": ("", "Fallback model name"),
     "llm_fallback_api_key": ("", "API key for fallback provider (OpenAI)"),
@@ -1232,6 +1230,39 @@ def migrate_llm_settings(db):
     db.commit()
 
 
+# Marker of the one-time L-03 cleanup below (install row, never served, not writable).
+LOCAL_URLS_CLEARED_KEY = "llm_local_seed_cleared"
+
+
+def clear_seeded_local_urls(db) -> list:
+    """One time per install (L-03): blank `lmstudio_base_url` / `ollama_base_url` where the value
+    still gives the same address as an empty box would (the env var, else the built-in default).
+
+    The first build with these settings seeded them with `LMSTUDIO_BASE_URL` / `OLLAMA_BASE_URL`
+    or the default, so the row was never empty and a later `.env` edit was ignored. A value that
+    equals today's env/default address is that seed (or the same address typed by hand): blanking
+    it sends every call to the same server as before and lets `.env` work again. Any other value
+    was set on purpose, or no longer matches the env, so it stays. The marker row keeps the step
+    from running again, so an address typed after this release is never touched. Returns the
+    keys it blanked."""
+    from backend.analyzer.llm_client import local_base_url_fallback
+    if install_row(db, LOCAL_URLS_CLEARED_KEY) is not None:
+        return []
+    cleared = []
+    for provider, (key, _env, _default) in LOCAL_LLM_URLS.items():
+        row = install_row(db, key)
+        value = (row.value or "").strip().rstrip("/") if row is not None else ""
+        if value and value == local_base_url_fallback(provider):
+            row.value = ""
+            cleared.append(key)
+    db.add(Setting(key=LOCAL_URLS_CLEARED_KEY, value="1",
+                   description="Internal: the seeded LM Studio / Ollama addresses were cleared once (L-03)"))
+    db.commit()
+    if cleared:
+        logger.info(f"Cleared the seeded local model addresses (env/default applies): {', '.join(cleared)}")
+    return cleared
+
+
 SEED_SEARCHES = [
     {
         "name": "Extension LI",
@@ -1579,6 +1610,7 @@ def run_seeds():
             seed_persona(db)
             cleanup_removed_settings(db)
             migrate_llm_settings(db)
+            clear_seeded_local_urls(db)
             migrate_cv_terminology(db)
             migrate_h1b_to_visa_cache(db)
     finally:

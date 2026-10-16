@@ -1,5 +1,6 @@
 // Settings › Models (owner). R30 L-01: switching an override off clears its API key too, since
-// the key belongs to the override's provider and is hidden once the row closes.
+// the key belongs to the override's provider and is hidden once the row closes. L-03: an empty
+// LM Studio / Ollama address shows the address in use (GET /settings `_effective`) as its placeholder.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -58,5 +59,13 @@ describe('Settings › Models', () => {
     fireEvent.click(screen.getByLabelText('Autofill — override the Primary model'))
     await waitFor(() => expect(api.patch).toHaveBeenCalledTimes(3))
     expect(patchedKeys()).not.toContain('autofill_llm_api_key')
+  })
+
+  it('an empty local server address shows the address in use as its placeholder', async () => {
+    mockApi({ ...BASE, _effective: { lmstudio_base_url: 'http://host.docker.internal:1234/v1', ollama_base_url: 'http://localhost:11434' } })
+    await renderSettings('LM Studio address')
+    expect(screen.getByLabelText('LM Studio address').getAttribute('placeholder')).toBe('http://host.docker.internal:1234/v1')
+    expect(screen.getByLabelText('Ollama address').getAttribute('placeholder')).toBe('http://localhost:11434')
+    expect(screen.getByLabelText('LM Studio address').value).toBe('')
   })
 })

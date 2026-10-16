@@ -658,7 +658,13 @@ def local_base_url(provider: str, db=None) -> str:
     finally:
         if own_db:
             db.close()
-    return (value or os.getenv(env_name, "").strip() or default).rstrip("/")
+    return value.rstrip("/") or local_base_url_fallback(provider)
+
+
+def local_base_url_fallback(provider: str) -> str:
+    """The address an empty LM Studio / Ollama setting uses: the env var, else the default."""
+    _key, env_name, default = LOCAL_LLM_URLS[provider]
+    return (os.getenv(env_name, "").strip() or default).rstrip("/")
 
 
 def _claude_code_token() -> str:

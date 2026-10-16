@@ -6,6 +6,11 @@ key or that provider's env key (owner / inherit only). B2: the fallback reuses t
 only on the same provider. B3: OpenAI dispatch falls back to OPENAI_API_KEY (the SDK reads it
 only for api_key=None, and an empty string was sent); OpenRouter / OpenCode Go / LM Studio never
 receive it.
+
+R30: L-01 a slot's own key counts only while the slot has its own provider. L-02 Claude API and
+OpenRouter with no key fail at once with a NonRetryable "No API key for <provider>". L-03 the
+LM Studio / Ollama addresses are seeded empty (env, then default, at call time), the owner sees
+the address in use, and a one-time cleanup blanks values that equal what the env/default gives.
 """
 import types
 
@@ -272,13 +277,13 @@ def test_local_url_setting_then_env_then_default(test_db, monkeypatch, provider)
     assert L.local_base_url(provider) == "http://host.docker.internal:7"
 
 
-def test_local_url_defaults_are_the_previous_addresses():
+def test_local_url_defaults_are_the_previous_addresses_and_seeds_are_empty():
+    """L-03: the seed is "" so the env var is read at call time, not frozen at first boot."""
     from backend.seed import DEFAULT_SETTINGS
     assert L.LOCAL_LLM_URLS["lmstudio"][2] == "http://localhost:1234/v1"
     assert L.LOCAL_LLM_URLS["ollama"][2] == "http://localhost:11434"
-    for provider, (key, env_name, default) in L.LOCAL_LLM_URLS.items():
-        import os
-        assert DEFAULT_SETTINGS[key][0] == (os.environ.get(env_name, "").strip() or default)
+    for key, _env, _default in L.LOCAL_LLM_URLS.values():
+        assert DEFAULT_SETTINGS[key][0] == ""
 
 
 @pytest.mark.asyncio
@@ -345,6 +350,7 @@ def test_member_cannot_write_local_urls_and_sees_them_masked(client, test_db, me
     assert body["ollama_base_url"] == "http://••••@host.docker.internal:11434"
     assert body["_meta"]["ollama_base_url"]["editable"] is False
     assert S.get_install_setting(test_db, "ollama_base_url") == "http://user:pw@host.docker.internal:11434"
+    assert "_effective" not in body   # the addresses in use are the owner's (L-03)
 
 
 # ── shared fakes for the Claude API ──────────────────────────────────────────
@@ -569,3 +575,93 @@ async def test_openrouter_other_errors_still_take_the_retry_path(test_db, monkey
     _openai_raising(monkeypatch, 503)
     with pytest.raises(_StatusError):
         await L._dispatch("openrouter", "openai/gpt-5", "sk-or", "p", "s", 10)
+
+
+# ── L-03: local model server addresses ──────────────────────────────────────
+
+@pytest.fixture
+def local_env(monkeypatch):
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "http://lm-user:lm-pw@lm-host:1234/v1")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama-host:11434")
+
+
+def test_defaults_never_serve_the_env_addresses(client, test_db, member, local_env):
+    for headers in ({}, {ACT_AS: str(member)}):
+        body = client.get("/api/settings/defaults", headers=headers).json()
+        assert body["lmstudio_base_url"] == "" and body["ollama_base_url"] == ""
+        assert "lm-host" not in str(body) and "ollama-host" not in str(body)
+
+
+def test_owner_sees_the_address_in_use(client, test_db, local_env):
+    set_setting(test_db, "lmstudio_base_url", "")
+    set_setting(test_db, "ollama_base_url", "http://box:11434/")
+    body = client.get("/api/settings").json()
+    assert body["_effective"] == {"lmstudio_base_url": "http://lm-user:lm-pw@lm-host:1234/v1",
+                                  "ollama_base_url": "http://box:11434"}
+    assert body["lmstudio_base_url"] == ""
+
+
+def test_owner_sees_the_default_address_with_no_env(client, test_db):
+    body = client.get("/api/settings").json()
+    assert body["_effective"] == {"lmstudio_base_url": "http://localhost:1234/v1",
+                                  "ollama_base_url": "http://localhost:11434"}
+
+
+def test_member_never_gets_the_address_in_use(client, test_db, member, local_env):
+    client.headers[ACT_AS] = str(member)
+    body = client.get("/api/settings").json()
+    assert "_effective" not in body
+    assert "lm-pw" not in str(body) and "ollama-host" not in str(body)
+
+
+def _row(db, key):
+    return db.query(Setting).filter(Setting.key == key, Setting.account_id.is_(None)).first()
+
+
+def test_cleanup_blanks_the_old_seed_with_no_env(test_db):
+    from backend.seed import clear_seeded_local_urls
+    set_setting(test_db, "lmstudio_base_url", "http://localhost:1234/v1")
+    set_setting(test_db, "ollama_base_url", "http://localhost:11434")
+    assert sorted(clear_seeded_local_urls(test_db)) == ["lmstudio_base_url", "ollama_base_url"]
+    assert S.get_install_setting(test_db, "lmstudio_base_url") == ""
+    assert S.get_install_setting(test_db, "ollama_base_url") == ""
+    assert L.local_base_url("lmstudio") == "http://localhost:1234/v1"   # same address as before
+
+
+def test_cleanup_blanks_a_value_equal_to_the_env(test_db, monkeypatch):
+    from backend.seed import clear_seeded_local_urls
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+    set_setting(test_db, "ollama_base_url", "http://host.docker.internal:11434/")
+    before = L.local_base_url("ollama")
+    assert clear_seeded_local_urls(test_db) == ["ollama_base_url"]
+    assert L.local_base_url("ollama") == before
+
+
+def test_cleanup_keeps_values_that_differ_from_env_or_default(test_db, monkeypatch):
+    from backend.seed import clear_seeded_local_urls
+    # seeded localhost before LMSTUDIO_BASE_URL was set: blanking would move the calls, so it stays
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "http://host.docker.internal:1234/v1")
+    set_setting(test_db, "lmstudio_base_url", "http://localhost:1234/v1")
+    set_setting(test_db, "ollama_base_url", "http://gpu-box:11434")
+    assert clear_seeded_local_urls(test_db) == []
+    assert S.get_install_setting(test_db, "lmstudio_base_url") == "http://localhost:1234/v1"
+    assert S.get_install_setting(test_db, "ollama_base_url") == "http://gpu-box:11434"
+
+
+def test_cleanup_runs_once(test_db):
+    from backend.seed import LOCAL_URLS_CLEARED_KEY, clear_seeded_local_urls
+    set_setting(test_db, "ollama_base_url", "")
+    assert clear_seeded_local_urls(test_db) == []
+    assert _row(test_db, LOCAL_URLS_CLEARED_KEY) is not None
+    # the owner later types the default address on purpose: a restart leaves it alone
+    set_setting(test_db, "ollama_base_url", "http://localhost:11434")
+    assert clear_seeded_local_urls(test_db) == []
+    assert S.get_install_setting(test_db, "ollama_base_url") == "http://localhost:11434"
+    assert test_db.query(Setting).filter(Setting.key == LOCAL_URLS_CLEARED_KEY).count() == 1
+
+
+def test_cleanup_marker_is_never_served_or_writable(client, test_db):
+    from backend.seed import LOCAL_URLS_CLEARED_KEY, clear_seeded_local_urls
+    clear_seeded_local_urls(test_db)
+    assert LOCAL_URLS_CLEARED_KEY not in client.get("/api/settings").json()
+    assert client.patch("/api/settings", json={LOCAL_URLS_CLEARED_KEY: ""}).status_code == 400

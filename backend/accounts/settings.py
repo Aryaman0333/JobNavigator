@@ -109,7 +109,7 @@ _SECTIONS = [
     # an invalid_grant (never served).
     ("gmail", "Gmail", OWN_ALWAYS, OWN, [], ["gmail_processed_ids", "gmail_refresh_token", "gmail_token_status"]),
     # account_cookie_secret: HMAC key of the jn_account cookie (MT-10); never served.
-    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "account_cookie_secret"]),
+    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "llm_local_seed_cleared", "account_cookie_secret"]),
 ]
 
 SETTING_SECTIONS = {
