@@ -11,6 +11,7 @@ least one must be set.
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -34,7 +35,11 @@ logger = logging.getLogger("jobnavigator.caribbeanjobs")
 BASE = "https://www.caribbeanjobs.com"
 LIST_URL = f"{BASE}/ShowResults.aspx"
 _MAX_PAGES = 50         # defensive cap: 1250 listing rows / scrape
-_DETAIL_CONCURRENCY = 4
+# Detail pages: two at a time, about a second apart with a little jitter, to stay gentle on a
+# small board (a 100-job run takes about a minute, fine for a scheduled scrape).
+_DETAIL_CONCURRENCY = 2
+_DETAIL_GAP = 1.0
+_DETAIL_JITTER = 0.25
 # Test previews read at most this many detail pages, so one click can't fetch a hundred.
 PREVIEW_DETAIL_LIMIT = 20
 _DROP_PARAMS = {"page"}
@@ -413,6 +418,11 @@ async def _fetch_listings(client: httpx.AsyncClient, base: dict, keywords: list[
     return out
 
 
+def _detail_gap() -> float:
+    """Seconds to wait after a detail fetch: _DETAIL_GAP give or take _DETAIL_JITTER."""
+    return _DETAIL_GAP + random.uniform(-_DETAIL_JITTER, _DETAIL_JITTER)
+
+
 async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None) -> dict:
     """Fetch each kept job's page (bounded concurrency) and parse the full description. Keyed by
     URL; a detail that fails leaves the listing row's short blurb in place.
@@ -436,7 +446,7 @@ async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cach
                     details[job["url"]] = _parse_detail(resp.text, job)
                     if cache is not None:
                         cache[job["url"]] = dict(details[job["url"]])
-                await asyncio.sleep(0.15)   # be polite to a small board
+                await asyncio.sleep(_detail_gap())   # be polite to a small board
             except Exception as e:
                 logger.debug(f"caribbeanjobs detail failed for {job['url']}: {e}")
 
@@ -459,6 +469,39 @@ def _title_kept(title: str, include_kw: list, exclude_kw: list) -> tuple[bool, s
         if matched:
             return False, f"Excluded by: {', '.join(matched)}"
     return True, None
+
+
+def _store_ignored(db, search: Search, j: dict, existing_ids: set) -> bool:
+    """Write a job the filters dropped after its page was read as status "ignored" (the same
+    row JobSpy writes for a title-filtered posting), so its URL is in the dedup set and the
+    page is read once. The row belongs to the account the run ingests for. True if written."""
+    ext_id = make_external_id(j.get("company") or "", j["title"], j["url"])
+    if ext_id in existing_ids:
+        return False
+    job = Job(
+        external_id=ext_id,
+        company=j.get("company") or "",
+        title=j["title"],
+        url=j["url"],
+        source="caribbeanjobs",
+        search_id=search.id,
+        location=j.get("location") or None,
+        description=j.get("description") or None,
+        status="ignored",
+        seen=False,
+        saved=False,
+    )
+    try:
+        with db.begin_nested():
+            db.add(job)
+            db.flush()
+    except IntegrityError:
+        return False
+    except Exception as e:
+        logger.warning(f"Insert failed for ignored job '{j['title']}' ({j['url']}): {e}")
+        return False
+    existing_ids.add(ext_id)
+    return True
 
 
 async def _fetch_listings_for(search: Search, wanted: int) -> list[dict]:
@@ -514,6 +557,7 @@ async def run(search: Search, shared=None) -> dict:
             logger.info(f"caribbeanjobs '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
 
             new_jobs = 0
+            ignored_jobs = 0
             for j in candidates:
                 if j["url"] in details:
                     j.update(details[j["url"]])
@@ -524,8 +568,11 @@ async def run(search: Search, shared=None) -> dict:
                     if ok and (company_lower in global_exclude_set or company_lower in search_exclude_set):
                         ok, why = False, "company excluded"
                     if not ok:
-                        seen -= 1
-                        logger.info(f"caribbeanjobs: '{j['title']}' @ {j.get('company')} dropped after the detail page ({why})")
+                        # Kept as "ignored", as JobSpy keeps a title-filtered row, so the next run
+                        # dedups its URL instead of reading the page again. Not a new job.
+                        logger.info(f"caribbeanjobs: '{j['title']}' @ {j.get('company')} ignored after the detail page ({why})")
+                        if _store_ignored(db, search, j, existing_ids):
+                            ignored_jobs += 1
                         continue
                 if j.get("expired"):
                     continue
@@ -600,8 +647,11 @@ async def run(search: Search, shared=None) -> dict:
 
         duration = time.time() - start
         from backend.activity import log_activity
-        log_activity("scrape", f"caribbeanjobs '{search.name}': {new_jobs} new / {seen} seen in {duration:.1f}s")
-        return {"jobs_found": seen, "new_jobs": new_jobs, "error": None, "duration": duration}
+        log_activity("scrape", f"caribbeanjobs '{search.name}': {new_jobs} new / {seen} seen"
+                     + (f" ({ignored_jobs} filtered out after the job page)" if ignored_jobs else "")
+                     + f" in {duration:.1f}s")
+        return {"jobs_found": seen, "new_jobs": new_jobs, "ignored_jobs": ignored_jobs,
+                "error": None, "duration": duration}
 
     except Exception as e:
         duration = time.time() - start

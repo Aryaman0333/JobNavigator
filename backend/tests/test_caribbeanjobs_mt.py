@@ -110,6 +110,69 @@ async def test_two_accounts_share_one_listing_fetch_and_each_detail_page(test_db
 
 
 @pytest.mark.asyncio
+async def test_a_job_ignored_after_its_page_is_kept_in_its_own_account(test_db, accounts, monkeypatch):
+    """Shared run: the detail page renames /1 to an intern role. A (excludes "intern") keeps it
+    as ignored in its own account, B keeps it as new; a second run reads no page again."""
+    import backend.scraper.orchestrator as orch
+    a, b = accounts
+    detail_urls = []
+    ld = ('<html><script type="application/ld+json" id="jobPostingSchema">'
+          '{{"@type": "JobPosting", "title": "{t}", "hiringOrganization": {{"name": "Acme"}}}}'
+          '</script></html>')
+    titles = {"https://cj.test/1": "Backend Engineering Intern", "https://cj.test/3": "Site Engineer"}
+
+    async def fake_listings(client, base, keywords, wanted):
+        return [dict(r) for r in ROWS if r["url"] in titles]
+
+    class _Resp:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, text):
+            self.text = text
+
+    async def fake_get(client, url, params=None):
+        detail_urls.append(url)
+        return _Resp(ld.format(t=titles[url]))
+
+    async def no_analyze(job, db=None, **kw):
+        job.h1b_jd_flag = False
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(caribbeanjobs, "_fetch_listings", fake_listings)
+    monkeypatch.setattr(caribbeanjobs, "_get", fake_get)
+    monkeypatch.setattr(caribbeanjobs, "analyze_inline", no_analyze)
+    monkeypatch.setattr(caribbeanjobs.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("backend.activity.log_activity", lambda *a, **k: None)
+
+    _search(test_db, title_exclude_keywords=["intern"])
+    with use_account(b):
+        _search(test_db)
+
+    await orch.run_all(force=True)
+    await orch.run_all(force=True)
+
+    assert sorted(detail_urls) == sorted(titles), "each page read once across both runs"
+    with unscoped():
+        test_db.expire_all()
+        rows = {(j.account_id, j.url): (j.title, j.status) for j in test_db.query(Job).all()}
+        logs = test_db.query(ScrapeLog).all()
+    assert rows == {
+        (a, "https://cj.test/1"): ("Backend Engineering Intern", "ignored"),
+        (a, "https://cj.test/3"): ("Site Engineer", "new"),
+        (b, "https://cj.test/1"): ("Backend Engineering Intern", "new"),
+        (b, "https://cj.test/3"): ("Site Engineer", "new"),
+    }
+    new_by_account = {}
+    for log in logs:
+        new_by_account.setdefault(log.account_id, []).append(log.new_jobs)
+    assert sorted(new_by_account[a]) == [0, 1]       # the ignored row never counts as new
+    assert sorted(new_by_account[b]) == [0, 2]
+
+
+@pytest.mark.asyncio
 async def test_preview_reads_the_accounts_own_body_exclusion_phrases(test_db, accounts, monkeypatch):
     """A member's own row must not stand in for the owner's install value (raw
     `Setting.key ==` returns whichever row comes first)."""

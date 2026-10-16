@@ -199,8 +199,74 @@ async def test_run_rechecks_the_title_and_company_after_the_detail_page(test_db,
     s = _search(test_db, title_exclude_keywords=["intern"], company_exclude=["blocked corp"])
     res = await caribbeanjobs.run(s)
     test_db.expire_all()
-    assert [j.title for j in test_db.query(Job).all()] == ["Accountant III"]
-    assert res["new_jobs"] == 1 and res["jobs_found"] == 1
+    assert [j.title for j in test_db.query(Job).filter(Job.status == "new").all()] == ["Accountant III"]
+    # The two dropped after their page are kept as "ignored" (dedup only), not as new jobs.
+    ignored = {j.url: j.title for j in test_db.query(Job).filter(Job.status == "ignored").all()}
+    assert ignored == {"https://cj.test/1": "Accounting Intern", "https://cj.test/2": "Accountant II"}
+    assert res["new_jobs"] == 1 and res["ignored_jobs"] == 2
+    assert res["jobs_found"] == 3          # all three passed the listing filters; no `seen -= 1`
+
+
+# ── d. a job dropped after its page is read is remembered, so the page is read once ──
+
+LD_PAGE = ('<html><script type="application/ld+json" id="jobPostingSchema">'
+           '{{"@type": "JobPosting", "title": "{title}", "hiringOrganization": {{"name": "Acme"}},'
+           ' "description": "<p>The full description from the job page.</p>"}}</script></html>')
+
+
+def test_detail_fetches_are_two_at_a_time_about_a_second_apart():
+    assert caribbeanjobs._DETAIL_CONCURRENCY == 2
+    gaps = [caribbeanjobs._detail_gap() for _ in range(200)]
+    assert all(0.7 <= g <= 1.3 for g in gaps)
+    assert len({round(g, 3) for g in gaps}) > 1        # jittered, not a fixed beat
+
+
+@pytest.mark.asyncio
+async def test_detail_fetches_sleep_the_jittered_gap(monkeypatch):
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    async def fake_get(client, url, params=None):
+        return _Resp(200, LD_PAGE.format(title="Accountant"))
+
+    monkeypatch.setattr(caribbeanjobs.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(caribbeanjobs, "_get", fake_get)
+    await caribbeanjobs._fetch_details(None, [_job("A", "Acme", f"https://cj.test/{i}") for i in range(3)])
+    assert len(slept) == 3 and all(0.7 <= s <= 1.3 for s in slept)
+
+
+@pytest.mark.asyncio
+async def test_a_job_the_detail_title_drops_is_stored_ignored_and_not_fetched_again(test_db, monkeypatch, quiet):
+    rows = [_job("Accountant", "Acme", "https://cj.test/1"),
+            _job("Senior Accountant", "Acme", "https://cj.test/2")]
+    detail_titles = {"https://cj.test/1": "Accounting Intern",        # passes the listing, fails here
+                     "https://cj.test/2": "Senior Accountant"}
+    fetched = []
+
+    async def fake_listings(client, base, keywords, wanted):
+        return [dict(r) for r in rows]
+
+    async def fake_get(client, url, params=None):
+        fetched.append(url)
+        return _Resp(200, LD_PAGE.format(title=detail_titles[url]))
+
+    monkeypatch.setattr(caribbeanjobs, "_fetch_listings", fake_listings)
+    monkeypatch.setattr(caribbeanjobs, "_get", fake_get)
+    s = _search(test_db, title_exclude_keywords=["intern"])
+
+    first = await caribbeanjobs.run(s)
+    second = await caribbeanjobs.run(s)
+
+    assert sorted(fetched) == ["https://cj.test/1", "https://cj.test/2"], \
+        "each page read once: the second run reads no detail page again"
+    test_db.expire_all()
+    rows_by_url = {j.url: (j.title, j.status) for j in test_db.query(Job).all()}
+    assert rows_by_url == {"https://cj.test/1": ("Accounting Intern", "ignored"),
+                           "https://cj.test/2": ("Senior Accountant", "new")}
+    assert (first["new_jobs"], first["ignored_jobs"], first["jobs_found"]) == (1, 1, 2)
+    assert (second["new_jobs"], second["ignored_jobs"], second["jobs_found"]) == (0, 0, 2)
 
 
 # ── f. salaries in a local currency stay text ───────────────────────────────
