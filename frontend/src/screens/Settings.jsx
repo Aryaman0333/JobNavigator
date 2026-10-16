@@ -908,6 +908,8 @@ export default function Settings() {
                       return <PolicyToggle memberName={name} sectionTitle={title}
                         mode={policies[policyFor]?.[id] || sec.default} onChange={(m) => setPolicy(id, title, m)} />
                     }
+                    // "Per device" only while the owner edits a member's policies
+                    if (id === 'appearance' && !(isOwner && policyFor)) return null
                     const tag = scopeTag(id, { idx: sidx, member, ownerName })
                     return tag ? <span data-scope-tag={tag.label} style={{ marginLeft: 'auto', display: 'flex' }}><ScopeTag tag={tag} /></span> : null
                   })()}

@@ -88,6 +88,16 @@ describe('Settings › member policies (owner)', () => {
     expect(api.patch).not.toHaveBeenCalledWith('/settings/policies', expect.anything())
   })
 
+  it('"Per device" on Display shows only while a member’s policies are edited', async () => {
+    await renderSettings()
+    const perDevice = () => document.querySelector('[data-sec="sec-appearance"] [data-scope-tag="Per device"]')
+    expect(perDevice()).toBeNull()
+    fireEvent.click(sw('Mila'))
+    await waitFor(() => expect(perDevice()).toBeTruthy())
+    fireEvent.click(sw('Mila'))
+    await waitFor(() => expect(perDevice()).toBeNull())
+  })
+
   it('Done under the table turns editing off', async () => {
     await renderSettings()
     fireEvent.click(sw('Mila'))

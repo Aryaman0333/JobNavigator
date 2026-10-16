@@ -270,7 +270,7 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         c.check('member nav groups: You · AI · yours · Yours · Shared · owner',
                 all(any(l.startswith(g) for l in labels) for g in ('You', 'AI · yours', 'Yours', f'Shared · {owner_name}')), labels[:8])
         c.eq('Advanced is tagged Owner only', _tag(mpg, 'advanced'), 'Owner only')
-        c.eq('Display is tagged Per device', _tag(mpg, 'appearance'), 'Per device')
+        c.eq('Display has no Per device tag for a member', _tag(mpg, 'appearance'), None)
         c.eq('Interview prep is inherited', _tag(mpg, 'prep'), f'Inherited from {owner_name}')
         c.eq('Global exclude is the member’s', _tag(mpg, 'exclude'), 'Yours')
         c.check('Advanced rows are locked', _sec_has(mpg, 'advanced', '[data-locked="true"]') >= 2)
