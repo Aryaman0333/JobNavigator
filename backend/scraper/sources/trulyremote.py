@@ -423,6 +423,10 @@ async def run(search: Search, shared=None) -> dict:
                 if not j["company"]:
                     continue
 
+                # `url` is the employer's apply link, but external_id hashes the board's job URL:
+                # that is the only id known before the `.md` page is read, so dedup can skip a
+                # known job without fetching it. backend/scripts/backfill_external_id.py skips
+                # this source for that reason (recomputing from `url` would break the dedup).
                 ext_id = make_external_id(j["company"], j["title"], j["url"])
                 # Only an explicit-USD annual salary is stored as numbers; any other is kept as
                 # text at the end of the description.
@@ -467,14 +471,19 @@ async def run(search: Search, shared=None) -> dict:
                     job.salary_source = "unknown"
 
                 if job.h1b_jd_flag:
-                    logger.info(f"Skipping (body exclusion): {j['title']} @ {j.get('company', '?')}")
-                    continue
+                    # Kept as "ignored" (as company scrapes do), so its URL is in the dedup set
+                    # and its page is read once rather than on every run. Not a new job.
+                    logger.info(f"Ignored (body exclusion): {j['title']} @ {j.get('company', '?')}")
+                    job.status = "ignored"
 
                 try:
                     with db.begin_nested():
                         db.add(job)
                         db.flush()
-                    new_jobs += 1
+                    if job.status == "new":
+                        new_jobs += 1
+                    else:
+                        ignored_jobs += 1
                     existing_ids.add(ext_id)
                 except IntegrityError:
                     logger.debug(f"Duplicate external_id for '{j['title']}' @ {j.get('company')}, skipping")

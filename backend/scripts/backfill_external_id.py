@@ -34,7 +34,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
 from backend.models.db import SessionLocal, Job
 from backend.scraper._shared.dedup import make_external_id
@@ -43,13 +43,24 @@ BATCH_SIZE = 1000
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COLLISIONS_REPORT = REPO_ROOT / "tests" / "round4" / "backfill-collisions.md"
 
+# Sources whose external_id is deliberately NOT the hash of Job.url, so recomputing it from
+# the url would break their dedup:
+# - trulyremote stores the employer's apply link as `url` (the feed opens the employer's page)
+#   but hashes the board's job URL, the only id known before its `.md` page is read
+#   (scraper/sources/trulyremote.py). Rehashed from the apply link, every row would miss the
+#   next run's dedup and the whole corpus would be read and added again.
+SKIP_SOURCES = ("trulyremote",)
+
 
 def fetch_all_rows(db):
-    """SELECT id, company, title, url, external_id for every job, in batches of 1000."""
+    """SELECT id, company, title, url, external_id for every job, in batches of 1000, leaving
+    out the SKIP_SOURCES rows."""
     rows = []
     last_id = None
     while True:
-        q = db.query(Job.id, Job.company, Job.title, Job.url, Job.external_id).order_by(Job.id)
+        q = (db.query(Job.id, Job.company, Job.title, Job.url, Job.external_id)
+             .filter(or_(Job.source.is_(None), Job.source.notin_(SKIP_SOURCES)))
+             .order_by(Job.id))
         if last_id is not None:
             q = q.filter(Job.id > last_id)
         batch = q.limit(BATCH_SIZE).all()

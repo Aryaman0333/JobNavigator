@@ -124,7 +124,9 @@ async def test_run_saves_dedups_and_filters(monkeypatch, test_db):
 
 
 @pytest.mark.asyncio
-async def test_run_skips_body_excluded_and_expired_jobs(monkeypatch, test_db):
+async def test_run_keeps_body_excluded_as_ignored_and_skips_expired_jobs(monkeypatch, test_db):
+    """A body-excluded job is stored as ignored (its page is read once, as company scrapes
+    do); an expired one is not stored."""
     search = Search(name="t", search_mode="caribbeanjobs", results_wanted=10,
                     search_term="engineer", title_exclude_keywords=[], company_exclude=[])
     test_db.add(search)
@@ -143,10 +145,11 @@ async def test_run_skips_body_excluded_and_expired_jobs(monkeypatch, test_db):
     monkeypatch.setattr("backend.activity.log_activity", lambda *a, **k: None)
 
     res = await caribbeanjobs.run(search)
-    assert res["new_jobs"] == 1
+    assert res["new_jobs"] == 1 and res["ignored_jobs"] == 1
 
     test_db.expire_all()
-    assert [j.title for j in test_db.query(Job).all()] == ["Clean Role"]
+    assert {(j.title, j.status) for j in test_db.query(Job).all()} == {
+        ("Clean Role", "new"), ("Citizens Only Role", "ignored")}
 
 
 @pytest.mark.asyncio
