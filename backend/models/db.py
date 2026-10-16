@@ -1,6 +1,7 @@
 """All SQLAlchemy models for JobNavigator."""
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -28,11 +29,66 @@ from backend.countries import DEFAULT_COUNTRY
 #                       every request piled up behind the drain and /health went
 #                       unanswerable; 5 s turns that into a quick 503.
 #   pool_recycle 1800   drop connections Postgres or a proxy may have killed.
+#
+# S2-01: every app connection starts with `lock_timeout` set. Most DB calls run
+# synchronously on the event loop, so a statement waiting on a row lock held by
+# a session that is itself parked at an `await` blocks the loop that session
+# needs to finish: the whole backend froze with no error. The code no longer
+# holds a write across an await (see `has_uncommitted_writes`); this is the
+# backstop that turns any future wait into a LockNotAvailable error after
+# DB_LOCK_TIMEOUT instead of a hang. Ordinary row locks here last
+# milliseconds. Startup DDL is exempt (`lock_timeout_exempt`), so a restart during a
+# long pg_dump still waits for it as before. pg_dump itself (db_backup) runs in
+# its own process and connection, so the setting never touches backups.
+# `idle_in_transaction_session_timeout` is deliberately not set: run_all's batch
+# session and other readers keep a read-only transaction open across long
+# fetches on purpose, and killing them would fail healthy runs.
+DB_LOCK_TIMEOUT = "10s"
 _engine_kwargs = {"pool_pre_ping": True}
 if not DATABASE_URL.startswith("sqlite"):
     _engine_kwargs.update(pool_size=20, max_overflow=10, pool_timeout=5, pool_recycle=1800)
+    if DATABASE_URL.startswith("postgresql"):
+        _engine_kwargs["connect_args"] = {"options": f"-c lock_timeout={DB_LOCK_TIMEOUT}"}
 engine = create_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+_lock_timeout_exempt = False
+
+
+@contextmanager
+def lock_timeout_exempt():
+    """Startup DDL only: connections checked out inside wait for locks without a limit.
+
+    `create_tables` and the seed migrations take ACCESS EXCLUSIVE locks; a pg_dump
+    running while the backend restarts holds ACCESS SHARE on every table, so a boot
+    used to wait for it, and still should. The lifespan runs these steps before the
+    app serves anything, so a module flag is enough. A connection leaving the block
+    gets the default back on its next checkout."""
+    global _lock_timeout_exempt
+    _lock_timeout_exempt = True
+    try:
+        yield
+    finally:
+        _lock_timeout_exempt = False
+
+
+if engine.dialect.name == "postgresql":
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(engine, "checkout")
+    def _sync_lock_timeout(dbapi_conn, record, proxy):
+        want = "0" if _lock_timeout_exempt else None   # None: the connect-time default
+        if record.info.get("jn_lock_timeout") == want:
+            return
+        cur = dbapi_conn.cursor()
+        try:
+            # SET persists for the connection only once committed: a later rollback
+            # of the same transaction would undo it.
+            cur.execute("SET lock_timeout = 0" if want else "RESET lock_timeout")
+        finally:
+            cur.close()
+        dbapi_conn.commit()
+        record.info["jn_lock_timeout"] = want
 Base = declarative_base()
 
 
@@ -756,3 +812,40 @@ def create_tables():
 from backend.accounts.scoping import install_scoping  # noqa: E402
 
 install_scoping(AccountScoped)
+
+
+# ── Uncommitted writes (S2-01) ───────────────────────────────────────────────
+# A flushed INSERT/UPDATE/DELETE holds row and unique-index locks until the
+# transaction ends. Awaiting anything slow while holding them (an H-1B lookup
+# mid-ingest) let a second coroutine's synchronous write wait on those locks on
+# the event loop, so the holder could never resume: the whole backend froze.
+# These listeners keep a per-session flag so code that is about to make a slow
+# await can tell whether the caller's session is holding writes.
+from sqlalchemy.orm import Session as _OrmSession  # noqa: E402
+
+_WRITES_KEY = "jn_uncommitted_writes"
+
+
+@event.listens_for(_OrmSession, "after_flush")
+def _note_flushed_writes(session, flush_context):
+    session.info[_WRITES_KEY] = True   # after_flush only fires when the flush had work
+
+
+@event.listens_for(_OrmSession, "do_orm_execute")
+def _note_statement_writes(state):
+    if state.is_insert or state.is_update or state.is_delete:
+        state.session.info[_WRITES_KEY] = True
+
+
+@event.listens_for(_OrmSession, "after_transaction_end")
+def _clear_written_flag(session, transaction):
+    if transaction.parent is None:   # the outermost transaction: commit or rollback
+        session.info.pop(_WRITES_KEY, None)
+
+
+def has_uncommitted_writes(session) -> bool:
+    """True while `session` has flushed writes its transaction has not committed or rolled
+    back (conservative: a rolled-back savepoint keeps it set). Never await a slow call
+    while this is true."""
+    info = getattr(session, "info", None)
+    return isinstance(info, dict) and bool(info.get(_WRITES_KEY))

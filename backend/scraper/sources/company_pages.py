@@ -315,6 +315,11 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                 return {"jobs_found": len(unique_jobs), "new_jobs": 0, "error": None,
                         "duration": time.time() - start_time, "deleted": True}
 
+            # The loop below writes rows; the H-1B lookup happens before it (S2-01).
+            if jobs_needing_desc:
+                from backend.scraper._shared.analysis import prefetch_h1b
+                await prefetch_h1b([company.name])
+
             for j in jobs_needing_desc:
                 ext_id = j["_ext_id"]
                 content_hash = j["_content_hash"]

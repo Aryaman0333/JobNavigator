@@ -46,7 +46,7 @@ from backend.countries import (
 from backend.accounts.settings import get_setting
 from backend.models.db import SessionLocal, Job, Search, get_existing_external_ids
 from backend.analyzer.salary_extractor import extract_salary
-from backend.scraper._shared.analysis import analyze_inline
+from backend.scraper._shared.analysis import analyze_inline, prefetch_h1b
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import (build_search_exclude_sets, company_included,
                                              search_title_filters, title_kept)
@@ -558,6 +558,13 @@ async def run(search: Search) -> dict:
             include_kw, exclude_kw = search_title_filters(search, db)
             global_ex, search_ex = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
+
+            # The loop below writes rows; H-1B lookups for the new jobs happen before it (S2-01).
+            await prefetch_h1b([
+                j.get("company") for j in unique
+                if not _rejection(j, include_kw, exclude_kw, global_ex, search_ex, search.company_filter)
+                and make_external_id(j["company"], j["title"], j["url"]) not in existing_ids
+            ])
 
             for j in unique:
                 if _rejection(j, include_kw, exclude_kw, global_ex, search_ex, search.company_filter):

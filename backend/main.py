@@ -42,8 +42,12 @@ for _noisy in ("httpx", "httpcore"):
 async def lifespan(app: FastAPI):
     """Startup: create tables, seed data, start scheduler."""
     logger.info("Starting JobNavigator backend...")
-    create_tables()
-    run_seeds()
+    # Boot DDL waits for locks without the app's lock_timeout (S2-01): a restart during
+    # a long pg_dump must wait for it, not fail.
+    from backend.models.db import lock_timeout_exempt
+    with lock_timeout_exempt():
+        create_tables()
+        run_seeds()
 
     # Set initial API key if dashboard_api_key is empty
     db = SessionLocal()

@@ -894,6 +894,14 @@ async def run(search: Search) -> dict:
             # Load existing LinkedIn job IDs to skip jobs already imported via extension
             existing_li_ids = {r[0] for r in db.query(Job.linkedin_job_id).filter(Job.linkedin_job_id != None).all()}
 
+            # The loop below writes rows; H-1B lookups for the new jobs happen before it (S2-01).
+            from backend.scraper._shared.analysis import prefetch_h1b
+            await prefetch_h1b([
+                j["company"] for j in kept_jobs
+                if not (j.get("job_id") and j["job_id"] in existing_li_ids)
+                and make_external_id(j["company"], j["title"], j.get("apply_url") or j["url"]) not in existing_ids
+            ])
+
             for j in kept_jobs:
                 # Use apply URL (company career page) as primary, LinkedIn URL as fallback
                 job_url = j.get("apply_url") or j["url"]

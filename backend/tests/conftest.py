@@ -22,6 +22,26 @@ def pytest_configure(config):
         "markers",
         "mt_no_owner: test_db creates no owner account and runs the test unscoped (MT-1 migration tests)",
     )
+    config.addinivalue_line(
+        "markers",
+        "h1b_prefetch: keep the scrapers' real H-1B prefetch (stubbed out by default: no network)",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_h1b_prefetch(request, monkeypatch):
+    """S2-01: every ingest loop now resolves its new companies' H-1B data up front
+    (`prefetch_h1b`). Source tests that stub `analyze_inline` never reached MyVisaJobs
+    before; keep it that way. Tests marked `h1b_prefetch` get the real one."""
+    if request.node.get_closest_marker("h1b_prefetch"):
+        yield
+        return
+
+    async def _none(names, slugs=None, ttl_days=None):
+        return 0
+
+    monkeypatch.setattr("backend.scraper._shared.analysis.prefetch_company_h1b", _none)
+    yield
 
 
 @pytest.fixture(autouse=True)

@@ -509,6 +509,12 @@ async def run(search: Search, shared=None) -> dict:
         new_jobs = 0
         try:
             existing_ids = get_existing_external_ids(db)
+            # The loop below writes rows; H-1B lookups for the new jobs happen before it (S2-01).
+            from backend.scraper._shared.analysis import prefetch_h1b
+            await prefetch_h1b([
+                j["company"] for j in kept_jobs
+                if make_external_id(j["company"], j["title"], j.get("application_url") or j["url"]) not in existing_ids
+            ])
             for j in kept_jobs:
                 # Use application_url as primary URL if available, fallback to levels.fyi URL
                 apply_url = j.get("application_url") or ""

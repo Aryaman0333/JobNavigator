@@ -433,6 +433,21 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
             company_lookup = build_company_lookup(db)
             phrases = load_exclusion_phrases(db)
 
+            # The loop below writes rows; H-1B lookups for the new jobs happen before it (S2-01).
+            # Non-fatal like `_apply_h1b_inline`: without it the jobs keep what the cache has.
+            from backend.scraper._shared.analysis import prefetch_h1b
+            _new_companies = [
+                _clean(r.get("company")) for _, r in jobs_df.iterrows()
+                if make_external_id(_clean(r.get("company")) or "", _clean(r.get("title")) or "",
+                                    _clean(r.get("job_url")) or "") not in existing_ids
+            ]
+            _prefetch = prefetch_h1b(_new_companies)
+            try:
+                h1b_loop.run_until_complete(_prefetch)
+            except Exception as e:
+                _prefetch.close()
+                logger.warning(f"JobSpy H-1B prefetch skipped for '{search.name}': {e}")
+
             for _, row in jobs_df.iterrows():
                 company = _clean(row.get("company")) or ""
                 title = _clean(row.get("title")) or ""

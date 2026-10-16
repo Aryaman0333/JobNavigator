@@ -24,7 +24,7 @@ from backend.accounts.settings import get_setting
 from backend.analyzer import salary_extractor
 from backend.scraper._shared.dedup import make_external_id, make_content_hash, mark_ignored
 from backend.scraper._shared.filters import build_search_exclude_sets, company_included
-from backend.scraper._shared.analysis import analyze_inline
+from backend.scraper._shared.analysis import analyze_inline, prefetch_h1b
 
 logger = logging.getLogger("jobnavigator.trulyremote")
 
@@ -392,6 +392,10 @@ async def run(search: Search, shared=None) -> dict:
                 details = await _fetch_details(client, candidates, **extra)
 
             logger.info(f"trulyremote '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
+
+            # The loop below writes rows; H-1B lookups happen before it (S2-01).
+            await prefetch_h1b([(details[j["url"]].get("company") or j.get("company"))
+                                for j in candidates if j["url"] in details])
 
             new_jobs = 0
             ignored_jobs = 0

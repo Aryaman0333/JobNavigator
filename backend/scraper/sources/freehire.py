@@ -17,7 +17,7 @@ from backend.models.db import (
 from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets, search_title_filters, title_kept
-from backend.scraper._shared.analysis import analyze_inline
+from backend.scraper._shared.analysis import analyze_inline, prefetch_h1b
 from backend.scraper._shared.html_text import html_to_text as _strip_html  # freehire descriptions are HTML
 
 logger = logging.getLogger("jobnavigator.freehire")
@@ -134,6 +134,14 @@ async def run(search: Search, shared=None) -> dict:
             include_kw, exclude_kw = search_title_filters(search, db)
             global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
+
+            # The loop below writes rows; H-1B lookups for the new jobs happen before it (S2-01).
+            await prefetch_h1b([
+                j.get("company") for j in unique
+                if j["url"] and title_kept(j["title"], include_kw, exclude_kw)[0]
+                and (j.get("company") or "").lower() not in global_exclude_set | search_exclude_set
+                and make_external_id(j["company"], j["title"], j["url"]) not in existing_ids
+            ])
 
             kept = 0
             for j in unique:
