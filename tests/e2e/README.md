@@ -39,6 +39,8 @@ E2E: 13 cases · 11 passed · 0 failed · 2 skipped · 118s
 | `modes-caribbeanjobs` | CaribbeanJobs searches: inactive create, the CARIBBEANJOBS.COM badge in its own colours, the editor's mode note, Cloudflare block and terms notice; Test is not clicked | creates + deletes its own row |
 | `modes-settings-apify` | Settings › Apify: the section is a policy section, own by default; key row (empty when no key is set) and Check key; its scope control matches Jobright.ai and LinkedIn | read-only |
 | `modes-caribbeanjobs-live` | **JN_E2E_LIVE only** — a real CaribbeanJobs Test from the UI: the modal shows the readable Cloudflare error or results | creates + deletes its own row |
+| `modes-trulyremote` | TrulyRemoteWork searches: inactive create with no term or URL, the TRULYREMOTEWORK.COM badge in olive (not Jobright's teal), the row summary, the editor's mode note and "New jobs per run" label, no terms notice; Test is not clicked | creates + deletes its own row |
+| `modes-trulyremote-live` | **JN_E2E_LIVE only** — a real TrulyRemoteWork Test (title include "engineer") from the UI: kept rows and the "worldwide remote" params | creates + deletes its own row |
 | `flows-search-crud` | `POST` → read the JSON shape back → `PATCH` → `DELETE` on a `ZZE` search | creates + deletes its own row |
 | `flows-monitor` | the `/monitor/active`, `/monitor/history` and `/monitor/in-flight` shapes the spinners poll on | read-only |
 | `flows-pause-pill` | the status pill's Pause/Resume contract, with the `PATCH` route-mocked so nothing is written; afterwards every other search's `active` flag is re-read to prove none moved | creates + deletes its own row |
@@ -80,8 +82,10 @@ Off by default; those cases report `SKIP (needs JN_E2E_LIVE=1)`. Setting it to
   against live job boards, and waits for them on `/monitor/active`.
 - **`modes-caribbeanjobs-live`** — a real CaribbeanJobs Test (caribbeanjobs.com,
   up to 20 detail pages). No case ever runs a paid Apify Test or run.
+- **`modes-trulyremote-live`** — a real TrulyRemoteWork Test (the corpus, cached
+  in the backend for up to an hour, and up to 20 `.md` job pages).
 
-All three still create only `ZZE` rows and delete them again.
+All four still create only `ZZE` rows and delete them again.
 
 ## Environment
 

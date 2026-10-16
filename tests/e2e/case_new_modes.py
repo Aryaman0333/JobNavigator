@@ -1,4 +1,5 @@
-"""new modes — the two search modes added in PR #26 (CaribbeanJobs.com) and PR #28 (Apify).
+"""new modes — the search modes added in PR #26 (CaribbeanJobs.com), PR #28 (Apify) and
+PR #32 (TrulyRemoteWork.com).
 
 Nothing here spends money or scrapes by default. Every row is a ZZE scratch search,
 created inactive (or left to the Apify paused default), tracked so `flows-sweep`
@@ -17,6 +18,11 @@ aborts any POST /searches/{id}/test it might send anyway (a guard, asserted unus
                               the section's scope control matches its peers.
   modes-caribbeanjobs-live    JN_E2E_LIVE=1 only: a real Test from the UI; the modal
                               shows either the readable Cloudflare error or rows.
+  modes-trulyremote           API create with no term or URL (inactive); UI olive badge,
+                              row summary, editor note and the per-run cap label. Test
+                              not clicked.
+  modes-trulyremote-live      JN_E2E_LIVE=1 only: a real Test (title include "engineer")
+                              from the UI; the modal shows kept rows and its params.
 """
 import re
 import time
@@ -28,6 +34,8 @@ import h
 APIFY_NAME = 'ZZE Apify (e2e)'
 CJ_NAME = 'ZZE CaribbeanJobs (e2e)'
 CJ_LIVE_NAME = 'ZZE CaribbeanJobs Live (e2e)'
+TR_NAME = 'ZZE TrulyRemoteWork (e2e)'
+TR_LIVE_NAME = 'ZZE TrulyRemoteWork Live (e2e)'
 
 APIFY_BODY = {
     'name': APIFY_NAME,
@@ -53,7 +61,19 @@ CJ_BODY = {
     'run_interval_minutes': 0,
 }
 
+TR_BODY = {
+    'name': TR_NAME,
+    'active': False,
+    'search_mode': 'trulyremote',          # no term, no URL: the whole board
+    'results_wanted': 7,
+    'auto_scoring_depth': 'off',
+    'run_interval_minutes': 0,
+}
+
 # frontend/src/sourceBlocks.js (MODE_BLOCKS / MODE_TERMS) and Searches.jsx noteFor()
+TR_NOTE = 'full corpus of worldwide-remote roles'
+TR_RW_LABEL = 'New jobs per run · 1–500'
+TR_RW_SUB = 'The whole board is read; this caps how many new jobs’ pages one run opens'
 CJ_TERMS = 'Terms: caribbeanjobs.com challenges automated visitors'
 CJ_BLOCK = 'caribbeanjobs.com answers many networks with a Cloudflare challenge'
 CJ_NOTE = 'Test reads at most 20 of those pages'
@@ -108,6 +128,15 @@ BADGE_JS = """(name) => {
 KEYWORD_BADGE_JS = """() => {
   const root = document.querySelector('.jn-v2') || document.body;
   const s = document.createElement('span'); s.className = 'sm-keyword'; s.textContent = 'JOBSPY';
+  root.appendChild(s);
+  const cs = getComputedStyle(s); const o = { bg: cs.backgroundColor, fg: cs.color };
+  s.remove(); return o;
+}"""
+
+# the colours a badge class renders with, from a probe element
+PROBE_BADGE_JS = """(cls) => {
+  const root = document.querySelector('.jn-v2') || document.body;
+  const s = document.createElement('span'); s.className = cls; s.textContent = 'PROBE';
   root.appendChild(s);
   const cs = getComputedStyle(s); const o = { bg: cs.backgroundColor, fg: cs.color };
   s.remove(); return o;
@@ -331,6 +360,57 @@ def _caribbeanjobs(c):
         c.check('…and gone from the list', not any(s.get('id') == sid for s in _searches()))
 
 
+# ── TrulyRemoteWork ─────────────────────────────────────────────────────────
+@case('modes-trulyremote')
+def _trulyremote(c):
+    st, made = _mk(TR_BODY)
+    c.check('POST a trulyremote search with no term or URL (inactive) → 2xx',
+            C.api_ok(st) and isinstance(made, dict), f'{st} {str(made)[:160]}')
+    if not (isinstance(made, dict) and made.get('id')):
+        return
+    sid = made['id']
+    try:
+        c.eq('mode stored', made.get('search_mode'), 'trulyremote')
+        c.eq('active:false honoured', made.get('active'), False)
+
+        requests = []
+        with h.browser() as b:
+            pg = C.mpage(b)
+            try:
+                pg.on('request', lambda r: requests.append((r.method, r.url)))
+                C.go(pg, '/searches')
+                others = [s['name'] for s in _searches() if s.get('id') != sid]
+                bd = _badge(pg, TR_NAME)
+                c.check('the row renders its TRULYREMOTEWORK.COM badge',
+                        bool(bd) and bd['text'] == 'TRULYREMOTEWORK.COM' and 'sm-trulyremote' in bd['cls'], bd)
+                jr = pg.evaluate(PROBE_BADGE_JS, 'sm-jobright')
+                c.check('…in olive, not Jobright’s teal',
+                        bool(bd) and (bd['bg'], bd['fg']) != (jr['bg'], jr['fg']), f'tr={bd} jobright={jr}')
+                c.check('the row summary reads "Worldwide remote · max 7 new"', C.body_has(pg, 'Worldwide remote · max 7 new'))
+                c.check('the row offers Test with no term or URL (not clicked: it would reach the board)',
+                        C.row_index(pg, '[title^="Preview run"]', TR_NAME, others) is not None)
+
+                c.check('⋯ → Edit search opens the trulyremote editor', _open_edit(pg, TR_NAME, others))
+                c.check('the mode note explains the whole-board read', C.body_has(pg, TR_NOTE))
+                c.check('…and the 20-page Test cap', C.body_has(pg, 'Test reads at most 20 of those pages'))
+                c.check('the cap is labelled per run', _has_ci(pg, TR_RW_LABEL))
+                c.check('…with its sub-text', C.body_has(pg, TR_RW_SUB))
+                c.check('no terms notice for this board', not C.body_has(pg, 'Terms:'))
+                cancel = pg.locator('main >> text="Cancel"')
+                if cancel.count():
+                    cancel.first.click()
+                    pg.wait_for_timeout(300)
+                posted = [u for m, u in requests if m in ('POST', 'PATCH') and '/api/searches' in u]
+                c.check('opening and cancelling the editor wrote nothing', not posted, posted)
+                _no_console_errors(c, pg, '/searches (trulyremote)')
+            finally:
+                pg.context.close()
+    finally:
+        st = _drop(sid)
+        c.check('scratch trulyremote search deleted', st in (200, 204, 404), st)
+        c.check('…and gone from the list', not any(s.get('id') == sid for s in _searches()))
+
+
 # ── Settings › Apify ────────────────────────────────────────────────────────
 SECTION_JS = """(id) => {
   const hd = document.querySelector(`[data-sec="sec-${id}"]`);
@@ -441,6 +521,49 @@ def _caribbeanjobs_live(c):
                         blocked or ('Kept' in dlg or 'Filtered' in dlg or 'No results' in dlg), dlg[:300])
                 c.check('…never a raw traceback or HTML', '<html' not in dlg.lower() and 'Traceback' not in dlg, dlg[:200])
                 _no_console_errors(c, pg, '/searches (caribbeanjobs Test)')
+            finally:
+                pg.context.close()
+    finally:
+        st = _drop(sid)
+        c.check('scratch search deleted', st in (200, 204, 404), st)
+
+
+# ── TrulyRemoteWork Test — JN_E2E_LIVE only ─────────────────────────────────
+@case('modes-trulyremote-live')
+def _trulyremote_live(c):
+    C.live_only(c, 'the TrulyRemoteWork Test reads the board (its corpus, cached, and up to 20 job pages)')
+    st, made = _mk(dict(TR_BODY, name=TR_LIVE_NAME, title_include_keywords=['engineer']))
+    if not (isinstance(made, dict) and made.get('id')):
+        c.check('created the scratch search', False, st)
+        return
+    sid = made['id']
+    try:
+        with h.browser() as b:
+            pg = C.mpage(b)
+            try:
+                C.go(pg, '/searches')
+                others = [s['name'] for s in _searches() if s.get('id') != sid]
+                tsel = '[title^="Preview run"]'
+                hit = C.row_index(pg, tsel, TR_LIVE_NAME, others)
+                if not c.check('the row offers Test', hit is not None):
+                    return
+                pg.locator(tsel).nth(hit['i']).click()
+                pg.wait_for_timeout(500)
+                dlg = None
+                t0 = time.time()
+                while time.time() - t0 < 180:
+                    dlg = pg.evaluate(DIALOG_JS)
+                    if dlg and dlg.startswith('Test run') and ('Kept' in dlg or 'No results' in dlg
+                                                               or 'error' in dlg.lower()):
+                        break
+                    pg.wait_for_timeout(1500)
+                c.check('the Test modal lands within 3 minutes', bool(dlg), dlg)
+                dlg = dlg or ''
+                c.note(f'result: {dlg[:200]}')
+                c.check('…with results', 'Kept' in dlg, dlg[:300])
+                c.check('…the worldwide-remote params', 'worldwide remote · 7 new per run' in dlg, dlg[:300])
+                c.check('…never a raw traceback or HTML', '<html' not in dlg.lower() and 'Traceback' not in dlg, dlg[:200])
+                _no_console_errors(c, pg, '/searches (trulyremote Test)')
             finally:
                 pg.context.close()
     finally:

@@ -159,3 +159,49 @@ describe('CaribbeanJobs · v2 Searches', () => {
     expect(await screen.findByText(note)).toBeTruthy()
   })
 })
+
+describe('TrulyRemoteWork · v2 Searches', () => {
+  beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear() })
+
+  // No term and no URL: the mode reads the whole board.
+  const TR = { ...SEARCH, id: 's4', name: 'Remote board', search_mode: 'trulyremote', search_term: '', direct_url: '', results_wanted: 25, sources: [] }
+
+  it('the row shows the olive badge and the per-run summary', async () => {
+    mockApi([TR])
+    renderScreen()
+    const badge = await screen.findByText('TRULYREMOTEWORK.COM')
+    expect(badge.className).toContain('sm-trulyremote')
+    expect(screen.getByText(/Worldwide remote · max 25 new/)).toBeTruthy()
+  })
+
+  it('the editor explains the mode and labels the cap as new jobs per run', async () => {
+    mockApi([TR])
+    renderScreen()
+    fireEvent.click(await screen.findByText('Remote board'))
+    await screen.findByText('Save changes')
+    expect(screen.getByText(/full corpus of worldwide-remote roles/)).toBeTruthy()
+    expect(screen.getByText(/title filters and company excludes below/)).toBeTruthy()
+    expect(screen.getByLabelText('New jobs per run · 1–500')).toBeTruthy()
+    expect(screen.getByText(/this caps how many new jobs’ pages one run opens/)).toBeTruthy()
+    expect(screen.queryByText(/Results wanted/)).toBeNull()
+  })
+
+  it('Test runs with no term or URL and shows the worldwide-remote params and the body marker', async () => {
+    mockApi([TR])
+    api.post.mockImplementation(() => Promise.resolve({ status: 200, data: {
+      search_name: 'Remote board', duration: 1, raw_count: 2, after_filter: 2, source_breakdown: { trulyremote: 2 },
+      company_breakdown: {}, body_phrase_count: 3, details_sampled: 1, detail_limit: 20,
+      jobs: [
+        { title: 'Role A', company: 'Acme', url: 'https://trulyremotework.com/jobs/a', source: 'trulyremote', kept: true, location: 'Worldwide' },
+        { title: 'Role B', company: 'Acme', url: 'https://trulyremotework.com/jobs/b', source: 'trulyremote', kept: true, location: 'Worldwide', body_checked: false },
+      ],
+      config: { mode: 'trulyremote', results_wanted: 25 },
+    } }))
+    renderScreen()
+    // Not blocked for a missing term or URL (NEEDS_QUERY): the click reaches the API.
+    fireEvent.click(await screen.findByTitle(/^Preview run/))
+    await waitFor(() => expect(api.post.mock.calls[0]?.[0]).toBe('/searches/s4/test'))
+    expect(await screen.findByText('worldwide remote · 25 new per run')).toBeTruthy()
+    expect(screen.getAllByText('body check needs the description')).toHaveLength(1)
+  })
+})
