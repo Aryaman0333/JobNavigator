@@ -10,7 +10,7 @@ vi.mock('../api', () => ({
   beginOwnSwitch: () => {}, waitForWrites: () => Promise.resolve(),
 }))
 
-import { DownloadMenu } from '../screens/ResumeEditor'
+import { DownloadMenu, downloadName } from '../screens/ResumeEditor'
 
 const props = { id: 'r1', template: 'inter', format: 'a4' }
 
@@ -62,6 +62,15 @@ describe('DownloadMenu', () => {
     expect(get.mock.calls[0][0]).toBe('/resumes/r1/pdf')
   })
 
+  it('a non-ASCII name downloads under its UTF-8 filename*, not the ASCII fallback', async () => {
+    get.mockResolvedValue({ data: new Blob(['%PDF']), headers: { 'content-disposition':
+      "attachment; filename=\"JoseMuller_BaseCV_Resume.pdf\"; filename*=UTF-8''Jos%C3%A9M%C3%BCller_BaseCV_Resume.pdf" } })
+    render(<DownloadMenu {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: /Download/ }))
+    fireEvent.click(screen.getByText('PDF'))
+    await waitFor(() => expect(saved).toEqual(['JoséMüller_BaseCV_Resume.pdf']))
+  })
+
   it('a failed export is reported through onError, not saved', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     get.mockRejectedValue(new Error('500'))
@@ -71,5 +80,24 @@ describe('DownloadMenu', () => {
     fireEvent.click(screen.getByText('Word'))
     await waitFor(() => expect(onError).toHaveBeenCalledWith('Could not download the Word document.'))
     expect(saved).toEqual([])
+  })
+})
+
+describe('downloadName', () => {
+  it('prefers filename* (RFC 5987) and decodes it', () => {
+    expect(downloadName("attachment; filename=\"Resume.pdf\"; filename*=UTF-8''%D0%94%D0%B0%D0%BD%D0%B0_Resume.pdf", 'x'))
+      .toBe('Дана_Resume.pdf')
+    expect(downloadName("attachment; filename*=utf-8''%E7%8E%8B_CV.docx", 'x')).toBe('王_CV.docx')
+  })
+
+  it('falls back to the plain filename, quoted or bare', () => {
+    expect(downloadName('attachment; filename="Dana_Base_Resume_7.docx"', 'x')).toBe('Dana_Base_Resume_7.docx')
+    expect(downloadName('attachment; filename=Dana.pdf', 'x')).toBe('Dana.pdf')
+    expect(downloadName("attachment; filename=\"Jose.pdf\"; filename*=UTF-8''%E0%A4%A", 'x')).toBe('Jose.pdf')   // malformed escape
+  })
+
+  it('uses the fallback when there is no name', () => {
+    expect(downloadName(undefined, 'Resume.pdf')).toBe('Resume.pdf')
+    expect(downloadName('attachment', 'Resume.docx')).toBe('Resume.docx')
   })
 })

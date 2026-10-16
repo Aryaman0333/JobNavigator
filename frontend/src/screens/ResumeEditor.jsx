@@ -673,6 +673,18 @@ export default function ResumeEditor() {
 // download, so the X-API-Key header travels and a failed export is an error toast rather
 // than a JSON page in a new tab. The current template and paper ride along, so a fresh
 // pick that the debounced save hasn't stored yet is still what downloads.
+// The file name from a Content-Disposition header: the RFC 5987 `filename*=UTF-8''…`
+// first (it keeps a name like José or Дана), then the plain ASCII `filename=`.
+export function downloadName(disposition, fallback) {
+  const cd = String(disposition || '')
+  const star = /filename\*\s*=\s*UTF-8''([^;\s]+)/i.exec(cd)
+  if (star) {
+    try { return decodeURIComponent(star[1]) } catch { /* malformed: use the plain name */ }
+  }
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(cd)
+  return (plain && (plain[1] || plain[2])) || fallback
+}
+
 export function DownloadMenu({ id, template, format, onError }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -681,10 +693,9 @@ export function DownloadMenu({ id, template, format, onError }) {
     setOpen(false); setBusy(true)
     try {
       const r = await api.get(`/resumes/${id}/${kind}`, { responseType: 'blob', params: { template, format } })
-      const m = /filename="?([^"]+)"?/.exec(r.headers?.['content-disposition'] || '')
       const url = URL.createObjectURL(r.data)
       const a = document.createElement('a')
-      a.href = url; a.download = m ? m[1] : `Resume.${kind}`
+      a.href = url; a.download = downloadName(r.headers?.['content-disposition'], `Resume.${kind}`)
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (e) {
