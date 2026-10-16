@@ -230,7 +230,6 @@ async def test_streaming_openai_uses_the_env_key(test_db, monkeypatch, openai_se
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider,base", [
-    ("openrouter", L.OPENROUTER_BASE_URL),
     ("opencode_go", L.OPENCODE_GO_BASE_URL),
     ("lmstudio", "http://localhost:1234/v1"),
 ])
@@ -242,6 +241,15 @@ async def test_openai_env_key_never_reaches_compatible_endpoints(test_db, monkey
     assert sent_base == base
     assert key != ENV_OPENAI
     assert key == ("lm-studio" if provider == "lmstudio" else "")
+
+
+@pytest.mark.asyncio
+async def test_openai_env_key_never_reaches_openrouter(test_db, monkeypatch, openai_seen):
+    """OpenRouter with no key of its own now stops before sending anything (L-02)."""
+    monkeypatch.setenv("OPENAI_API_KEY", ENV_OPENAI)
+    with pytest.raises(L.NonRetryableLLMError, match="No API key for OpenRouter"):
+        await L._dispatch("openrouter", "m", "", "p", "s", 10)
+    assert openai_seen == []
 
 
 def test_openai_client_never_hands_the_sdk_none(monkeypatch):
@@ -373,6 +381,19 @@ def anthropic_seen(monkeypatch):
     return seen
 
 
+def _count_dispatch(monkeypatch):
+    """Wrap _dispatch to count the attempts call_llm makes."""
+    calls = []
+    real = L._dispatch
+
+    async def counting(provider, *a, **kw):
+        calls.append(provider)
+        return await real(provider, *a, **kw)
+
+    monkeypatch.setattr(L, "_dispatch", counting)
+    return calls
+
+
 # ── L-01: a stale key in a switched-off override ─────────────────────────────
 
 @pytest.mark.parametrize("feature", FEATURES)
@@ -422,3 +443,129 @@ def test_member_stale_slot_key_is_ignored_too(test_db, member):
     _own(test_db, member, "cover_letter_llm_api_key", "sk-proj-member-stale")
     with use_account(member):
         assert L.resolve_llm_config("cover_letter", db=test_db)["api_key"] == "sk-ant-member"
+
+
+# ── L-02: Claude API and OpenRouter with no key ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_claude_api_with_no_key_anywhere_fails_once_and_clearly(test_db, monkeypatch, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    calls = _count_dispatch(monkeypatch)
+    with pytest.raises(L.NonRetryableLLMError, match="No API key for Claude API"):
+        await L.call_llm("p", "s", 10)
+    assert calls == ["claude_api"]   # no retries
+    assert anthropic_seen == []      # no SDK client, so no "Could not resolve authentication method"
+
+
+@pytest.mark.asyncio
+async def test_claude_api_owner_uses_the_env_key(test_db, monkeypatch, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    res = await L.call_llm("p", "s", 10)
+    assert res["text"] == "ok"
+    assert anthropic_seen == ["sk-ant-env"]
+
+
+@pytest.mark.asyncio
+async def test_claude_api_member_on_inherit_uses_the_env_key(test_db, member, monkeypatch, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    with use_account(member):
+        await L.call_llm("p", "s", 10)
+    assert anthropic_seen == ["sk-ant-env"]
+
+
+@pytest.mark.asyncio
+async def test_claude_api_member_on_own_never_gets_the_env_key(test_db, member, monkeypatch, anthropic_seen):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    _models_own(test_db, member)
+    _own(test_db, member, "llm_provider", "claude_api")
+    with use_account(member):
+        with pytest.raises(L.NonRetryableLLMError, match="No API key for Claude API"):
+            await L.call_llm("p", "s", 10)
+    assert anthropic_seen == []
+
+
+@pytest.mark.asyncio
+async def test_claude_api_with_no_key_falls_back_at_once(test_db, monkeypatch, anthropic_seen, openai_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    set_setting(test_db, "llm_fallback_provider", "openai")
+    set_setting(test_db, "llm_fallback_model", "gpt-5-mini")
+    set_setting(test_db, "llm_fallback_api_key", "sk-openai-fb")
+    calls = _count_dispatch(monkeypatch)
+    res = await L.call_llm("p", "s", 10)
+    assert (res["provider"], res["model"], res["text"]) == ("openai", "gpt-5-mini", "ok")
+    assert calls == ["claude_api", "openai"]
+    assert openai_seen == [("sk-openai-fb", None)]
+
+
+@pytest.mark.asyncio
+async def test_streaming_claude_api_with_no_key_fails_clearly(test_db, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    with pytest.raises(L.NonRetryableLLMError, match="No API key for Claude API"):
+        [c async for c in L.call_autofill_llm_stream("p", "s")]
+    assert anthropic_seen == []
+
+
+@pytest.mark.asyncio
+async def test_streaming_claude_api_uses_the_env_key(test_db, monkeypatch, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    assert [c async for c in L.call_autofill_llm_stream("p", "s")] == ["ok"]
+    assert anthropic_seen == ["sk-ant-env"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_with_no_key_fails_once_and_clearly(test_db, monkeypatch, openai_seen):
+    set_setting(test_db, "llm_provider", "openrouter")
+    set_setting(test_db, "llm_model", "openai/gpt-5")
+    calls = _count_dispatch(monkeypatch)
+    with pytest.raises(L.NonRetryableLLMError, match="No API key for OpenRouter"):
+        await L.call_llm("p", "s", 10)
+    assert calls == ["openrouter"]
+    assert openai_seen == []   # no empty bearer sent
+
+
+@pytest.mark.asyncio
+async def test_streaming_openrouter_with_no_key_fails_clearly(test_db, openai_seen):
+    _anthropic_primary(test_db, autofill_llm_provider="openrouter", autofill_llm_model="openai/gpt-5")
+    with pytest.raises(L.NonRetryableLLMError, match="No API key for OpenRouter"):
+        [c async for c in L.call_autofill_llm_stream("p", "s")]
+    assert openai_seen == []
+
+
+@pytest.mark.asyncio
+async def test_openrouter_with_a_key_still_works(test_db, openai_seen):
+    _anthropic_primary(test_db, autofill_llm_provider="openrouter", autofill_llm_model="openai/gpt-5",
+                       autofill_llm_api_key="sk-or-slot")
+    res = await L.call_autofill_llm("p", "s")
+    assert res["text"] == "ok"
+    assert openai_seen == [("sk-or-slot", L.OPENROUTER_BASE_URL)]
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code):
+        super().__init__(f"Error code: {status_code}")
+        self.status_code = status_code
+
+
+def _openai_raising(monkeypatch, status_code):
+    async def create(**kw):
+        raise _StatusError(status_code)
+
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+    monkeypatch.setattr(L, "_openai_client", lambda api_key, base_url, feature=None: client)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_401_is_not_retried(test_db, monkeypatch):
+    _openai_raising(monkeypatch, 401)
+    with pytest.raises(L.NonRetryableLLMError, match="OpenRouter rejected the API key"):
+        await L._dispatch("openrouter", "openai/gpt-5", "sk-or-bad", "p", "s", 10)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_other_errors_still_take_the_retry_path(test_db, monkeypatch):
+    _openai_raising(monkeypatch, 503)
+    with pytest.raises(_StatusError):
+        await L._dispatch("openrouter", "openai/gpt-5", "sk-or", "p", "s", 10)

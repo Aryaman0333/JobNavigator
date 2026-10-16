@@ -223,6 +223,10 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
         api_key = _opencode_go_key(api_key)
     elif provider == "openai":
         api_key = _openai_key(api_key)
+    elif provider == "openrouter":
+        api_key = _openrouter_key(api_key)
+    elif provider == "claude_api":
+        api_key = _anthropic_key(api_key)
     if provider == "claude_api":
         async for c in _stream_claude(prompt, system, model, api_key, cap, cached_prefix, effort):
             yield c
@@ -245,9 +249,8 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
 
 
 async def _stream_claude(prompt, system, model, api_key, max_tokens, cached_prefix, effort=""):
-    import anthropic, os
-    key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-    client = anthropic.AsyncAnthropic(api_key=key)
+    import anthropic
+    client = anthropic.AsyncAnthropic(api_key=_anthropic_key(api_key))
     if cached_prefix:
         content = [
             {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
@@ -377,6 +380,7 @@ _KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter"
                     "opencode_go": "OpenCode Go"}
 OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY"
 OPENAI_KEY_ENV = "OPENAI_API_KEY"
+ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
 
 
 def _env_key(env_name: str) -> str:
@@ -404,6 +408,25 @@ def _openai_key(api_key: str) -> str:
         raise NonRetryableLLMError(
             "No API key for OpenAI — set it in Settings › Models (or OPENAI_API_KEY in .env)")
     return key
+
+
+def _anthropic_key(api_key: str) -> str:
+    """The Claude API key to send: the resolved setting, else ANTHROPIC_API_KEY for the owner and
+    members on 'inherit'. With neither the SDK raised "Could not resolve authentication method"
+    at request time and the call was retried 4 times (L-02); no key at all is a config error."""
+    key = api_key or _env_key(ANTHROPIC_KEY_ENV)
+    if not key:
+        raise NonRetryableLLMError(
+            "No API key for Claude API — set it in Settings › Models (or ANTHROPIC_API_KEY in .env)")
+    return key
+
+
+def _openrouter_key(api_key: str) -> str:
+    """The OpenRouter key to send. OpenRouter has no env fallback, so an empty key used to send
+    an empty bearer and retry the 401 (L-02); it is a config error instead."""
+    if not api_key:
+        raise NonRetryableLLMError("No API key for OpenRouter — set it in Settings › Models")
+    return api_key
 
 
 def _require_own_key(provider: str, api_key: str) -> None:
@@ -441,8 +464,7 @@ async def _dispatch(provider: str, model: str, api_key: str,
     elif provider == "openrouter":
         # OpenRouter is OpenAI-API-compatible — same client, different base URL.
         # One key reaches every vendor's models (model slug is vendor-prefixed).
-        return await _call_openai(combined, system, model, api_key, max_tokens,
-                                  base_url=OPENROUTER_BASE_URL, effort=effort)
+        return await _call_openrouter(combined, system, model, api_key, max_tokens, effort=effort)
     elif provider == "opencode_go":
         # OpenCode Go (subscription) over its OpenAI-compatible endpoint; the model id is bare
         # (the CLI's `opencode-go/` prefix is a CLI alias, not part of the HTTP API).
@@ -468,8 +490,7 @@ async def _call_claude_api(prompt: str, system: str, model: str, api_key: str,
                            max_tokens: int, cached_prefix: str | None = None, effort: str = "") -> dict:
     """Call Claude via the Anthropic SDK; cached_prefix is sent as a separate cache_control block for ~10x cheaper reuse, but is ignored below the 1024-token (Sonnet/Opus) minimum."""
     import anthropic
-    key = api_key or __import__('os').getenv("ANTHROPIC_API_KEY", "")
-    client = anthropic.AsyncAnthropic(api_key=key)
+    client = anthropic.AsyncAnthropic(api_key=_anthropic_key(api_key))
 
     if cached_prefix:
         content = [
@@ -1037,6 +1058,23 @@ async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, 
         mapped = _opencode_go_error(e, model)
         if mapped is not None:
             raise mapped from e
+        raise
+
+
+async def _call_openrouter(prompt: str, system: str, model: str, api_key: str, max_tokens: int,
+                           effort: str = "") -> dict:
+    """OpenRouter over its OpenAI-compatible API. No key, or a key it rejects (401), cannot
+    succeed on a retry, so both are NonRetryable and the fallback runs at once (L-02)."""
+    api_key = _openrouter_key(api_key)
+    try:
+        return await _call_openai(prompt, system, model, api_key, max_tokens,
+                                  base_url=OPENROUTER_BASE_URL, effort=effort)
+    except NonRetryableLLMError:
+        raise
+    except Exception as e:
+        if getattr(e, "status_code", None) == 401:
+            raise NonRetryableLLMError(
+                "OpenRouter rejected the API key — check it in Settings › Models") from e
         raise
 
 
