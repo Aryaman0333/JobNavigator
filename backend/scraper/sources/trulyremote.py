@@ -16,9 +16,10 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 
 from backend.models.db import (
-    SessionLocal, Job, Search, Setting, get_existing_external_ids,
+    SessionLocal, Job, Search, get_existing_external_ids,
     get_global_title_exclude,
 )
+from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
@@ -179,18 +180,33 @@ async def _fetch_roster(client: httpx.AsyncClient) -> list[dict]:
     return _parse_roster(resp.text)
 
 
-async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict]) -> dict:
+async def _fetch_roster_standalone() -> list[dict]:
+    """The roster in a client of its own (a shared fetch runs this once for every subscriber)."""
+    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
+        return await _fetch_roster(client)
+
+
+async def _fetch_details(client: httpx.AsyncClient, candidates: list[dict], cache: dict | None = None) -> dict:
     """Fetch each kept job's `.md` twin (bounded concurrency) for the full description. Keyed by
-    URL; a detail that fails leaves the roster's short blurb in place."""
+    URL; a detail that fails leaves the roster's short blurb in place.
+
+    `cache` (MT-8): the `.md` pages a shared fetch's earlier subscribers already read, keyed by
+    job URL. A page in it is not fetched again; every page parsed here is added to it (a
+    failure or a non-200 never is)."""
     sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
     details: dict[str, dict] = {}
 
     async def one(job: dict) -> None:
+        if cache is not None and job["url"] in cache:
+            details[job["url"]] = dict(cache[job["url"]])
+            return
         async with sem:
             try:
                 resp = await _get(client, _get_url(job["url"]))
                 if resp.status_code == 200:
                     details[job["url"]] = _parse_detail(resp.text, job)
+                    if cache is not None:
+                        cache[job["url"]] = dict(details[job["url"]])
                 await asyncio.sleep(random.uniform(*_DETAIL_DELAY))
             except Exception as e:
                 logger.debug(f"trulyremote detail failed for {job['url']}: {e}")
@@ -246,8 +262,14 @@ def _remember_ignored(db, j: dict, search: Search, existing_ids: set) -> None:
         logger.debug(f"trulyremote: could not record ignored job {j.get('url')}: {e}")
 
 
-async def run(search: Search) -> dict:
-    """Full scrape entry point. Fetch roster → filter → fetch details → save to DB."""
+async def run(search: Search, shared=None) -> dict:
+    """Full scrape entry point. Fetch roster → filter → fetch details → save to DB.
+
+    `shared` (MT-8 SharedFetch): the roster is the whole corpus, the same for every search, so
+    it is fetched once for all subscribers. Filters, dedup, the results_wanted cap, the `.md`
+    reads and the ingest stay per subscriber, but each `.md` page is read at most once per
+    shared fetch, through the fetch's `memo`. The roster rows are shared, so they are never
+    mutated here (detail merges build new dicts)."""
     start = time.time()
     try:
         db = SessionLocal()
@@ -255,12 +277,17 @@ async def run(search: Search) -> dict:
             include_kw, exclude_kw = _title_filters(search, db)
             global_exclude_set, search_exclude_set = build_search_exclude_sets(db, search)
             existing_ids = get_existing_external_ids(db)
+            detail_cache = None
+            if shared is not None:
+                listings = await shared.get(_fetch_roster_standalone)
+                detail_cache = shared.memo.setdefault("trulyremote_details", {})
 
             async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _UA}) as client:
                 # The roster is the whole corpus and is not query-filtered, so the title and
                 # company filters do the narrowing — slice only after they run, or a keyword
                 # search could miss its matches entirely.
-                listings = await _fetch_roster(client)
+                if shared is None:
+                    listings = await _fetch_roster(client)
                 candidates = []
                 seen = 0
                 for j in listings:
@@ -277,7 +304,9 @@ async def run(search: Search) -> dict:
                         continue
                     candidates.append(j)
                 candidates = candidates[:search.results_wanted or 100]
-                details = await _fetch_details(client, candidates)
+                # A single search calls exactly as before; only a shared fetch passes its cache.
+                extra = {"cache": detail_cache} if detail_cache is not None else {}
+                details = await _fetch_details(client, candidates, **extra)
 
             logger.info(f"trulyremote '{search.name}': {len(listings)} rows / {seen} seen / {len(candidates)} new to fetch")
 
@@ -404,11 +433,11 @@ async def preview(search: Search, db) -> dict:
         from collections import Counter
         company_breakdown = dict(Counter(j["company"] for j in unique if j.get("company")).most_common(20))
 
-        body_row = db.query(Setting).filter(Setting.key == "body_exclusion_phrases").first()
+        body_raw = get_setting(db, "body_exclusion_phrases")
         body_phrases = []
-        if body_row and body_row.value:
+        if body_raw:
             try:
-                body_phrases = json.loads(body_row.value)
+                body_phrases = json.loads(body_raw)
             except json.JSONDecodeError:
                 pass
 

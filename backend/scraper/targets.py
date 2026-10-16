@@ -20,6 +20,10 @@ Target keys
     is taken as the max and trimmed per account.
   - caribbeanjobs: the URL filters + the keyword alternatives in order; results_wanted as
     for freehire. Detail pages are read once per shared fetch (`SharedFetch.memo`).
+  - trulyremote: one key for every search. The roster (`llms-full.txt`) is the whole corpus
+    with no query, so all trulyremote searches of all accounts share one fetch; results_wanted
+    caps each subscriber's new job pages after its own dedup, so it is not a fetch parameter.
+    The `.md` job pages are read once per shared fetch (`SharedFetch.memo`).
   - linkedin_personal, jobright and anything unknown read the account's own session, so
     they are never shared: their key carries the search id.
   - apify is never shared either (deliberately, not by omission): every run is paid with
@@ -68,7 +72,8 @@ class SharedFetch:
     {"results_wanted": 200, "hours_old": 72} (the max among subscribers).
 
     `memo` is scratch space a source may keep across its subscribers for follow-up fetches
-    that are the same for everyone (caribbeanjobs: detail pages by URL). Only raw, account-
+    that are the same for everyone (caribbeanjobs: detail pages by URL; trulyremote: `.md`
+    job pages by URL). Only raw, account-
     independent page data goes in it, never anything an ingest filtered or wrote."""
 
     def __init__(self, key=None, params: Optional[dict] = None):
@@ -181,6 +186,9 @@ def search_key(search) -> tuple:
         base, keywords = _query_plan(search)
         # Keyword order is kept: the merged listing is cut to results_wanted in query order.
         return ("caribbeanjobs", tuple(sorted(base.items())), tuple(_norm(k) for k in keywords))
+    if mode == "trulyremote":
+        # The whole corpus, no query: every trulyremote search is the same fetch.
+        return ("trulyremote",)
     # linkedin_personal / jobright (the account's own session), apify (each account pays
     # with its own token, see the module docstring) and unknown modes
     return (mode, "own", str(search.id))
@@ -196,6 +204,7 @@ def search_fetch_params(subscribers: list) -> dict:
         }
     if mode in ("freehire", "caribbeanjobs"):
         return {"results_wanted": max((s.results_wanted or 100) for s in subscribers)}
+    # trulyremote: the roster is fetched whole; results_wanted applies per subscriber after dedup.
     return {}
 
 
@@ -265,7 +274,7 @@ def split_search_targets(targets: list) -> list:
 
 def is_shareable_search(search) -> bool:
     # Never "apify": each account's run is billed to its own token (see the docstring).
-    return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire", "caribbeanjobs")
+    return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire", "caribbeanjobs", "trulyremote")
 
 
 # ── Due-ness ─────────────────────────────────────────────────────────────────
