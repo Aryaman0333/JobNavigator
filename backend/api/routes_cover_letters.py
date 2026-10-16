@@ -16,7 +16,7 @@ from backend.models.db import get_db, CoverLetter, Resume, Job, Persona, TracerL
 from backend.accounts.settings import get_setting
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.api.routes_resumes import _header_name, _render_pdf, _rewrite_urls_with_tracers, _resolve_tailoring_jd  # shared with resumes
+from backend.api.routes_resumes import _content_disposition, _header_name, _render_pdf, _rewrite_urls_with_tracers, _resolve_tailoring_jd  # shared with resumes
 
 logger = logging.getLogger("jobnavigator.cover_letters")
 
@@ -289,7 +289,7 @@ async def export_pdf(cl_id: str, db: Session = Depends(get_db)):
     # Filename: {Name}_{Type}_CoverLetter_{number}.pdf
     header_name = (_header_name(cl.json_data) or "CoverLetter").replace(" ", "")
     def _safe(text: str) -> str:
-        """ASCII, no spaces or punctuation that muddles a download filename."""
+        """Letters (any script), digits, `-` and `_`; no spaces or punctuation that muddles a download filename."""
         out = "".join(c for c in (text or "") if c.isalnum() or c in " -_").strip()
         return out.replace(" ", "")
 
@@ -301,12 +301,14 @@ async def export_pdf(cl_id: str, db: Session = Depends(get_db)):
             if job.short_id:
                 number = f"_{job.short_id}"
             label = _safe(job.company) or label
-    filename = f"{header_name}_{label}_CoverLetter{number}".encode("ascii", "replace").decode()
+    # An ASCII filename= for old clients plus filename*=UTF-8'' so José or Дана keeps its name
+    # (the same header the résumé downloads send).
+    stem = f"{header_name}_{label}_CoverLetter{number}"
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'},
+        headers={"Content-Disposition": _content_disposition(stem, "pdf")},
     )
 
 

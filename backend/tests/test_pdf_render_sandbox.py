@@ -277,3 +277,46 @@ def test_pdf_filename_keeps_a_non_ascii_name(client, test_db, monkeypatch):
     disposition = r.headers["content-disposition"]
     assert 'filename="JoseMuller_Base_Resume.pdf"' in disposition
     assert "filename*=UTF-8''Jos%C3%A9M%C3%BCller_Base_Resume.pdf" in disposition
+
+
+# ── cover-letter download filename: the same two-name header as the résumé ──
+
+def _letter(test_db, name, **kw):
+    cl = CoverLetter(id=uuid.uuid4(), name=kw.pop("label", "Letter"), template=sorted(rr.template_paths(rcl.TEMPLATES_DIR))[0],
+                     json_data={"header": {"name": name}, "body_paragraphs": ["Hello."]}, **kw)
+    test_db.add(cl)
+    test_db.commit()
+    return cl
+
+
+@pytest.mark.parametrize("name,company,ascii_stem,utf8_stem", [
+    ("José Müller", "Acme", "JoseMuller_Acme_CoverLetter_77", "JoséMüller_Acme_CoverLetter_77"),
+    ("Dana Okonkwo", "Acme", "DanaOkonkwo_Acme_CoverLetter_77", "DanaOkonkwo_Acme_CoverLetter_77"),
+    ("Дана", "Ромашка", "CoverLetter_77", "Дана_Ромашка_CoverLetter_77"),
+    ("王小明", "Acme", "Acme_CoverLetter_77", "王小明_Acme_CoverLetter_77"),
+])
+def test_cover_letter_pdf_filename_keeps_a_non_ascii_name(client, test_db, monkeypatch, name, company, ascii_stem, utf8_stem):
+    from urllib.parse import quote, unquote
+    from backend.tests.r4_support import make_job
+
+    _fake_browser(monkeypatch)
+    job = make_job(test_db, company=company, short_id=77)
+    cl = _letter(test_db, name, job_id=job.id)
+    r = client.get(f"/api/cover-letters/{cl.id}/pdf")
+    assert r.status_code == 200
+    disposition = r.headers["content-disposition"]
+    assert f'filename="{ascii_stem}.pdf"' in disposition
+    assert f"filename*=UTF-8''{quote(utf8_stem + '.pdf', safe='')}" in disposition
+    assert unquote(disposition.split("UTF-8''", 1)[1]) == f"{utf8_stem}.pdf"
+    disposition.encode("latin-1")   # a header value must stay encodable
+
+
+def test_cover_letter_pdf_filename_cannot_break_the_header(client, test_db, monkeypatch):
+    _fake_browser(monkeypatch)
+    cl = _letter(test_db, 'Zoë "x";\r\nSet-Cookie: a=b')
+    r = client.get(f"/api/cover-letters/{cl.id}/pdf")
+    assert r.status_code == 200
+    disposition = r.headers["content-disposition"]
+    assert "\r" not in disposition and "\n" not in disposition
+    assert disposition.startswith('attachment; filename="Zoe')
+    assert disposition.count('"') == 2   # only the two around the ASCII name

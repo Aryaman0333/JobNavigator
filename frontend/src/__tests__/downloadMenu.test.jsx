@@ -10,7 +10,7 @@ vi.mock('../api', () => ({
   beginOwnSwitch: () => {}, waitForWrites: () => Promise.resolve(),
 }))
 
-import { DownloadMenu, downloadName } from '../screens/ResumeEditor'
+import { DownloadMenu } from '../screens/ResumeEditor'
 
 const props = { id: 'r1', template: 'inter', format: 'a4' }
 
@@ -80,24 +80,5 @@ describe('DownloadMenu', () => {
     fireEvent.click(screen.getByText('Word'))
     await waitFor(() => expect(onError).toHaveBeenCalledWith('Could not download the Word document.'))
     expect(saved).toEqual([])
-  })
-})
-
-describe('downloadName', () => {
-  it('prefers filename* (RFC 5987) and decodes it', () => {
-    expect(downloadName("attachment; filename=\"Resume.pdf\"; filename*=UTF-8''%D0%94%D0%B0%D0%BD%D0%B0_Resume.pdf", 'x'))
-      .toBe('Дана_Resume.pdf')
-    expect(downloadName("attachment; filename*=utf-8''%E7%8E%8B_CV.docx", 'x')).toBe('王_CV.docx')
-  })
-
-  it('falls back to the plain filename, quoted or bare', () => {
-    expect(downloadName('attachment; filename="Dana_Base_Resume_7.docx"', 'x')).toBe('Dana_Base_Resume_7.docx')
-    expect(downloadName('attachment; filename=Dana.pdf', 'x')).toBe('Dana.pdf')
-    expect(downloadName("attachment; filename=\"Jose.pdf\"; filename*=UTF-8''%E0%A4%A", 'x')).toBe('Jose.pdf')   // malformed escape
-  })
-
-  it('uses the fallback when there is no name', () => {
-    expect(downloadName(undefined, 'Resume.pdf')).toBe('Resume.pdf')
-    expect(downloadName('attachment', 'Resume.docx')).toBe('Resume.docx')
   })
 })

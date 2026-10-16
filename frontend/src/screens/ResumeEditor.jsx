@@ -5,6 +5,7 @@ import { useFlushBeforeSwitch } from '../accounts'
 import '../theme.css'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
+import { downloadName } from '../download'
 import { useEscape, useSingleOpen, setFlashToast, fetchRunOutcome, runFailed, runFailureReason, useSettled, NBSP } from '../hooks'
 import { useTitle } from '../useTitle'
 // The résumé-content editors are shared with /persona (a Persona's
@@ -673,18 +674,6 @@ export default function ResumeEditor() {
 // download, so the X-API-Key header travels and a failed export is an error toast rather
 // than a JSON page in a new tab. The current template and paper ride along, so a fresh
 // pick that the debounced save hasn't stored yet is still what downloads.
-// The file name from a Content-Disposition header: the RFC 5987 `filename*=UTF-8''…`
-// first (it keeps a name like José or Дана), then the plain ASCII `filename=`.
-export function downloadName(disposition, fallback) {
-  const cd = String(disposition || '')
-  const star = /filename\*\s*=\s*UTF-8''([^;\s]+)/i.exec(cd)
-  if (star) {
-    try { return decodeURIComponent(star[1]) } catch { /* malformed: use the plain name */ }
-  }
-  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(cd)
-  return (plain && (plain[1] || plain[2])) || fallback
-}
-
 export function DownloadMenu({ id, template, format, onError }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)

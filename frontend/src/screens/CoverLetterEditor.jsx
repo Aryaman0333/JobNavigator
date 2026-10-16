@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import api from '../api'
+import { downloadName } from '../download'
 import { useFlushBeforeSwitch } from '../accounts'
 import { Picker, VoicePicker, LengthPicker, LENGTHS, STAGE_CLASS } from './CoverLetters'
 import ConfirmDialog from '../ConfirmDialog'
@@ -185,11 +186,9 @@ export default function CoverLetterEditor() {
   const download = async () => {
     try {
       const r = await api.get(`/cover-letters/${id}/pdf`, { responseType: 'blob' })
-      const cd = r.headers['content-disposition'] || ''
-      const m = /filename="?([^"]+)"?/.exec(cd)
       const url = URL.createObjectURL(r.data)
       const a = document.createElement('a')
-      a.href = url; a.download = m ? m[1] : 'CoverLetter.pdf'
+      a.href = url; a.download = downloadName(r.headers?.['content-disposition'], 'CoverLetter.pdf')
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (e) { console.error(e); pushToast({ kind: 'error', msg: 'Could not download the PDF.' }) }   // a download failure is not a save failure
