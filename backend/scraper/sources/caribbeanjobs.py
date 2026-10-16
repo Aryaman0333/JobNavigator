@@ -25,6 +25,8 @@ from backend.models.db import (
     get_global_title_exclude,
 )
 from backend.accounts.settings import get_setting
+from backend.analyzer import salary_extractor
+from backend.analyzer.salary_extractor import extract_salary
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
@@ -153,54 +155,25 @@ def _parse_salary(text: str) -> tuple[int | None, int | None]:
 # The board's salaries are in the local currency of each island (TTD, JMD, BBD, KYD, …) or
 # in USD, and a bare "$" is usually local dollars. `Job` has no currency column, so only a
 # salary that is explicitly USD and annual becomes salary_min/max; any other is kept as text.
-_CURRENCY_PATTERNS = (
-    ("USD", r"\bUSD\b|\bUS\s?\$"),
-    ("TTD", r"\bTTD\b|\bTT\s?\$"),
-    ("JMD", r"\bJMD\b|\bJ\$"),
-    ("BBD", r"\bBBD\b|\bBDS?\$"),
-    ("XCD", r"\bXCD\b|\bEC\$"),
-    ("KYD", r"\bKYD\b|\bCI\$"),
-    ("BSD", r"\bBSD\b|\bB\$"),
-    ("GYD", r"\bGYD\b|\bG\$"),
-    ("BZD", r"\bBZD\b|\bBZ\$"),
-    ("BMD", r"\bBMD\b"),
-    ("ANG", r"\bANG\b"),
-    ("AWG", r"\bAWG\b"),
-    ("EUR", r"\bEUR\b|€"),
-    ("GBP", r"\bGBP\b|£"),
-)
-_UNIT_PATTERNS = (
-    ("YEAR", r"per\s+(?:year|annum)|annual|yearly|/\s*(?:yr|year|annum)\b|\bp\.?a\.?\b"),
-    ("MONTH", r"per\s+month|monthly|/\s*(?:mo|month)\b"),
-    ("WEEK", r"per\s+week|weekly|/\s*(?:wk|week)\b"),
-    ("DAY", r"per\s+day|daily|/\s*day\b"),
-    ("HOUR", r"per\s+hour|hourly|/\s*(?:hr|hour)\b"),
-)
+# Currency and period are read by the shared helpers in analyzer/salary_extractor.
 
 
 def _currency_of(text: str) -> str:
     """The ISO code a salary string names (`TT$ 8,000` → TTD), or "" when it names none."""
-    for code, pattern in _CURRENCY_PATTERNS:
-        if re.search(pattern, text or "", re.IGNORECASE):
-            return code
-    return ""
+    return salary_extractor.currency_code(text or "")
 
 
 def _unit_of(text: str) -> str:
-    for unit, pattern in _UNIT_PATTERNS:
-        if re.search(pattern, text or "", re.IGNORECASE):
-            return unit
-    return ""
+    """The period a salary string names (`8,000 a month` → MONTH), or "" when it names none."""
+    return salary_extractor.salary_period(text or "")
 
 
 def _usd_annual(j: dict) -> tuple[int | None, int | None]:
-    """(min, max) to store as a structured salary: only an explicit-USD, annual (or unstated
-    period) amount. Anything else is not comparable with the US salaries the app shows."""
-    if not j.get("salary_min") or (j.get("salary_currency") or "") != "USD":
-        return None, None
-    if (j.get("salary_unit") or "YEAR").upper() != "YEAR":
-        return None, None
-    return j["salary_min"], j.get("salary_max")
+    """(min, max) to store as a structured salary: only an explicit-USD, annual amount (or one
+    with no period from salary_extractor.UNSTATED_PERIOD_FLOOR up: an unlabelled USD 4,000 on
+    this board is monthly pay). Anything else is not comparable with the US salaries the app shows."""
+    return salary_extractor.yearly_usd(j.get("salary_min"), j.get("salary_max"),
+                                       j.get("salary_currency") or "", j.get("salary_unit") or "")
 
 
 def _salary_display(j: dict) -> str | None:
@@ -319,7 +292,8 @@ def _parse_detail(html: str, fallback: dict) -> dict:
             raw = f"{value.get('minValue') or ''} {value.get('maxValue') or ''}"
             currency = str(base_salary.get("currency") or value.get("currency") or "").strip().upper()
             out["salary_currency"] = currency or _currency_of(raw) or fallback.get("salary_currency") or ""
-            out["salary_unit"] = (str(value.get("unitText") or "").strip().upper()
+            unit_text = str(value.get("unitText") or base_salary.get("unitText") or "").strip()
+            out["salary_unit"] = ((_unit_of(unit_text) or unit_text.upper())
                                   or _unit_of(raw) or fallback.get("salary_unit") or "")
         valid = ld.get("validThrough")
         if valid:
@@ -615,11 +589,13 @@ async def run(search: Search, shared=None) -> dict:
                 except Exception as e:
                     logger.warning(f"caribbeanjobs inline analysis failed for {j['title']}: {e}")
 
-                if local_salary and job.salary_source == "posting":
-                    # The JD extractor reads any "$" as USD; on a posting whose salary is in
-                    # local dollars that figure is the same local amount, so drop it.
-                    job.salary_min = job.salary_max = None
-                    job.salary_source = "unknown"
+                if not usd_min and job.salary_source == "posting":
+                    # The JD extractor reads a bare "$" as USD, but on this board it is usually
+                    # the island's own dollar: keep only a figure the description names as USD.
+                    found = extract_salary(job.description or "", getattr(job, "_h1b_median", None),
+                                           explicit_usd=True)
+                    job.salary_min, job.salary_max = found["salary_min"], found["salary_max"]
+                    job.salary_source = found["salary_source"]
 
                 if job.h1b_jd_flag:
                     # Kept as "ignored" (as company scrapes do), so its URL is in the dedup set

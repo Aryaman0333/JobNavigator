@@ -11,7 +11,6 @@ import logging
 import random
 import re
 import time
-import unicodedata
 from datetime import datetime, timezone
 
 import httpx
@@ -22,6 +21,7 @@ from backend.models.db import (
     get_global_title_exclude,
 )
 from backend.accounts.settings import get_setting
+from backend.analyzer import salary_extractor
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
 from backend.scraper._shared.analysis import analyze_inline
@@ -78,27 +78,14 @@ def _parse_salary(text: str) -> tuple[int | None, int | None]:
 # says dollars ("$" or "USD") and is annual becomes salary_min/max; anything else is kept as
 # text in the description. Other dollars (A$, C$, NZ$, HK$, …), other ISO codes and any other
 # currency symbol (€ £ ¥ ₹ …) are not USD; neither is a bare figure with no currency at all.
-_NON_USD_RE = re.compile(
-    r"\b(?:EUR|GBP|CAD|AUD|NZD|HKD|CHF|SEK|NOK|DKK|PLN|CZK|HUF|RON|UAH|RUB|INR|PKR|BDT|BRL|MXN|ARS|"
-    r"CLP|COP|ZAR|NGN|KES|EGP|JPY|CNY|KRW|TWD|SGD|MYR|IDR|THB|VND|PHP|AED|ILS|TRY)\b"
-)
-_FOREIGN_DOLLAR_RE = re.compile(r"\b(?:A|AU|C|CA|NZ|HK|S|SG|R|MX|NT|TT|J|EC|BZ|BDS?|CI|G)\$")
-_USD_RE = re.compile(r"\$|\bUSD\b", re.IGNORECASE)
-_NON_ANNUAL_RE = re.compile(
-    r"per\s+(?:hour|week|day|month)|hourly|weekly|daily|monthly|/\s*(?:hr|hour|wk|week|day|mo|month)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_usd_annual(text: str) -> bool:
-    """True when a salary string names US dollars and no shorter period."""
-    if not _USD_RE.search(text):
-        return False
-    if _FOREIGN_DOLLAR_RE.search(text) or _NON_USD_RE.search(text):
-        return False
-    if any(unicodedata.category(c) == "Sc" and c != "$" for c in text):
-        return False
-    return not _NON_ANNUAL_RE.search(text)
+# A period shorter than a year ("a month", "/m", "pcm", "per wk") is not yearly, and a figure
+# with no period under salary_extractor.UNSTATED_PERIOD_FLOOR is taken as monthly.
+def _is_usd_annual(text: str, low: int | None = None, high: int | None = None) -> bool:
+    """True when a salary string names US dollars and a yearly (or unstated) period."""
+    currency = "USD" if salary_extractor.is_usd(text) else "other"
+    if low is None:
+        low, high = _parse_salary(text)
+    return salary_extractor.yearly_usd(low, high, currency, salary_extractor.salary_period(text))[0] is not None
 
 
 def _salary_fields(text: str) -> dict:
@@ -106,7 +93,7 @@ def _salary_fields(text: str) -> dict:
     the run stores as numbers; anything else is kept as `salary_text` for display."""
     text = (text or "").strip()
     lo, hi = _parse_salary(text)
-    eligible = lo is not None and _is_usd_annual(text)
+    eligible = lo is not None and _is_usd_annual(text, lo, hi)
     return {
         "salary_min": lo,
         "salary_max": hi,

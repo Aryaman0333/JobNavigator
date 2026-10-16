@@ -229,3 +229,169 @@ def test_levelsfyi_card_hourly_is_skipped():
 def test_jobspy_only_yearly_rows_are_stored(interval, lo, hi, ok):
     from backend.scraper.sources.jobspy import _jobspy_yearly
     assert _jobspy_yearly(interval, lo, hi) is ok
+
+
+# ── R30 S-01: a period word before an amount does not beat its own yearly tag ──
+
+@pytest.mark.parametrize("text,expected", [
+    ("$60–$75 per hour ($124,800–$156,000 annually)", (124800, 156000)),
+    ("Pay: $60 - $75 per hour ($124,800 - $156,000 annually)", (124800, 156000)),
+    ("Full-time role, 40 hours per week with salary $120,000 - $140,000", (120000, 140000)),
+    ("Hybrid (3 days a week) with a salary of $150,000 - $180,000", (150000, 180000)),
+    ("Paid monthly: $150,000 - $180,000 per year", (150000, 180000)),
+    ("$30 an hour ($62,400 a year)", (62400, 62400)),
+    ("$8k - $10k per month ($96k - $120k per year)", (96000, 120000)),
+    ("On site 2 days/week. Salary: $130,000 - $150,000", (130000, 150000)),
+    ("$120,000 per annum", (120000, 120000)),
+])
+def test_a_yearly_amount_after_an_earlier_period_word_is_read_whole(text, expected):
+    assert _pair(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Monthly salary: $150,000 - $180,000",   # no yearly tag of its own: the clause's period wins
+    "Hourly rate: $120,000 - $140,000",
+])
+def test_a_rejected_range_is_not_read_again_as_its_second_half(text):
+    assert _pair(text) == _NONE
+
+
+@pytest.mark.parametrize("text", [
+    "$5,000 - $8,000",               # no period and under the unstated floor
+    "Signing bonus $5,000",
+    "$9k",
+])
+def test_untagged_small_amounts_are_not_yearly(text):
+    assert _pair(text) == _NONE
+
+
+# ── R30 S-03: a prefixed or foreign dollar is not USD ──
+
+@pytest.mark.parametrize("text", [
+    "Salary: TT$180,000 per annum",
+    "Salary: TT $180,000 per annum",
+    "J$2,400,000 - J$3,000,000 annually",
+    "HK$600,000 - HK$800,000 per year",
+    "Compensation: A$150,000 - A$170,000",
+    "Compensation: AU$150k - AU$170k",
+    "Base salary C$140,000",
+    "CA$140,000 per year",
+    "NZ$120,000",
+    "S$80,000 - S$100,000",
+    "R$120,000 per year",
+    "$140,000 - $170,000 AUD",
+    "$140,000 (CAD) per year",
+    "CAD $150,000 per year",
+    "$2,400,000 annually",           # implausible as a US salary
+])
+def test_foreign_dollars_are_not_read_as_usd(text):
+    assert _pair(text) == _NONE
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("US$150,000 - US$180,000", (150000, 180000)),
+    ("USD $150,000", (150000, 150000)),
+    ("USD 150,000 - 180,000", (150000, 180000)),
+    ("San Francisco, CA $150,000 - $180,000", (150000, 180000)),
+    ("Salary: $150,000 - $180,000 USD", (150000, 180000)),
+])
+def test_usd_amounts_still_parse(text, expected):
+    assert _pair(text) == expected
+
+
+@pytest.mark.parametrize("text,stored", [
+    ("$120,000 - $150,000 per year", False),
+    ("US$120,000 - $150,000", True),
+    ("USD 120,000 - 150,000 per year", True),
+    ("Salary: USD $120,000 per year", True),
+    ("$120,000 - $150,000 USD", True),
+])
+def test_explicit_usd_mode_needs_usd_named(text, stored):
+    from backend.analyzer.salary_extractor import extract_salary
+    r = extract_salary(text, explicit_usd=True)
+    assert (r["salary_source"] == "posting") is stored
+
+
+# ── Shared period and currency helpers ──────────────────────────────────────
+
+@pytest.mark.parametrize("text,period", [
+    ("$4,000 - $6,000 a month", "MONTH"), ("$5,000/m", "MONTH"), ("USD 3,500 - 4,500 pcm", "MONTH"),
+    ("$9,000/mth", "MONTH"), ("$2,500 a week", "WEEK"), ("$1,200 - $1,500 per wk", "WEEK"),
+    ("$400 a day", "DAY"), ("$45/hr", "HOUR"), ("60,000 per annum", "YEAR"), ("$120K - $180K/yr", "YEAR"),
+    ("$150k", ""), ("MONTH", "MONTH"), ("YEAR", "YEAR"), ("", ""),
+    ("$60/hr ($124,800 a year)", "HOUR"),   # a source field naming both is not a clean yearly figure
+])
+def test_salary_period(text, period):
+    from backend.analyzer.salary_extractor import salary_period
+    assert salary_period(text) == period
+
+
+@pytest.mark.parametrize("text", [
+    "$4,000 - $6,000 a month", "$5,000/m", "$2,500 a week", "$1,200 - $1,500 per wk",
+    "USD 3,500 - 4,500 pcm", "$9,000/mth",
+])
+def test_is_non_annual_reads_every_short_period(text):
+    from backend.analyzer.salary_extractor import is_non_annual
+    assert is_non_annual(text) is True
+
+
+@pytest.mark.parametrize("text,code", [
+    ("TT$ 8,000", "TTD"), ("J$2,400,000", "JMD"), ("BDS$50,000", "BBD"), ("EC$40,000", "XCD"),
+    ("CI$60,000", "KYD"), ("AU$120k", "AUD"), ("HK$600,000", "HKD"), ("€65K", "EUR"), ("£90,000", "GBP"),
+    ("$100,000 AUD", "AUD"), ("US$ 60,000", "USD"), ("usd 60,000", "USD"), ("$150k", ""), ("85000", ""),
+])
+def test_currency_code(text, code):
+    from backend.analyzer.salary_extractor import currency_code
+    assert currency_code(text) == code
+
+
+@pytest.mark.parametrize("low,high,currency,period,stored", [
+    (120000, 150000, "USD", "YEAR", (120000, 150000)),
+    (120000, 150000, "USD", "", (120000, 150000)),
+    (5000, 8000, "USD", "YEAR", (5000, 8000)),        # explicitly yearly
+    (5000, 8000, "USD", "", (None, None)),            # no period, under the floor: monthly
+    (4000, 6000, "USD", "MONTH", (None, None)),
+    (120000, 150000, "TTD", "YEAR", (None, None)),
+    (120000, 150000, "", "YEAR", (None, None)),
+    (2_400_000, 3_000_000, "USD", "YEAR", (None, None)),
+])
+def test_yearly_usd(low, high, currency, period, stored):
+    from backend.analyzer.salary_extractor import yearly_usd
+    assert yearly_usd(low, high, currency, period) == stored
+
+
+# ── R30 S-02: TrulyRemote and CaribbeanJobs use the shared period rule ──────
+
+@pytest.mark.parametrize("text", [
+    "$4,000 - $6,000 a month", "$5,000/m", "$2,500 a week", "$1,200 - $1,500 per wk",
+    "USD 3,500 - 4,500 pcm", "$9,000/mth",
+    "$5,000 - $8,000",               # no period, under the floor
+])
+def test_trulyremote_short_period_usd_is_text_only(text):
+    from backend.scraper.sources import trulyremote
+    fields = trulyremote._salary_fields(text)
+    assert fields["salary_usd_annual"] is False and fields["salary_text"] == text
+
+
+@pytest.mark.parametrize("text", ["USD 4,000 - 6,000 a month", "USD 5,000 /mth", "USD 1,200 a week",
+                                  "USD 5,000 - 8,000"])
+def test_caribbeanjobs_short_period_usd_is_text_only(text):
+    from backend.scraper.sources import caribbeanjobs
+    lo, hi = caribbeanjobs._parse_salary(text)
+    j = {"salary_min": lo, "salary_max": hi,
+         "salary_currency": caribbeanjobs._currency_of(text), "salary_unit": caribbeanjobs._unit_of(text)}
+    assert j["salary_currency"] == "USD"
+    assert caribbeanjobs._usd_annual(j) == (None, None)
+
+
+def test_caribbeanjobs_json_ld_period_from_the_amount_text_or_unit_text():
+    from backend.scraper.sources import caribbeanjobs
+    raw = """<script id="jobPostingSchema" type="application/ld+json">
+        {"@type": "JobPosting", "title": "Accountant",
+         "baseSalary": {"currency": "USD", "value": {"minValue": "4,000 a month", "maxValue": "6,000"}}}
+        </script>"""
+    out = caribbeanjobs._parse_detail(raw, {"title": "x", "company": "Acme", "location": ""})
+    assert out["salary_unit"] == "MONTH" and caribbeanjobs._usd_annual(out) == (None, None)
+    per_month = raw.replace('"maxValue": "6,000"', '"maxValue": "6,000", "unitText": "per_month"')
+    out = caribbeanjobs._parse_detail(per_month, {"title": "x", "company": "Acme", "location": ""})
+    assert out["salary_unit"] == "MONTH"

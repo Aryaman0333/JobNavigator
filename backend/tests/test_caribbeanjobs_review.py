@@ -346,6 +346,47 @@ async def test_run_keeps_a_local_salary_as_text_and_drops_the_extractors_dollar_
 
 
 @pytest.mark.asyncio
+async def test_run_reads_only_an_explicit_usd_salary_from_the_description(test_db, monkeypatch):
+    """R30 S-02/S-03: with no structured salary, the real extractor runs on the description; a
+    bare "$" there is usually the island's dollar, so only a figure named as USD is stored."""
+    from backend.analyzer.salary_extractor import apply_salary_to_job
+    rows = [_job("Bare", "Acme", "https://cj.test/1", description="Salary: $120,000 - $150,000 per annum"),
+            _job("Prefixed", "Acme", "https://cj.test/2", description="Salary: TT$180,000 per annum"),
+            _job("Explicit", "Acme", "https://cj.test/3", description="Salary: US$90,000 - US$110,000 per year"),
+            _job("Monthly", "Acme", "https://cj.test/4", salary_min=4000, salary_max=6000,
+                 salary_currency="USD", salary_unit=caribbeanjobs._unit_of("USD 4,000 - 6,000 a month"))]
+
+    async def fake_listings(client, base, keywords, wanted):
+        return [dict(r) for r in rows]
+
+    async def fake_details(client, candidates, cache=None):
+        return {}
+
+    async def real_salary(job, db=None, **kw):
+        job.h1b_jd_flag = False
+        apply_salary_to_job(job)
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(caribbeanjobs, "_fetch_listings", fake_listings)
+    monkeypatch.setattr(caribbeanjobs, "_fetch_details", fake_details)
+    monkeypatch.setattr(caribbeanjobs, "analyze_inline", real_salary)
+    monkeypatch.setattr(caribbeanjobs.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("backend.activity.log_activity", lambda *a, **k: None)
+
+    await caribbeanjobs.run(_search(test_db))
+    test_db.expire_all()
+    by = {j.title: (j.salary_min, j.salary_max, j.salary_source) for j in test_db.query(Job).all()}
+    assert by["Bare"] == (None, None, "unknown")
+    assert by["Prefixed"] == (None, None, "unknown")
+    assert by["Explicit"] == (90000, 110000, "posting")
+    assert by["Monthly"] == (None, None, "unknown")
+    monthly = test_db.query(Job).filter(Job.title == "Monthly").one()
+    assert monthly.description.endswith("Salary (as posted): USD 4,000 – 6,000 / month")
+
+
+@pytest.mark.asyncio
 async def test_preview_shows_the_salary_with_its_currency(test_db, monkeypatch):
     _patch_listing(monkeypatch, [_job("Accountant", "Acme", "https://cj.test/1", salary_min=8000,
                                       salary_max=10000, salary_currency="TTD", salary_unit="MONTH")])
