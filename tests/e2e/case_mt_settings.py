@@ -16,6 +16,7 @@ Take a manual backup before running it anyway.
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -258,6 +259,26 @@ def _fetch(pg, method, path, body=None):
     }""", [method, path, body])
 
 
+def _stub_scheduler_rows(pg):
+    """Make Stats' scheduler table hold the owner-only `db_backup` row. With the scheduler running
+    GET /api/scheduler/jobs already has it and nothing is stubbed; when it returns no such row
+    (scheduler disabled) the route is answered with the real rows plus a stub one. True if stubbed."""
+    rows = pg.evaluate("""async () => {
+      const r = await fetch('/api/scheduler/jobs', { credentials: 'include' });
+      return r.ok ? await r.json() : [];
+    }""")
+    if any(j.get('id') == 'db_backup' for j in rows):
+        return False
+    stub = {'id': 'db_backup', 'name': 'Back up database (pg_dump)', 'schedule': '0 3 * * *', 'next_run': None,
+            'pending': False, 'trigger_url': '/db/backup', 'running': None, 'owner_only': True}
+
+    def fulfil(route):
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(list(rows) + [stub]))
+
+    pg.route(re.compile(r'/api/scheduler/jobs(\?|$)'), fulfil)
+    return True
+
+
 def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
     """MT-14: scope tags, the member's locked view, the owner's Inherit/Own, the owner-PIN unlock."""
     st, s = _api('GET', '/settings', account=owner_id)
@@ -292,10 +313,14 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         c.eq('R6-06: … their controls are out of the tab order', a11y['tabbable'], 0)
         c.check('R6-06: the nav entry says (locked)', a11y['nav'].endswith('(locked)'), a11y['nav'])
         # QA F7 / T7-02: no Run now on owner-only schedules for a locked member
+        # P0-01: GET /scheduler/jobs is empty while the scheduler is off (JN_SCHEDULER_DISABLED=1 on
+        # throwaway stacks), which would leave both checks vacuous or failing; stub a db_backup row then
+        stubbed = _stub_scheduler_rows(mpg)
         C.go(mpg, '/stats', settle=1500)
-        c.eq('T7-02: member sees no "Run Back up database" button',
+        note = ' (stubbed scheduler row)' if stubbed else ''
+        c.eq('T7-02: member sees no "Run Back up database" button' + note,
              mpg.locator('[aria-label="Run Back up database (pg_dump) now"]').count(), 0)
-        c.check('T7-02: … the row says Owner only', mpg.locator('[title^="Only the owner can run Back up database"]').count() == 1)
+        c.check('T7-02: … the row says Owner only' + note, mpg.locator('[title^="Only the owner can run Back up database"]').count() == 1)
         C.go(mpg, '/settings', settle=1500)
         c.eq('a member cannot write an owner-only setting', _fetch(mpg, 'PATCH', '/settings', {'tracer_links_base_url': 'https://zzs.example'}), 403)
         c.eq('… nor an inherited one', _fetch(mpg, 'PATCH', '/settings', {'prep_include': 'posting'}), 403)
