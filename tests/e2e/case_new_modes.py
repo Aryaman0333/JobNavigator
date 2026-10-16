@@ -368,6 +368,12 @@ def _settings_apify(c):
             requests = []
             pg.on('request', lambda r: requests.append((r.method, r.url)))
             C.go(pg, '/settings', settle=1200)
+            # owner with members: the Inherit / Own controls show only once a member's
+            # "Edit policies" switch is on (it only shows them, it writes nothing)
+            edit = pg.locator('[role="switch"][aria-label$="’s policies"]')
+            if edit.count():
+                edit.first.click()
+                pg.wait_for_timeout(300)
             ap = pg.evaluate(SECTION_JS, 'apify')
             c.check('Settings renders an Apify section', bool(ap) and ap['title'] == 'Apify', ap)
             if not ap:

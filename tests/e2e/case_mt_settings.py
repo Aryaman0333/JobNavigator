@@ -305,8 +305,12 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
         # ── owner flips Interview prep to Own for the member ──
         C.go(opg, '/settings', settle=1500)
         c.check('owner: Accounts has no scope tag; Advanced says Owner only', _tag(opg, 'advanced') == 'Owner only', _tag(opg, 'advanced'))
-        c.check('owner: the picker is labelled as member policies (T7-06)', C.body_has(opg, 'Member policies') or C.body_has(opg, 'MEMBER POLICIES'))
-        c.check("owner: the toggles name the member's policy", C.body_has(opg, f'{member_name}’s policy:'))
+        # the Inherit / Own controls are hidden until the member's "Edit policies" switch is on
+        c.eq('owner: no header picker', opg.locator('[data-member-policies]').count(), 0)
+        c.eq('owner: no Inherit / Own control before the switch', opg.locator('[data-policy-for]').count(), 0)
+        opg.locator(f'[aria-label="Edit {member_name}’s policies"]').click()
+        opg.wait_for_timeout(300)
+        c.check("owner: the switch shows the toggles, naming the member's policy (T7-06)", C.body_has(opg, f'{member_name}’s policy:'))
         _scroll_to(opg, 'prep')
         opg.locator('[data-sec="sec-prep"] [role="radio"]', has_text='Own').click()
         c.check('owner: flipping toasts in the header', _wait_text(opg, f'{member_name} keeps their own Interview prep'))

@@ -246,7 +246,7 @@ export default function Settings() {
   const [meta, setMeta] = useState(null)           // member: GET /settings `_meta`
   const [sidx, setSidx] = useState(null)           // indexSections(GET /settings/sections)
   const [policies, setPolicies] = useState({})     // owner: {memberId: {section: mode}}
-  const [policyFor, setPolicyFor] = useState('')   // owner: which member the Inherit/Own controls set
+  const [policyFor, setPolicyFor] = useState('')   // owner: the member whose Inherit/Own controls are shown ('' = hidden)
   const [unlockedUntil, setUnlockedUntil] = useState(null)   // member: owner unlock end (ms)
   const { toasts, push, dismiss } = useToasts()
   const loc = useLocation()
@@ -284,7 +284,8 @@ export default function Settings() {
         setSidx(indexSections(secs.data))
         setPolicies(pols.data || {})
         const members = (r.data?.accounts || []).filter((a) => a.role !== 'owner')
-        setPolicyFor((cur) => (members.some((m) => m.id === cur) ? cur : (members[0]?.id || '')))
+        // off until the owner flips a member's "Edit policies" switch in Accounts; never persisted
+        setPolicyFor((cur) => (members.some((m) => m.id === cur) ? cur : ''))
         const t = Date.parse(data.owner_unlocked_until || '')
         setUnlockedUntil(Number.isFinite(t) && t > Date.now() ? t : null)
         const self = (r.data?.accounts || []).find((a) => a.id === data.account.id)
@@ -814,26 +815,15 @@ export default function Settings() {
           {toast ? toast.msg : (ready ? (member ? `Your settings save automatically · shared settings are ${ownerName}’s` : 'Saves automatically · everything stays on this machine') : NBSP)}
         </span>
       </div>
-      {/* MT-14: a member's lock pill; the owner's "whose policies" picker */}
+      {/* MT-14: a member's lock pill. The owner sets member policies from Settings › Accounts
+          (each member row's "Edit policies" switch), not from here. */}
       {ready && member && (
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: 32 }}>
           <UnlockPill ownerName={ownerName} unlockedUntil={unlockedUntil} onUnlocked={onUnlocked} onLock={lockOwner} ownerHasPin={ownerHasPin} />
         </span>
       )}
-      {/* T7-06: these controls set a member's policy, not the owner's own settings */}
-      {ready && multi && isOwner && policyFor && (
-        <span data-member-policies style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0 }}>
-            <Label>Member policies</Label>
-            <Helper size="xs" style={{ whiteSpace: 'nowrap' }}>Inherit / Own per section, for</Helper>
-          </span>
-          <Select value={policyFor} width="180px" ariaLabel="Member whose section policies you set"
-            options={(acctData?.accounts || []).filter((a) => a.role !== 'owner').map((a) => [a.id, a.name])}
-            onPick={setPolicyFor} />
-        </span>
-      )}
       {/* ui: keep — settings search field wrapper (Input role), not a pill; h32 tracks ui.jsx's boxed SearchInput */}
-      <div className="v2-fieldwrap" style={{ marginLeft: ready && multi && (member || policyFor) ? 0 : 'auto', flex: '0 0 auto', height: 32, width: 230, padding: '0 12px', border: '1px solid var(--edge)', background: 'var(--surface)', borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', gap: 7 }}>
+      <div className="v2-fieldwrap" style={{ marginLeft: ready && member ? 0 : 'auto', flex: '0 0 auto', height: 32, width: 230, padding: '0 12px', border: '1px solid var(--edge)', background: 'var(--surface)', borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', gap: 7 }}>
         {/* ui: keep — the field's search glyph (an icon adornment), not a helper sub-line; Helper's 11.5 would grow the glyph */}
         <span style={{ flex: '0 0 auto', fontSize: 11, color: 'var(--muted)' }}>⌕</span>
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search settings…"
@@ -922,7 +912,8 @@ export default function Settings() {
                     return tag ? <span data-scope-tag={tag.label} style={{ marginLeft: 'auto', display: 'flex' }}><ScopeTag tag={tag} /></span> : null
                   })()}
                 </div>
-                {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push} />}
+                {block === 'accounts' && <AccountsTable data={acctData} me={me} onAdd={() => setAdding(true)} onChanged={accountsChanged} push={push}
+                  {...(multi && isOwner && sidx ? { policyFor, onPolicyFor: setPolicyFor, policies, idx: sidx } : null)} />}
                 {block === 'account' && <YourAccount data={acctData} me={me} onChanged={accountsChanged} push={push} />}
                 {rows.filter((r) => !(r.hide && r.hide())).map((r0) => {
                   // QA F5 (R6-02): the owner's addresses and secrets reach a member only as

@@ -3,7 +3,7 @@ import api, { authFailure } from '../api'
 import { PromptDialog } from '../ConfirmDialog'
 import {
   ACCOUNT_SWATCHES, Avatar, Button, Check, Heading, Helper, Input, Link, ModalPanel, Pill,
-  PinPad, Segmented, Select, Surface, Tag, kb,
+  PinPad, Segmented, Select, Surface, Switch, Tag, kb,
 } from '../ui'
 
 // Settings › Accounts (owner) and Settings › Your account (member) — MT-13.
@@ -397,9 +397,21 @@ export function EditAccountModal({ account, self = false, taken = [], onClose, o
 // ── owner: the Accounts section ─────────────────────────────────────────────
 // QA F2 / D2: always shown to the owner, first in Settings — one account = the
 // owner's own row + "+ Add account"; more = every account.
-export function AccountsTable({ data, me, onAdd, onChanged, push }) {
+//
+// Member policies: with `onPolicyFor` (owner, two or more accounts) each member row
+// gets an "Edit policies" switch. On for a member = every policy section head shows
+// that member's Inherit / Own control (Settings renders them from `policyFor`); off
+// only hides them, it changes no policy. One member at a time, never persisted.
+// `policies` + `idx` give the row's count of sections off their default policy.
+export function nonDefaultPolicies(memberId, policies, idx) {
+  const mine = policies?.[memberId] || {}
+  return Object.values(idx?.byId || {}).filter((s) => s.scope === 'policy' && mine[s.id] && mine[s.id] !== s.default).length
+}
+
+export function AccountsTable({ data, me, onAdd, onChanged, push, policyFor = '', onPolicyFor, policies, idx }) {
   const accounts = data?.accounts?.length ? data.accounts : (me ? [{ ...me, is_self: true }] : [])
   const max = data?.max_accounts || 5
+  const editingFor = onPolicyFor ? accounts.find((a) => a.id === policyFor && a.role !== 'owner') : null
   const [pinFor, setPinFor] = useState(null)      // { account, mode: 'set' | 'remove' } whose PIN dialog is up
   const [removing, setRemoving] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -447,6 +459,7 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
         {accounts.map((a) => {
           const self = a.id === me.id
           const owner = a.role === 'owner'
+          const offDefault = onPolicyFor && !owner ? nonDefaultPolicies(a.id, policies, idx) : 0
           return (
             <div role="row" key={a.id} data-account-row={a.name}
               style={{ display: 'flex', alignItems: 'center', gap: 12, minHeight: 52, padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
@@ -461,6 +474,18 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
               </div>
               <span role="cell" style={{ flex: '0 0 74px' }}><Tag tone={owner ? 'accent' : 'neutral'}>{owner ? 'Owner' : 'Member'}</Tag></span>
               <span role="cell" style={{ flex: '0 0 96px' }}><Helper title={a.last_active_at || ''}>{self ? 'now' : ago(a.last_active_at)}</Helper></span>
+              {onPolicyFor && (
+                <span role="cell" style={{ flex: '0 0 216px', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  {!owner && (
+                    <Switch size="sm" on={policyFor === a.id} label="Edit policies" ariaLabel={`Edit ${a.name}’s policies`}
+                      onChange={(on) => onPolicyFor(on ? a.id : '')} />
+                  )}
+                  {offDefault > 0 && (
+                    <Helper size="xs" title={`Sections where ${a.name}’s Inherit / Own differs from the default`}
+                      style={{ whiteSpace: 'nowrap' }}>{offDefault} {offDefault === 1 ? 'policy' : 'policies'} off default</Helper>
+                  )}
+                </span>
+              )}
               {/* fixed width so the role and last-active columns line up whatever buttons a row has */}
               <span role="cell" style={{ flex: '0 0 240px', display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
                 <Pill size="sm" onClick={() => setEditing(a)} ariaLabel={self ? 'Rename or recolour your account' : `Rename or recolour ${a.name}`}>Edit</Pill>
@@ -477,6 +502,14 @@ export function AccountsTable({ data, me, onAdd, onChanged, push }) {
           )
         })}
       </div>
+      {editingFor && (
+        <div data-policy-editing={editingFor.name} style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 10 }}>
+          <Helper style={{ minWidth: 0, textWrap: 'pretty' }}>
+            Inherit / Own controls are shown on each policy section for {editingFor.name} · switching off only hides them.
+          </Helper>
+          <Link onClick={() => onPolicyFor('')} ariaLabel={`Stop editing ${editingFor.name}’s policies`}>Done</Link>
+        </div>
+      )}
       {pinDialog}
       {editing && (
         <EditAccountModal account={editing} self={editing.id === me?.id}
