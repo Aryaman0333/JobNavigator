@@ -10,7 +10,7 @@ import { useTitle } from '../useTitle'
 // The résumé-content editors are shared with /persona (a Persona's
 // resume_content is the same shape as a Resume's json_data).
 import {
-  EMPTY, SECTION_ORDER, sectionCounts, makeMutators,
+  EMPTY, resumeSectionNames, sectionCounts, makeMutators,
   SectionShell, SectionEditor, BandRule,
 } from './ResumeSections'
 import { Band, Button, Check, ChoiceCard, ChoiceModal, ChoiceRow, FooterRow, Heading, HeaderRow, Helper, IconButton, Input, Label, Menu, MenuHead, MenuItem, ModalPanel, Mono, NavLink, Pill, Rule, ScoreRing, Spinner, Surface, Textarea, ToolbarTrigger } from '../ui'
@@ -489,6 +489,7 @@ export default function ResumeEditor() {
   }
 
   const counts = sectionCounts(data)
+  const sectionNames = resumeSectionNames(doc)
   const tplLabel = templates.find((t) => t.id === template)?.name || template || 'Template'
 
   return (
@@ -610,7 +611,7 @@ export default function ResumeEditor() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {/* left: sections */}
         <section className="v2-scroll" style={{ flex: '0 0 47%', borderRight: '1px solid var(--line)', overflow: 'auto', padding: '14px 20px 24px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {SECTION_ORDER.map((name) => (
+          {sectionNames.map((name) => (
             <SectionShell key={name} name={name} count={counts[name]} open={open.has(name)} onToggle={() => toggle(name)}
               meta={changedSections.has(name) ? <span title="Contains unreviewed tailoring changes" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--warn)' }}>● changed by tailoring</span> : null}>
               <SectionEditor name={name} data={data} setField={setField} mutate={mutate} baseData={baseData} onError={(msg) => pushToast({ kind: 'error', msg })}

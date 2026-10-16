@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from backend.accounts.owned import get_owned_or_404, get_persona, owned_id_or_404
+from backend.accounts.owned import get_owned, get_owned_or_404, get_persona, owned_id_or_404
 from backend.models.db import get_db, Resume, TracerLink, TracerClickEvent, Job, Application, SessionLocal, utcnow, Persona
 from backend.accounts.settings import get_setting
 from backend.api._input import str_field
@@ -1155,6 +1155,53 @@ def _clear_orphan_tailored_score(db: Session, job_id) -> bool:
     return changed
 
 
+# ── Footer (from #24, by @mrAlishah) ────────────────────────────────────────
+# An opt-in line at the foot of every page of a tailored copy's export, so a loose page
+# still says whose it is and which role it was written for. Off unless the copy's
+# `json_data.footer_enabled` is exactly True; the editor shows the switch only on a
+# job-linked tailored copy. Every export format reads `_resume_footer_text`.
+
+def _tailored_resume_footer_text(resume: "Resume", job: Optional["Job"]) -> str:
+    """"{Candidate Name} - {Job Title} - {Company}" for a footer, or "" when it doesn't apply.
+
+    Only for a résumé tailored against a real Job row (`is_base=False` and `job_id` set):
+    a base résumé or a freeform tailor has no company or title to print. Also "" if any of
+    the three pieces is missing, since a partial footer ("Dana -  - ") would be worse than
+    none. A plain ASCII hyphen, so the text can't pick up an en/em dash from a pasted title.
+    """
+    if not resume or resume.is_base or not resume.job_id or not job:
+        return ""
+    candidate_name = str(((resume.json_data or {}).get("header") or {}).get("name") or "").strip()
+    job_title = str(job.title or "").strip()
+    company = str(job.company or "").strip()
+    if not (candidate_name and job_title and company):
+        return ""
+    return f"{candidate_name} - {job_title} - {company}"
+
+
+def _resume_footer_text(db: Session, resume: "Resume") -> str:
+    """The footer for this résumé's exports: "" unless the user switched it on
+    (`json_data.footer_enabled is True`) on a job-linked tailored copy whose job is the
+    current account's own row."""
+    if (resume.json_data or {}).get("footer_enabled") is not True or not resume.job_id:
+        return ""
+    return _tailored_resume_footer_text(resume, get_owned(db, Job, resume.job_id))
+
+
+def _footer_html_template(footer_text: str) -> str:
+    """Playwright `footerTemplate` markup: centred, small, grey, confined to the margin
+    box Chromium reserves per page, so it is never part of the content flow. It lands in
+    the bottom gutter every template already reserves in `@page`. Empty text renders no
+    markup at all."""
+    if not footer_text:
+        return "<span></span>"
+    from markupsafe import escape
+    return (
+        '<div style="width:100%; font-size:8px; color:#999999; text-align:center; '
+        'font-family:Helvetica,Arial,sans-serif;">' + str(escape(footer_text)) + '</div>'
+    )
+
+
 # ── Preview & PDF ───────────────────────────────────────────────────────────
 
 @router.get("/{resume_id}/preview")
@@ -1172,15 +1219,14 @@ def preview_resume(resume_id: str, db: Session = Depends(get_db)):
 @router.get("/{resume_id}/pdf")
 async def export_pdf(resume_id: str, template: Optional[str] = None, format: Optional[str] = None, db: Session = Depends(get_db)):
     """Render resume as PDF via Playwright; `template`/`format` query params override the stored values so a rapid template switch in the live editor doesn't race the debounced PATCH."""
-    resume = db.query(Resume).filter(Resume.id == resume_id).first()
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
+    resume = get_owned_or_404(db, Resume, resume_id)
 
     tpl = template or resume.template
     fmt = (format or resume.page_format or "letter")
     json_data = resume.json_data or {}
     pdf_data = _rewrite_urls_with_tracers(json_data, str(resume.id), db)
     html = _render_html(pdf_data, tpl, fmt)
+    footer_text = _resume_footer_text(db, resume)
 
     paper_format = "A4" if fmt.lower() == "a4" else "Letter"
 
@@ -1192,6 +1238,9 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
             format=paper_format,
             print_background=True,
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            display_header_footer=bool(footer_text),
+            header_template="<span></span>",
+            footer_template=_footer_html_template(footer_text),
         )
         # Count pages (rough estimate from PDF byte boundaries)
         page_count = pdf_bytes.count(b"/Type /Page") - pdf_bytes.count(b"/Type /Pages")
