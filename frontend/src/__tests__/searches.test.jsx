@@ -180,7 +180,7 @@ describe('TrulyRemoteWork · v2 Searches', () => {
     fireEvent.click(await screen.findByText('Remote board'))
     await screen.findByText('Save changes')
     expect(screen.getByText(/full corpus of worldwide-remote roles/)).toBeTruthy()
-    expect(screen.getByText(/title filters and company excludes below/)).toBeTruthy()
+    expect(screen.getByText(/narrow it with the title and company filters below/)).toBeTruthy()
     expect(screen.getByLabelText('New jobs per run · 1–500')).toBeTruthy()
     expect(screen.getByText(/this caps how many new jobs’ pages one run opens/)).toBeTruthy()
     expect(screen.queryByText(/Results wanted/)).toBeNull()

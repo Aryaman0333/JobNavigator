@@ -30,6 +30,19 @@ router = APIRouter(prefix="/searches", tags=["searches"])
 _test_results: dict[str, dict] = {}
 
 
+# One background Test in flight per search and account (R30 S-07). An Apify Test is a paid
+# run (one actor run per board), and the dashboard's confirm dialog is no guard against a
+# double click, a second tab or a scripted client. Keyed like a job_monitor run
+# ("search_test:<search id>", plus "@<account>" for a member, so another account's Test of
+# its own search never blocks this one); the value is the Test's run_id.
+_tests_in_flight: dict[str, str] = {}
+
+
+def _test_flight_key(search_id) -> str:
+    from backend.job_monitor import _make_key, _run_account
+    return _make_key("search_test", str(search_id), _run_account("search_test"))
+
+
 def _account_key() -> Optional[str]:
     from backend.accounts.context import current_account
     acc = current_account.get()
@@ -304,6 +317,12 @@ async def trigger_search(search_id: str, auto_score: bool = None, db: Session = 
     config_error = search_config_error(search)
     if config_error:
         raise HTTPException(status_code=409, detail=config_error)
+    if search.search_mode == "apify" and _tests_in_flight.get(_test_flight_key(search.id)):
+        # A paid Test of this search is still running; a run now would buy the same
+        # results a second time (R30 S-07).
+        return JSONResponse(status_code=409, content={
+            "detail": "test_running",
+            "message": f"A Test of “{search.name}” is still running; run it when the Test finishes"})
     search_name = search.name
 
     async def _do():
@@ -339,12 +358,27 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Search not found")
 
     if search.search_mode in SLOW_TEST_MODES:
+        flight_key = _test_flight_key(search.id)
+        in_flight = _tests_in_flight.get(flight_key)
+        if in_flight:
+            # The same search's Test is still running: hand back its run_id to poll instead
+            # of starting another (for Apify, another paid run).
+            return JSONResponse(status_code=409, content={
+                "detail": "test_running", "run_id": in_flight,
+                "message": f"A Test of “{search.name}” is already running"})
+        if search.search_mode == "apify":
+            from backend.job_monitor import is_running
+            if is_running("search_run", search_id) or is_running("search_run", str(search.id)):
+                return JSONResponse(status_code=409, content={
+                    "detail": "search_running",
+                    "message": f"“{search.name}” is running now; test it when the run finishes"})
         run_id = str(uuid.uuid4())[:8]
         account = _account_key()
 
         def _store(status, result):
             _test_results[run_id] = {"status": status, "result": result, "account": account}
         _store("running", None)
+        _tests_in_flight[flight_key] = run_id
 
         # Snapshot search fields needed by the test functions (DB session won't survive across await)
         from backend.models.db import SessionLocal
@@ -380,6 +414,8 @@ async def test_search(search_id: str, db: Session = Depends(get_db)):
                 logger.error(f"Test run {run_id} failed: {e}")
                 _store("done", {"error": str(e)})
             finally:
+                if _tests_in_flight.get(flight_key) == run_id:
+                    _tests_in_flight.pop(flight_key, None)
                 test_db.close()
 
         # QA F4 / R1-08: the browser's owner unlock does not ride along into the task.

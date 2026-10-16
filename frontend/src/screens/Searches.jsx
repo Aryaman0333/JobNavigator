@@ -118,7 +118,7 @@ const noteFor = (mode) => {
   if (mode === 'jobright') return ['Recommendations from your Jobright.ai account. Enter a search term to search instead. Credentials are in Settings › Accounts.', 'sm-jobright']
   if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted (at most 200) caps every board on every run, each run carries a spend cap and stops after 15 minutes, and Test fetches 20 jobs per board at most. A new Apify search starts paused: check the boards, then press Paused to resume it.', 'sm-apify']
   if (mode === 'caribbeanjobs') return ['Set the filters on caribbeanjobs.com and paste the search URL, or enter a term. The description of each result is read from its own page; Test reads at most 20 of those pages. A salary in a local currency is kept as text in the description, not as a number.', 'sm-caribbeanjobs']
-  if (mode === 'trulyremote') return ['Reads TrulyRemoteWork.com’s full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so you narrow it with the title filters and company excludes below. Each new job’s description is read from its own page; Test reads at most 20 of those pages.', 'sm-trulyremote']
+  if (mode === 'trulyremote') return ['Reads TrulyRemoteWork.com’s full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so you narrow it with the title and company filters below. Each new job’s description is read from its own page; Test reads at most 20 of those pages.', 'sm-trulyremote']
   if (mode === 'extension') return ['Jobs come from the “Save to Job Feed” button on any website. The filters and auto-score depth below apply to each job as it is saved.', 'sm-levels']
   if (mode === 'linkedin_extension') return ['Jobs are captured while you browse linkedin.com/jobs/collections pages. The filters below are applied on import.', 'sm-levels']
   return null
@@ -639,6 +639,12 @@ export default function Searches() {
         setRunning((m) => { const n = { ...m }; delete n[s.id]; return n })
         return
       }
+      // A paid Apify Test of this search is still running: nothing was started.
+      if (e.response?.data?.detail === 'test_running') {
+        pushToast({ kind: 'error', msg: e.response.data.message || `A Test of “${s.name}” is still running` })
+        setRunning((m) => { const n = { ...m }; delete n[s.id]; return n })
+        return
+      }
       // 409 means the run is genuinely in flight — keep the spinner, the
       // /monitor/active poll clears it when the run finishes.
       if (e.response?.status === 409) { pushToast({ kind: 'progress', msg: `“${s.name}” is already running` }); return }
@@ -724,7 +730,15 @@ export default function Searches() {
       }
       settleTest(s.id, s.name, res.data)
     } catch (e) {
-      landTest(s.id, { name: s.name, error: errText(e, e.message) })
+      // This search's Test is already running (another tab, a double click): the backend
+      // hands back that run instead of starting a second (for Apify, paid) one — follow it.
+      const busy = e.response?.status === 409 && e.response.data?.detail === 'test_running' && e.response.data.run_id
+      if (busy) {
+        writeTestRec({ id: s.id, name: s.name, runId: busy })
+        await pollTest(s.id, s.name, busy)
+        return
+      }
+      landTest(s.id, { name: s.name, error: e.response?.data?.message || errText(e, e.message) })
     }
     if (mounted.current) setTestingId(null)
   }
