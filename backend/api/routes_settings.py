@@ -31,7 +31,7 @@ def _is_secret(key: str) -> bool:
 # `_meta.set_by_owner`, secrets keep the "••••••" placeholder and get the same flag, and
 # the proxy URL keeps its host but masks the credentials in it.
 _OWNER_PERSONAL_SUFFIXES = ("_email", "_chat_id")
-_MASKED_URL_KEYS = {"proxy_url"}
+_MASKED_URL_KEYS = {"proxy_url", "lmstudio_base_url", "ollama_base_url"}
 
 
 def _is_owner_personal(key: str) -> bool:

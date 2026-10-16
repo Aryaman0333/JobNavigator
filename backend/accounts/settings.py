@@ -56,6 +56,9 @@ _SECTIONS = [
     ("feed", "Feed", POLICY, OWN, ["feed"], ["feed_zoom_floater"]),
     # claude_code_oauth_token: the Claude Code subscription login per account (MT-15).
     ("models", "Models", POLICY, INHERIT, ["models"], _llm_keys() + ["llm_models_list", "claude_code_oauth_token"]),
+    # The host's local model servers: one address per install, so a member cannot point the
+    # backend at an arbitrary internal URL. Shown in Settings › Models.
+    ("llm_local", "Local model servers", OWNER_ONLY, INHERIT, ["models"], ["lmstudio_base_url", "ollama_base_url"]),
     ("scoring", "Scoring behavior", POLICY, INHERIT, ["scoring"], [
         "scoring_default_depth", "on_save_action", "prompt_caching_enabled",
         "scoring_rubric", "scoring_output_light", "scoring_output_full"]),

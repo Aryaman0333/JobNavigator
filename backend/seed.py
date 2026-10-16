@@ -1,11 +1,13 @@
 """Seed settings and companies tables with defaults on first run."""
 import logging
 import json
+import os
+import re
 import secrets
 from backend.models.db import SessionLocal, Setting, Company, Search, Resume
 from backend.accounts.settings import install_row
 from sqlalchemy import text
-from backend.analyzer.llm_client import REASONING_EFFORTS
+from backend.analyzer.llm_client import LOCAL_LLM_URLS, REASONING_EFFORTS
 
 logger = logging.getLogger("jobnavigator.seed")
 
@@ -56,6 +58,12 @@ DEFAULT_SETTINGS = {
     "llm_api_key": ("", "API key for API-backed providers (for OpenCode Go paste its API key; not needed for subscription CLIs or Ollama)"),
     "llm_effort": ("", "Reasoning effort for the Primary model (empty = the model's default; values depend on the provider)"),
     "claude_code_oauth_token": ("", "Claude Code subscription token from `claude setup-token` (empty = CLAUDE_CODE_OAUTH_TOKEN from .env; a member with its own Models section can set its own)"),
+    # Owner-only (section llm_local): the host's local model servers. Seeded with LMSTUDIO_BASE_URL /
+    # OLLAMA_BASE_URL when set, else the address used before these settings existed.
+    "lmstudio_base_url": (os.getenv(LOCAL_LLM_URLS["lmstudio"][1], "").strip() or LOCAL_LLM_URLS["lmstudio"][2],
+                          "LM Studio server address (OpenAI-compatible, ends in /v1). Empty = LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker use http://host.docker.internal:1234/v1"),
+    "ollama_base_url": (os.getenv(LOCAL_LLM_URLS["ollama"][1], "").strip() or LOCAL_LLM_URLS["ollama"][2],
+                        "Ollama server address. Empty = OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker use http://host.docker.internal:11434"),
     "llm_fallback_provider": ("", "Fallback LLM provider (empty = no fallback)"),
     "llm_fallback_model": ("", "Fallback model name"),
     "llm_fallback_api_key": ("", "API key for fallback provider (OpenAI)"),
@@ -456,6 +464,9 @@ ENUM_SETTING_VALUES = {
 }
 
 
+LOCAL_URL_SETTING_KEYS = {key for key, _env, _default in LOCAL_LLM_URLS.values()}
+
+
 def _cron_error(value: str) -> str | None:
     """None if `value` is a usable 5-field cron expression (empty = disabled)."""
     expr = (value or "").strip()
@@ -502,6 +513,11 @@ def invalid_setting_values(updates: dict) -> list:
             err = _cron_error(value)
             if err:
                 problems.append(f"{key}: {err}")
+            continue
+        if key in LOCAL_URL_SETTING_KEYS:
+            v = value.strip() if isinstance(value, str) else None
+            if v is None or (v and not re.match(r"^https?://[^\s/]+", v, re.I)):
+                problems.append(f"{key}: must be an http:// or https:// address, or empty (got {value!r})")
             continue
         allowed = ENUM_SETTING_VALUES.get(key)
         if allowed is not None:

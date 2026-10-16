@@ -50,9 +50,13 @@ def resolve_llm_config(feature: str = "", db=None) -> dict:
         provider = provider or _get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER
         if feature:
             model = model or _get_setting(db, "llm_model", "")
-            api_key = api_key or _get_setting(db, "llm_api_key", "")
-            # Effort values are per provider, so the Primary's effort carries over only to the same provider.
-            if not effort and provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER):
+            # Keys and effort values are per provider, so the Primary's carry over only to a slot
+            # on the same provider: a slot on another provider with no key of its own gets "" and
+            # dispatch then applies that provider's env fallback (B1: never another provider's key).
+            same_provider = provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER)
+            if not api_key and same_provider:
+                api_key = _get_setting(db, "llm_api_key", "")
+            if not effort and same_provider:
                 effort = _get_setting(db, "llm_effort", "")
         return {
             "provider": provider,
@@ -87,6 +91,9 @@ async def call_llm(prompt: str, system: str, max_tokens: int = 1200,
         fallback_provider = _get_setting(db, "llm_fallback_provider", "")
         fallback_model = _get_setting(db, "llm_fallback_model", "")
         fb_api_key = _get_setting(db, "llm_fallback_api_key", "")
+        # B2: like a feature slot, the fallback reuses the Primary's key only on the same provider.
+        if not fb_api_key and fallback_provider == primary["provider"]:
+            fb_api_key = primary["api_key"]
         fb_effort = _get_setting(db, "llm_fallback_effort", "")
     finally:
         db.close()
@@ -206,6 +213,8 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
         _require_own_key(provider, api_key)
     if provider == "opencode_go":
         api_key = _opencode_go_key(api_key)
+    elif provider == "openai":
+        api_key = _openai_key(api_key)
     if provider == "claude_api":
         async for c in _stream_claude(prompt, system, model, api_key, cap, cached_prefix, effort):
             yield c
@@ -269,7 +278,9 @@ def _openai_client(api_key: str, base_url: str | None):
         headers = {"User-Agent": OPENCODE_USER_AGENT, "x-opencode-session": _OPENCODE_SESSION}
     else:
         headers = None
-    return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
+    # Never None: the SDK would then read OPENAI_API_KEY, which must not reach OpenRouter,
+    # OpenCode Go or LM Studio; OpenAI's own env key is resolved by `_openai_key` first (B3).
+    return AsyncOpenAI(api_key=api_key or "", base_url=base_url, default_headers=headers)
 
 
 def _claude_effort_kwargs(effort: str) -> dict:
@@ -329,17 +340,34 @@ async def _stream_openai(prompt, system, model, api_key, max_tokens, base_url=No
 _KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter": "OpenRouter",
                     "opencode_go": "OpenCode Go"}
 OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY"
+OPENAI_KEY_ENV = "OPENAI_API_KEY"
+
+
+def _env_key(env_name: str) -> str:
+    """The provider's `.env` key for the owner and members on 'inherit'; "" for a member on its
+    own Models, since the env key is the owner's (QA F5)."""
+    if _own_login_account() is not None:
+        return ""
+    return os.getenv(env_name, "")
 
 
 def _opencode_go_key(api_key: str) -> str:
     """The Go key to send: the resolved setting, else OPENCODE_API_KEY for the owner and members
     on 'inherit'. A member on its own Models never reaches the env key, which is the owner's
     (QA F5); `_require_own_key` has already refused it an empty key."""
-    if api_key:
-        return api_key
-    if _own_login_account() is not None:
-        return ""
-    return os.getenv(OPENCODE_GO_KEY_ENV, "")
+    return api_key or _env_key(OPENCODE_GO_KEY_ENV)
+
+
+def _openai_key(api_key: str) -> str:
+    """The OpenAI key to send: the resolved setting, else OPENAI_API_KEY for the owner and
+    members on 'inherit' (as the model catalog does). The SDK reads the env var only for
+    api_key=None, so an empty setting used to send an empty bearer and retry 401s (B3). No key
+    at all is a config error, not a retry."""
+    key = api_key or _env_key(OPENAI_KEY_ENV)
+    if not key:
+        raise NonRetryableLLMError(
+            "No API key for OpenAI — set it in Settings › Models (or OPENAI_API_KEY in .env)")
+    return key
 
 
 def _require_own_key(provider: str, api_key: str) -> None:
@@ -373,7 +401,7 @@ async def _dispatch(provider: str, model: str, api_key: str,
     elif provider == "antigravity_cli":
         return await _call_antigravity_cli(combined, system, model, max_tokens)
     elif provider == "openai":
-        return await _call_openai(combined, system, model, api_key, max_tokens, effort=effort)
+        return await _call_openai(combined, system, model, _openai_key(api_key), max_tokens, effort=effort)
     elif provider == "openrouter":
         # OpenRouter is OpenAI-API-compatible — same client, different base URL.
         # One key reaches every vendor's models (model slug is vendor-prefixed).
@@ -385,8 +413,9 @@ async def _dispatch(provider: str, model: str, api_key: str,
         return await _call_opencode_go(combined, system, model, api_key, max_tokens, effort=effort)
     elif provider == "lmstudio":
         # LM Studio serves an OpenAI-compatible API on :1234; no key (client wants a non-empty string).
-        # Override with LMSTUDIO_BASE_URL when the backend is containerized (e.g. http://host.docker.internal:1234/v1).
-        base = os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+        # The address is the owner's `lmstudio_base_url` setting, else LMSTUDIO_BASE_URL, else the
+        # default; a containerised backend reaches the host at http://host.docker.internal:1234/v1.
+        base = local_base_url("lmstudio")
         # Thinking models (e.g. Qwen3) burn the whole max_tokens budget on reasoning and
         # return empty content; disable thinking for these structured-output calls.
         # LM Studio's OpenAI-compatible endpoint takes reasoning_effort="none" to turn it off.
@@ -550,6 +579,29 @@ def _own_login_account():
         return own_login_account(db)
     finally:
         db.close()
+
+
+# Local model servers: (owner-only setting, env var, default). The address is the setting when it
+# is non-empty, else the env var, else the default. It describes the host, so it is one value per
+# install (section 'llm_local', owner-only); members read the owner's.
+LOCAL_LLM_URLS = {
+    "lmstudio": ("lmstudio_base_url", "LMSTUDIO_BASE_URL", "http://localhost:1234/v1"),
+    "ollama": ("ollama_base_url", "OLLAMA_BASE_URL", "http://localhost:11434"),
+}
+
+
+def local_base_url(provider: str, db=None) -> str:
+    """The LM Studio / Ollama base URL (no trailing slash): setting, else env, else default."""
+    key, env_name, default = LOCAL_LLM_URLS[provider]
+    own_db = db is None
+    if own_db:
+        db = SessionLocal()
+    try:
+        value = (get_setting(db, key) or "").strip()
+    finally:
+        if own_db:
+            db.close()
+    return (value or os.getenv(env_name, "").strip() or default).rstrip("/")
 
 
 def _claude_code_token() -> str:
@@ -929,7 +981,7 @@ async def _call_ollama(prompt: str, system: str, model: str, max_tokens: int) ->
     import httpx
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
-            "http://localhost:11434/api/generate",
+            f"{local_base_url('ollama')}/api/generate",
             json={
                 "model": model,
                 "prompt": prompt,
