@@ -411,7 +411,6 @@ export function nonDefaultPolicies(memberId, policies, idx) {
 export function AccountsTable({ data, me, onAdd, onChanged, push, policyFor = '', onPolicyFor, policies, idx }) {
   const accounts = data?.accounts?.length ? data.accounts : (me ? [{ ...me, is_self: true }] : [])
   const max = data?.max_accounts || 5
-  const editingFor = onPolicyFor ? accounts.find((a) => a.id === policyFor && a.role !== 'owner') : null
   const [pinFor, setPinFor] = useState(null)      // { account, mode: 'set' | 'remove' } whose PIN dialog is up
   const [removing, setRemoving] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -502,14 +501,6 @@ export function AccountsTable({ data, me, onAdd, onChanged, push, policyFor = ''
           )
         })}
       </div>
-      {editingFor && (
-        <div data-policy-editing={editingFor.name} style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 10 }}>
-          <Helper style={{ minWidth: 0, textWrap: 'pretty' }}>
-            Inherit / Own controls are shown on each policy section for {editingFor.name} · switching off only hides them.
-          </Helper>
-          <Link onClick={() => onPolicyFor('')} ariaLabel={`Stop editing ${editingFor.name}’s policies`}>Done</Link>
-        </div>
-      )}
       {pinDialog}
       {editing && (
         <EditAccountModal account={editing} self={editing.id === me?.id}

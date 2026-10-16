@@ -1,6 +1,6 @@
 // Settings › member policies (owner, two or more accounts). The Inherit / Own controls
 // on the policy sections are hidden until the owner flips a member's "Edit policies"
-// switch in the Accounts section; one member at a time; switching off only hides them
+// switch in the Accounts section; one member at a time; switching off only hides them (no note, no Done link)
 // (no PATCH); nothing is persisted, so a fresh render starts off.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
@@ -71,7 +71,7 @@ describe('Settings › member policies (owner)', () => {
     await waitFor(() => expect(toggles().length).toBe(2))
     expect([...toggles()].every((t) => t.getAttribute('data-policy-for') === 'Mila')).toBe(true)
     expect(sw('Mila').getAttribute('aria-checked')).toBe('true')
-    expect(document.querySelector('[data-policy-editing="Mila"]')).toBeTruthy()
+    expect(document.querySelector('[data-policy-editing]')).toBeNull()   // no note under the table
     // Mila's saved policy is what the control shows
     const prep = document.querySelector('[data-sec="sec-prep"] [data-policy-for]')
     expect(within(prep).getByRole('radio', { name: /Own/ }).getAttribute('aria-checked')).toBe('true')
@@ -84,7 +84,6 @@ describe('Settings › member policies (owner)', () => {
 
     fireEvent.click(sw('Alex'))
     await waitFor(() => expect(toggles()).toHaveLength(0))
-    expect(document.querySelector('[data-policy-editing]')).toBeNull()
     expect(api.patch).not.toHaveBeenCalledWith('/settings/policies', expect.anything())
   })
 
@@ -96,16 +95,6 @@ describe('Settings › member policies (owner)', () => {
     await waitFor(() => expect(perDevice()).toBeTruthy())
     fireEvent.click(sw('Mila'))
     await waitFor(() => expect(perDevice()).toBeNull())
-  })
-
-  it('Done under the table turns editing off', async () => {
-    await renderSettings()
-    fireEvent.click(sw('Mila'))
-    await waitFor(() => expect(toggles().length).toBe(2))
-    fireEvent.click(screen.getByLabelText('Stop editing Mila’s policies'))
-    await waitFor(() => expect(toggles()).toHaveLength(0))
-    expect(sw('Mila').getAttribute('aria-checked')).toBe('false')
-    expect(api.patch).not.toHaveBeenCalled()
   })
 
   it('a segment click still sets that member’s policy', async () => {
