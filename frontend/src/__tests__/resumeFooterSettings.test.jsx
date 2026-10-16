@@ -1,4 +1,4 @@
-// The PDF footer switch (from #24, by @mrAlishah): opt-in, and only on a job-linked tailored copy.
+// The page footer switch (from #24, by @mrAlishah; PDF and Word): opt-in, and only on a job-linked tailored copy.
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SECTION_ORDER, SectionEditor, SettingsEditor, resumeSectionNames } from '../screens/ResumeSections'
@@ -16,7 +16,7 @@ describe('résumé footer settings', () => {
   it('the switch is off without the flag and turns it on', () => {
     const setField = vi.fn()
     render(<SettingsEditor data={{}} setField={setField} />)
-    const sw = screen.getByRole('switch', { name: /PDF footer/ })
+    const sw = screen.getByRole('switch', { name: /Page footer/ })
     expect(sw.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(sw)
     expect(setField).toHaveBeenCalledWith('footer_enabled', true)
@@ -25,7 +25,7 @@ describe('résumé footer settings', () => {
   it('an enabled footer shows on and turns off through SectionEditor', () => {
     const setField = vi.fn()
     render(<SectionEditor name="Settings" data={{ footer_enabled: true }} setField={setField} />)
-    const sw = screen.getByRole('switch', { name: /PDF footer/ })
+    const sw = screen.getByRole('switch', { name: /Page footer/ })
     expect(sw.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(sw)
     expect(setField).toHaveBeenCalledWith('footer_enabled', false)

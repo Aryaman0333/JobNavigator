@@ -1251,17 +1251,7 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
         logger.error(f"PDF generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
-    # Filename: {Name}_{Type}_Resume_{number}.pdf \u2014 Name is the candidate header name,
-    # Type is the base resume name, number is the linked job's short_id (omitted for base resumes with none).
-    header_name = (resume.json_data or {}).get("header", {}).get("name", "Resume").replace(" ", "")
-    base_name = (resume.name.split(" \u2192 ")[0] if " \u2192 " in (resume.name or "") else resume.name) or "Resume"
-    base_name = base_name.replace(" ", "")
-    number = ""
-    if resume.job_id:
-        job_for_name = db.query(Job).filter(Job.id == resume.job_id).first()
-        if job_for_name and job_for_name.short_id:
-            number = f"_{job_for_name.short_id}"
-    filename = f"{header_name}_{base_name}_Resume{number}".encode("ascii", "replace").decode()
+    filename = _resume_download_name(db, resume)
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}.pdf"',
@@ -1274,6 +1264,227 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
         content=pdf_bytes,
         media_type="application/pdf",
         headers=headers,
+    )
+
+
+def _resume_download_name(db: Session, resume: "Resume") -> str:
+    """A download's filename without the extension, shared by /pdf and /docx:
+    {Name}_{Type}_Resume_{number}. Name is the candidate's header name, Type the base
+    résumé's name, number the linked job's short_id (left out when there is none)."""
+    header_name = str(((resume.json_data or {}).get("header") or {}).get("name") or "Resume").replace(" ", "")
+    base_name = (resume.name.split(" → ")[0] if " → " in (resume.name or "") else resume.name) or "Resume"
+    base_name = base_name.replace(" ", "")
+    number = ""
+    if resume.job_id:
+        job_for_name = get_owned(db, Job, resume.job_id)
+        if job_for_name and job_for_name.short_id:
+            number = f"_{job_for_name.short_id}"
+    name = f"{header_name}_{base_name}_Resume{number}".encode("ascii", "replace").decode()
+    return re.sub(r'["\\\x00-\x1f\x7f]', "", name)
+
+
+# ── Word export (based on work by @mrAlishah) ───────────────────────────────
+# One plain, editable layout for every template: the same content as the PDF in Word's
+# own styles, with no tables, text boxes or images, so it stays ATS-safe. The footer
+# follows the PDF's opt-in switch (`_resume_footer_text`).
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# XML 1.0 forbids the C0 controls other than tab, LF and CR (plus U+FFFE/U+FFFF and lone
+# surrogates); lxml refuses them, and PDF imports can leave a \x0b or \x0c in the text.
+_XML_ILLEGAL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿\ud800-\udfff]")
+
+# Link schemes a Word hyperlink may carry; anything else is printed as plain text.
+_DOCX_LINK_SCHEMES = ("http", "https", "mailto", "tel")
+_PHONE_RE = re.compile(r"\+?[\d\s().\-]{6,}")
+
+
+def _xml_safe(value):
+    """A copy of `value` with every XML-illegal character dropped from its strings
+    (a vertical tab or form feed becomes a space, so words don't run together)."""
+    if isinstance(value, str):
+        return _XML_ILLEGAL_RE.sub(lambda m: " " if m.group() in "\x0b\x0c" else "", value)
+    if isinstance(value, dict):
+        return {k: _xml_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_xml_safe(v) for v in value]
+    return value
+
+
+def _docx_href(url) -> Optional[str]:
+    """The hyperlink target for a contact or project URL, or None to print it as text.
+    A named scheme is kept as it is (`tel:+1555…` stays a phone link; the PDF templates'
+    `https://` prefix would make it `https://tel:…`) when it is a web, mail or phone one.
+    A bare address gets `mailto:`, a bare phone number `tel:`, anything else `https://`."""
+    url = str(url or "").strip()
+    if not url:
+        return None
+    m = _SCHEME_RE.match(url)
+    if m:
+        return url if m.group(1).lower() in _DOCX_LINK_SCHEMES else None
+    if "@" in url.split("/", 1)[0]:
+        return "mailto:" + url
+    if _PHONE_RE.fullmatch(url):
+        return "tel:" + re.sub(r"[^\d+]", "", url)
+    return "https://" + url
+
+
+def _build_docx(json_data: dict, fmt: str, footer_text: str = "") -> bytes:
+    """An editable, template-neutral Word résumé from the résumé's JSON sections, in the
+    PDF templates' order: header, summary, experience, skills, education, projects,
+    publications."""
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Emu, Inches, Pt, RGBColor
+
+    data = _xml_safe(json_data or {})
+    footer_text = _xml_safe(footer_text or "")
+    doc = Document()
+    page = doc.sections[0]
+    page.page_width, page.page_height = (Emu(7560310), Emu(10692130)) if (fmt or "").lower() == "a4" else (Inches(8.5), Inches(11))
+    page.top_margin = page.bottom_margin = page.left_margin = page.right_margin = Inches(0.7)
+    body_width = page.page_width - page.left_margin - page.right_margin
+    doc.styles["Normal"].font.size = Pt(10.5)
+    doc.styles["Heading 2"].font.size = Pt(12)
+    doc.styles["Heading 2"].font.color.rgb = RGBColor(0, 0, 0)
+
+    header = data.get("header") or {}
+    candidate = str(header.get("name") or "").strip()
+    # python-docx's default template signs every file "python-docx"; an employer sees these.
+    props = doc.core_properties
+    props.author = props.last_modified_by = candidate
+    props.title = f"{candidate} résumé" if candidate else "Résumé"
+    props.comments = props.subject = props.keywords = props.category = ""
+
+    if footer_text:
+        footer = page.footer.paragraphs[0]
+        footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        footer_run = footer.add_run(footer_text)
+        footer_run.font.size = Pt(8)
+        footer_run.font.color.rgb = RGBColor(153, 153, 153)
+
+    def runs(paragraph, value, bold=False):
+        # `**bold**` markup, as the PDF templates' `bold` filter reads it
+        for index, part in enumerate(re.split(r"\*\*(.+?)\*\*", str(value or ""))):
+            if part:
+                paragraph.add_run(part).bold = bold or bool(index % 2)
+
+    def link(paragraph, label, url):
+        href = _docx_href(url)
+        if not href:
+            runs(paragraph, label)
+            return
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), doc.part.relate_to(href, RT.HYPERLINK, is_external=True))
+        run = OxmlElement("w:r")
+        properties = OxmlElement("w:rPr")
+        color = OxmlElement("w:color")
+        color.set(qn("w:val"), "0563C1")
+        underline = OxmlElement("w:u")
+        underline.set(qn("w:val"), "single")
+        properties.extend((color, underline))
+        text = OxmlElement("w:t")
+        text.text = label
+        text.set(qn("xml:space"), "preserve")
+        run.extend((properties, text))
+        hyperlink.append(run)
+        paragraph._p.append(hyperlink)
+
+    def row(left, right=""):
+        # left in bold, right (a date or place) on a right-aligned tab stop
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.tab_stops.add_tab_stop(body_width, WD_TAB_ALIGNMENT.RIGHT)
+        runs(paragraph, left, bold=True)
+        if right:
+            paragraph.add_run("\t" + str(right))
+
+    def details(item):
+        if item.get("description"):
+            runs(doc.add_paragraph(), item["description"])
+        for bullet in item.get("bullets") or []:
+            runs(doc.add_paragraph(style="List Bullet"), bullet)
+
+    def items(key):
+        return [i for i in (data.get(key) or []) if isinstance(i, dict)]
+
+    name = doc.add_paragraph().add_run(candidate)
+    name.bold = True
+    name.font.size = Pt(20)
+    if header.get("title"):
+        runs(doc.add_paragraph(), header["title"])
+    contacts = [c for c in (header.get("contact_items") or []) if isinstance(c, dict) and (c.get("text") or c.get("url"))]
+    if contacts:
+        contact = doc.add_paragraph()
+        for index, item in enumerate(contacts):
+            if index:
+                contact.add_run(" | ")
+            if item.get("url"):
+                link(contact, str(item.get("text") or item["url"]), item["url"])
+            else:
+                runs(contact, item.get("text"))
+
+    if data.get("summary"):
+        runs(doc.add_paragraph(), data["summary"])
+    if items("experience"):
+        doc.add_heading("Experience", level=2)
+        for job in items("experience"):
+            row(f"{job.get('title') or ''}{' at ' + str(job['company']) if job.get('company') else ''}",
+                job.get("date") or job.get("dates") or "")
+            if job.get("location"):
+                doc.add_paragraph(str(job["location"]))
+            details(job)
+    skills = data.get("skills")
+    if skills:
+        if isinstance(skills, dict):
+            pairs = list(skills.items())
+        else:
+            pairs = [(s.get("category"), s.get("items")) for s in skills if isinstance(s, dict)]
+        if pairs:
+            doc.add_heading("Skills", level=2)
+            for label, value in pairs:
+                paragraph = doc.add_paragraph()
+                if label:
+                    runs(paragraph, f"{label}: ", bold=True)
+                runs(paragraph, ", ".join(map(str, value)) if isinstance(value, list) else value)
+    if items("education"):
+        doc.add_heading("Education", level=2)
+        for education in items("education"):
+            row(education.get("school") or "", education.get("location") or "")
+            if education.get("degree"):
+                runs(doc.add_paragraph(), education["degree"])
+    for key, title in (("projects", "Projects"), ("publications", "Publications")):
+        if items(key):
+            doc.add_heading(title, level=2)
+            for item in items(key):
+                row(item.get("name") or item.get("title") or "")
+                if item.get("url"):
+                    link(doc.add_paragraph(), str(item["url"]), item["url"])
+                details(item)
+
+    output = io.BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
+@router.get("/{resume_id}/docx")
+def export_docx(resume_id: str, template: Optional[str] = None, format: Optional[str] = None, db: Session = Depends(get_db)):
+    """Export the résumé as an editable Word document. One layout for every template, so
+    `template` is accepted only for parity with /pdf; `format` overrides the paper size."""
+    resume = get_owned_or_404(db, Resume, resume_id)
+    fmt = format or resume.page_format or "letter"
+    data = _rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db)
+    try:
+        content = _build_docx(data, fmt, _resume_footer_text(db, resume))
+    except Exception as error:
+        logger.error("DOCX generation failed: %s", error)
+        raise HTTPException(status_code=500, detail="DOCX generation failed")
+    return Response(
+        content=content,
+        media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{_resume_download_name(db, resume)}.docx"'},
     )
 
 

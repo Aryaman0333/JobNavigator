@@ -467,11 +467,6 @@ export default function ResumeEditor() {
     return n
   })
 
-  const pdfDownloadUrl = useMemo(() => {
-    const base = (api.defaults.baseURL || '').replace(/\/api$/, '')
-    return `${base}/api/resumes/${id}/pdf?template=${encodeURIComponent(template)}&format=${encodeURIComponent(format)}`
-  }, [id, template, format])
-
   // Reserves the chrome's shape while the document loads, instead of a bare "Loading…"
   // that collapses the screen then jumps to the real layout once the doc lands.
   if (!doc || !data) {
@@ -647,11 +642,7 @@ export default function ResumeEditor() {
                   </Menu>
               )}
             </div>}
-            {/* round 9: `Button href` renders the real download anchor, on the
-                primary paint this toolbar drew by hand (--accent / --accent-ink /
-                500). Overrides restore the toolbar's own 29px height and 12px label. */}
-            <Button size="sm" href={pdfDownloadUrl} target="_blank"
-              style={{ marginLeft: 'auto', minWidth: 0, height: 29, gap: 6, fontSize: 12 }}>↓ Download PDF</Button>
+            <DownloadMenu id={id} template={template} format={format} onError={(msg) => pushToast({ kind: 'error', msg })} />
           </HeaderRow>
           <Surface radius="none" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             {pdfUrl && <iframe title="pdf" src={`${pdfUrl}#view=FitH`} style={{ width: '100%', height: '100%', border: 'none' }} />}
@@ -672,6 +663,47 @@ export default function ResumeEditor() {
       {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
 
       <ToastStack toasts={toasts} onClose={dismissToast} />
+    </div>
+  )
+}
+
+// ── Download (PDF / Word) ────────────────────────────────────────────────────
+// The preview toolbar's Download button and its menu; the Word export is based on work by
+// @mrAlishah. Each choice goes through axios and saves the blob, like the cover-letter
+// download, so the X-API-Key header travels and a failed export is an error toast rather
+// than a JSON page in a new tab. The current template and paper ride along, so a fresh
+// pick that the debounced save hasn't stored yet is still what downloads.
+export function DownloadMenu({ id, template, format, onError }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useEscape(() => setOpen(false), open)
+  const download = async (kind) => {
+    setOpen(false); setBusy(true)
+    try {
+      const r = await api.get(`/resumes/${id}/${kind}`, { responseType: 'blob', params: { template, format } })
+      const m = /filename="?([^"]+)"?/.exec(r.headers?.['content-disposition'] || '')
+      const url = URL.createObjectURL(r.data)
+      const a = document.createElement('a')
+      a.href = url; a.download = m ? m[1] : `Resume.${kind}`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      console.error(e)
+      onError?.(kind === 'docx' ? 'Could not download the Word document.' : 'Could not download the PDF.')
+    } finally { setBusy(false) }
+  }
+  // Overrides keep the toolbar's own 29px height and 12px label.
+  return (
+    <div style={{ position: 'relative', flex: '0 0 auto', marginLeft: 'auto' }}>
+      <Button size="sm" busy={busy} ariaHaspopup="menu" ariaExpanded={open} onClick={() => setOpen((v) => !v)}
+        style={{ minWidth: 0, height: 29, gap: 6, fontSize: 12 }}>↓ Download</Button>
+      {open && (
+        <Menu ariaLabel="Download résumé" onDismiss={() => setOpen(false)}
+          style={{ position: 'absolute', top: '100%', right: 0, marginTop: 5, zIndex: 45, width: 168 }}>
+          <MenuItem hint=".pdf" hintMono onClick={() => download('pdf')}>PDF</MenuItem>
+          <MenuItem hint=".docx" hintMono onClick={() => download('docx')}>Word</MenuItem>
+        </Menu>
+      )}
     </div>
   )
 }
