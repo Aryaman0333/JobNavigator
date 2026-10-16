@@ -337,3 +337,88 @@ def test_member_cannot_write_local_urls_and_sees_them_masked(client, test_db, me
     assert body["ollama_base_url"] == "http://••••@host.docker.internal:11434"
     assert body["_meta"]["ollama_base_url"]["editable"] is False
     assert S.get_install_setting(test_db, "ollama_base_url") == "http://user:pw@host.docker.internal:11434"
+
+
+# ── shared fakes for the Claude API ──────────────────────────────────────────
+
+class _FakeAnthropic:
+    """Stands in for anthropic.AsyncAnthropic; records the key each client was built with."""
+
+    def __init__(self, seen, api_key):
+        seen.append(api_key)
+        self.messages = types.SimpleNamespace(create=self._create, stream=self._stream)
+
+    async def _create(self, **kw):
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(type="text", text="ok")], stop_reason="end_turn",
+            usage=types.SimpleNamespace(input_tokens=1, output_tokens=1))
+
+    def _stream(self, **kw):
+        class _Stream:
+            async def __aenter__(self):
+                async def gen():
+                    yield "ok"
+                return types.SimpleNamespace(text_stream=gen())
+
+            async def __aexit__(self, *a):
+                return False
+        return _Stream()
+
+
+@pytest.fixture
+def anthropic_seen(monkeypatch):
+    import anthropic
+    seen = []
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda api_key=None, **kw: _FakeAnthropic(seen, api_key))
+    return seen
+
+
+# ── L-01: a stale key in a switched-off override ─────────────────────────────
+
+@pytest.mark.parametrize("feature", FEATURES)
+def test_slot_key_without_its_own_provider_is_ignored(test_db, feature):
+    """An override switched off keeps its key; the slot follows the Primary, so the Primary's key goes."""
+    _anthropic_primary(test_db, **{f"{feature}_llm_api_key": "sk-proj-STALE-OPENAI"})
+    cfg = L.resolve_llm_config(feature, db=test_db)
+    assert (cfg["provider"], cfg["api_key"]) == ("claude_api", ANT_KEY)
+
+
+def test_stale_slot_key_is_ignored_when_the_primary_has_no_key(test_db):
+    set_setting(test_db, "llm_provider", "claude_api")
+    set_setting(test_db, "autofill_llm_api_key", "sk-proj-STALE-OPENAI")
+    assert L.resolve_llm_config("autofill", db=test_db)["api_key"] == ""
+
+
+def test_primary_key_still_counts_with_the_provider_left_to_the_default(test_db):
+    """The Primary has no slot to follow: an empty llm_provider means the default provider."""
+    set_setting(test_db, "llm_provider", "")
+    set_setting(test_db, "llm_api_key", ANT_KEY)
+    assert L.resolve_llm_config("", db=test_db)["api_key"] == ANT_KEY
+
+
+@pytest.mark.asyncio
+async def test_stale_openai_key_never_reaches_anthropic(test_db, monkeypatch, anthropic_seen):
+    """The R30 probe: Autofill once ran on OpenAI, the override was switched off, the Primary is Claude API."""
+    _anthropic_primary(test_db, autofill_llm_api_key="sk-proj-STALE-OPENAI")
+    res = await L.call_autofill_llm("p", "s")
+    assert res["provider"] == "claude_api"
+    assert anthropic_seen == [ANT_KEY]
+
+
+@pytest.mark.asyncio
+async def test_stale_slot_key_does_not_hide_the_env_key(test_db, monkeypatch, anthropic_seen):
+    set_setting(test_db, "llm_provider", "claude_api")
+    set_setting(test_db, "scoring_llm_api_key", "sk-proj-STALE-OPENAI")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    cfg = L.resolve_llm_config("scoring", db=test_db)
+    await L.call_llm("p", "s", 10, provider=cfg["provider"], model=cfg["model"], api_key=cfg["api_key"])
+    assert anthropic_seen == ["sk-ant-env"]
+
+
+def test_member_stale_slot_key_is_ignored_too(test_db, member):
+    _models_own(test_db, member)
+    _own(test_db, member, "llm_provider", "claude_api")
+    _own(test_db, member, "llm_api_key", "sk-ant-member")
+    _own(test_db, member, "cover_letter_llm_api_key", "sk-proj-member-stale")
+    with use_account(member):
+        assert L.resolve_llm_config("cover_letter", db=test_db)["api_key"] == "sk-ant-member"

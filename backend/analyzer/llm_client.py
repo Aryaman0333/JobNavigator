@@ -46,7 +46,10 @@ def resolve_llm_config(feature: str = "", db=None) -> dict:
         prefix = f"{feature}_" if feature else ""
         provider = _get_setting(db, f"{prefix}llm_provider", "")
         model = _get_setting(db, f"{prefix}llm_model", "")
-        api_key = _get_setting(db, f"{prefix}llm_api_key", "")
+        # L-01: a slot's own key belongs to the slot's own provider. With no provider of its own
+        # the slot follows the Primary, so a key left in it (an override switched off) is stale
+        # and must not reach the Primary's provider.
+        api_key = _get_setting(db, f"{prefix}llm_api_key", "") if (provider or not feature) else ""
         effort = _get_setting(db, f"{prefix}llm_effort", "")
         provider = provider or _get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER
         if feature:

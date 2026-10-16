@@ -1046,10 +1046,12 @@ function Row({ r, ctx }) {
                 if (!next) {
                   // `ovr` is local state the PATCHes don't own — if any clear fails, reopen the row or it reads
                   // "inherits Primary" while the server still holds an override.
+                  // The key goes too: it belongs to the override's provider, and a key left behind is hidden once the row closes (L-01).
                   const a = await save(`${r.base}_provider`, '')
                   const b = a && await save(`${r.base}_model`, '')
                   const c = b && await save(`${r.base}_effort`, '')
-                  if (!a || !b || !c) setOvr((o) => ({ ...o, [r.base]: true }))
+                  const d = c && (!val(`${r.base}_api_key`) || await save(`${r.base}_api_key`, ''))
+                  if (!a || !b || !c || !d) setOvr((o) => ({ ...o, [r.base]: true }))
                 }
               }} />
             </span>
