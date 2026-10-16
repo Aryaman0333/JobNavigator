@@ -4,9 +4,11 @@ import io
 import json
 import logging
 import re
+import unicodedata
 import uuid as _uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote as _url_quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse
@@ -287,6 +289,7 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
     # json_data may carry internal metadata under "_"-prefixed keys (_tailor_context,
     # _score) that are never résumé content — keep them out of the template namespace so they can't render or collide with a template global.
     content = {k: v for k, v in (json_data or {}).items() if not str(k).startswith("_")}
+    content = _render_safe_links(content)
     html = template.render(
         **content,
         page_format=page_format,
@@ -294,6 +297,100 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
         fonts=fonts,
     )
     return html
+
+
+def _as_text(value) -> str:
+    """A template-ready string: None prints nothing, any other non-string as itself."""
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _header_name(json_data) -> str:
+    """`header.name` as a string, or "" when the JSON, its header or the name is missing
+    or not the expected shape (a null header from an import, a string header from the API)."""
+    header = json_data.get("header") if isinstance(json_data, dict) else None
+    return _as_text(header.get("name")) if isinstance(header, dict) else ""
+
+
+# Schemes a printed link may never carry: they run script or open local content. Checked
+# after removing whitespace and controls, which a browser's URL parser strips too
+# (`java\tscript:` is `javascript:` to it). `host:port` and every other value pass.
+_UNSAFE_LINK_SCHEMES = ("javascript", "vbscript", "data", "file", "blob")
+
+
+def _printable_link(url) -> str:
+    url = _as_text(url)
+    m = _SCHEME_RE.match(re.sub(r"[\x00-\x20\x7f]", "", url))
+    if m and m.group(1).lower() in _UNSAFE_LINK_SCHEMES:
+        return ""
+    return url
+
+
+def _render_safe_links(content: dict) -> dict:
+    """The links a résumé or cover-letter template prints, in the shapes it expects:
+    contact items are dicts with string `text` and `url` (a null or a number from an
+    import or the API would otherwise print "None" or fail `item.url.startswith`; the
+    templates already put `https://` before any other scheme), and a project or
+    publication URL with a script-capable scheme is left out, so the PDF never carries a
+    `javascript:` link annotation."""
+    out = dict(content)
+    header = out.get("header")
+    if isinstance(header, dict):
+        items = header.get("contact_items")
+        out["header"] = {**header, "contact_items": [
+            {**item, "text": _as_text(item.get("text")), "url": _as_text(item.get("url"))}
+            for item in (items if isinstance(items, list) else []) if isinstance(item, dict)
+        ]}
+    for key in ("projects", "publications"):
+        if isinstance(out.get(key), list):
+            out[key] = [{**entry, "url": _printable_link(entry.get("url"))}
+                        if isinstance(entry, dict) and entry.get("url") else entry
+                        for entry in out[key]]
+    return out
+
+
+# ── Sandboxed PDF rendering ─────────────────────────────────────────────────
+# Résumé and cover-letter text is printed into the templates as HTML, and every account
+# shares the backend's Chromium. So the page renders with JavaScript off and with no
+# network except Google Fonts, which several templates @import: an injected <script>,
+# <iframe> or <img> can neither run nor reach an internal address.
+_PDF_ALLOWED_HOSTS = frozenset({"fonts.googleapis.com", "fonts.gstatic.com"})
+
+
+def _pdf_request_allowed(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        if parts.scheme in ("data", "about"):
+            return True
+        return (parts.scheme == "https" and parts.hostname in _PDF_ALLOWED_HOSTS
+                and parts.port in (None, 443) and not parts.username and not parts.password)
+    except ValueError:
+        return False
+
+
+async def _pdf_route_guard(route):
+    url = route.request.url
+    if _pdf_request_allowed(url):
+        await route.continue_()
+    else:
+        logger.warning("PDF render blocked a request to %s", url[:200])
+        await route.abort()
+
+
+async def _render_pdf(html: str, **pdf_options) -> bytes:
+    """`html` as PDF bytes in a fresh, JavaScript-off browser context whose only network
+    is Google Fonts (`page.pdf` options pass through). Shared by /resumes and
+    /cover-letters; the context is closed even when the render fails."""
+    browser = await _get_browser()
+    context = await browser.new_context(java_script_enabled=False)
+    try:
+        await context.route("**/*", _pdf_route_guard)
+        page = await context.new_page()
+        await page.set_content(html, wait_until="networkidle")
+        return await page.pdf(**pdf_options)
+    finally:
+        await context.close()
 
 
 # Anything that already names a scheme: `tel:`, `mailto:`, `sms:`, `skype:`…
@@ -372,16 +469,28 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
             job_short_id = job_obj.short_id if job_obj else None
 
     data = _json.loads(_json.dumps(json_data))
-    header = data.get("header", {})
+    # The JSON comes from the editor, an LLM, a PDF import or the API, so any part of
+    # it may be null or the wrong type: only a dict header's dict items with a string
+    # URL are rewritten, everything else passes through for the renderer to tolerate.
+    header = data.get("header") if isinstance(data, dict) else None
+    if not isinstance(header, dict):
+        return data
+    items = header.get("contact_items")
+    if not isinstance(items, list):
+        return data
 
-    items = header.get("contact_items", [])
     for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
         url = item.get("url")
-        if not url or not url.strip() or not _is_traceable_url(url):
+        if not isinstance(url, str) or not url.strip() or not _is_traceable_url(url):
             continue
 
         url = url.strip()
-        label = item.get("text", f"Link {i+1}")
+        # A string text (an empty one included) labels the link exactly as before, so
+        # the job-derived tokens already printed in sent PDFs keep their suffix.
+        text = item.get("text", f"Link {i+1}")
+        label = text if isinstance(text, str) else (f"Link {i+1}" if text is None else str(text))
         dest_url = url if url.lower().startswith(("http://", "https://")) else f"https://{url}"
         # Suffix for per-link distinction in job_id modes (user stub or first 3 chars)
         stub = item.get("stub")
@@ -470,7 +579,6 @@ def _rewrite_urls_with_tracers(json_data: dict, resume_id: str, db,
 
         items[i]["url"] = tracer_url
 
-    data["header"] = header
     return data
 
 
@@ -1171,7 +1279,7 @@ def _tailored_resume_footer_text(resume: "Resume", job: Optional["Job"]) -> str:
     """
     if not resume or resume.is_base or not resume.job_id or not job:
         return ""
-    candidate_name = str(((resume.json_data or {}).get("header") or {}).get("name") or "").strip()
+    candidate_name = _header_name(resume.json_data).strip()
     job_title = str(job.title or "").strip()
     company = str(job.company or "").strip()
     if not (candidate_name and job_title and company):
@@ -1213,7 +1321,13 @@ def preview_resume(resume_id: str, db: Session = Depends(get_db)):
 
     json_data = _rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db)
     html = _render_html(json_data, resume.template, resume.page_format)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Content-Security-Policy": _PREVIEW_CSP})
+
+
+# The preview is the résumé's own HTML served from the app's origin: the same rules as
+# the PDF renderer (no script, no network but Google Fonts), and a sandboxed origin.
+_PREVIEW_CSP = ("sandbox; default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src data: https://fonts.gstatic.com; img-src data:; frame-ancestors 'self'")
 
 
 @router.get("/{resume_id}/pdf")
@@ -1231,10 +1345,8 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
     paper_format = "A4" if fmt.lower() == "a4" else "Letter"
 
     try:
-        browser = await _get_browser()
-        page = await browser.new_page()
-        await page.set_content(html, wait_until="networkidle")
-        pdf_bytes = await page.pdf(
+        pdf_bytes = await _render_pdf(
+            html,
             format=paper_format,
             print_background=True,
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
@@ -1246,15 +1358,12 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
         page_count = pdf_bytes.count(b"/Type /Page") - pdf_bytes.count(b"/Type /Pages")
         if page_count < 1:
             page_count = 1
-        await page.close()
     except Exception as e:
         logger.error(f"PDF generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
-    filename = _resume_download_name(db, resume)
-
     headers = {
-        "Content-Disposition": f'attachment; filename="{filename}.pdf"',
+        "Content-Disposition": _content_disposition(_resume_download_name(db, resume), "pdf"),
         "X-Page-Count": str(page_count),
     }
     if page_count > 1:
@@ -1271,7 +1380,7 @@ def _resume_download_name(db: Session, resume: "Resume") -> str:
     """A download's filename without the extension, shared by /pdf and /docx:
     {Name}_{Type}_Resume_{number}. Name is the candidate's header name, Type the base
     résumé's name, number the linked job's short_id (left out when there is none)."""
-    header_name = str(((resume.json_data or {}).get("header") or {}).get("name") or "Resume").replace(" ", "")
+    header_name = (_header_name(resume.json_data) or "Resume").replace(" ", "")
     base_name = (resume.name.split(" → ")[0] if " → " in (resume.name or "") else resume.name) or "Resume"
     base_name = base_name.replace(" ", "")
     number = ""
@@ -1279,8 +1388,31 @@ def _resume_download_name(db: Session, resume: "Resume") -> str:
         job_for_name = get_owned(db, Job, resume.job_id)
         if job_for_name and job_for_name.short_id:
             number = f"_{job_for_name.short_id}"
-    name = f"{header_name}_{base_name}_Resume{number}".encode("ascii", "replace").decode()
+    name = f"{header_name}_{base_name}_Resume{number}"
     return re.sub(r'["\\\x00-\x1f\x7f]', "", name)
+
+
+# Letters NFKD does not split into a base letter plus a mark.
+_ASCII_FOLD = str.maketrans({
+    "ß": "ss", "ẞ": "SS", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE", "ø": "o", "Ø": "O",
+    "đ": "d", "Đ": "D", "ð": "d", "Ð": "D", "ł": "l", "Ł": "L", "þ": "th", "Þ": "Th", "ı": "i",
+})
+
+
+def _ascii_filename_stem(stem: str) -> str:
+    """The plain `filename=` fallback for a download stem: accents folded (José Müller
+    gives Jose_Muller), anything with no ASCII form dropped, and the `_`-separated parts
+    left empty by that removed, so an all-Cyrillic name gives `Resume_…`, never `____`."""
+    folded = unicodedata.normalize("NFKD", stem.translate(_ASCII_FOLD)).encode("ascii", "ignore").decode()
+    folded = re.sub(r'["\\\x00-\x1f\x7f]', "", folded)
+    return "_".join(part for part in folded.split("_") if part) or "Resume"
+
+
+def _content_disposition(stem: str, ext: str) -> str:
+    """An attachment header that keeps a non-ASCII name: an ASCII `filename=` for old
+    clients plus the RFC 5987 `filename*=UTF-8''…` every current browser prefers."""
+    return (f'attachment; filename="{_ascii_filename_stem(stem)}.{ext}"; '
+            f"filename*=UTF-8''{_url_quote(f'{stem}.{ext}', safe='')}")
 
 
 # ── Word export (based on work by @mrAlishah) ───────────────────────────────
@@ -1301,11 +1433,12 @@ _PHONE_RE = re.compile(r"\+?[\d\s().\-]{6,}")
 
 def _xml_safe(value):
     """A copy of `value` with every XML-illegal character dropped from its strings
-    (a vertical tab or form feed becomes a space, so words don't run together)."""
+    (a vertical tab or form feed becomes a space, so words don't run together). Keys
+    are cleaned too: a skills category name is a dict key and is printed."""
     if isinstance(value, str):
         return _XML_ILLEGAL_RE.sub(lambda m: " " if m.group() in "\x0b\x0c" else "", value)
     if isinstance(value, dict):
-        return {k: _xml_safe(v) for k, v in value.items()}
+        return {_xml_safe(k): _xml_safe(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_xml_safe(v) for v in value]
     return value
@@ -1351,7 +1484,7 @@ def _build_docx(json_data: dict, fmt: str, footer_text: str = "") -> bytes:
     doc.styles["Heading 2"].font.size = Pt(12)
     doc.styles["Heading 2"].font.color.rgb = RGBColor(0, 0, 0)
 
-    header = data.get("header") or {}
+    header = data.get("header") if isinstance(data.get("header"), dict) else {}
     candidate = str(header.get("name") or "").strip()
     # python-docx's default template signs every file "python-docx"; an employer sees these.
     props = doc.core_properties
@@ -1484,7 +1617,7 @@ def export_docx(resume_id: str, template: Optional[str] = None, format: Optional
     return Response(
         content=content,
         media_type=DOCX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_resume_download_name(db, resume)}.docx"'},
+        headers={"Content-Disposition": _content_disposition(_resume_download_name(db, resume), "docx")},
     )
 
 

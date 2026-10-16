@@ -12,7 +12,7 @@ from docx.shared import Emu
 
 from backend.accounts.context import use_account
 from backend.api.routes_resumes import _build_docx, _docx_href, _resume_download_name, _xml_safe
-from backend.models.db import Account, Resume
+from backend.models.db import Account, Resume, Setting, TracerLink
 from backend.tests.r4_support import client, make_job  # noqa: F401
 
 DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -190,6 +190,105 @@ def test_control_characters_never_break_the_export(client, test_db):
 def test_xml_safe_keeps_tabs_and_newlines():
     assert _xml_safe({"a": ["x\ty\nz\r", 3, None]}) == {"a": ["x\ty\nz\r", 3, None]}
     assert _xml_safe("a\x0bb\x01c") == "a bc"
+
+
+def test_xml_safe_cleans_keys_too():
+    assert _xml_safe({"Lang\x0buages": "Go", "Tools\x00": {"in\x0cner": 1}, 3: "x"}) == \
+        {"Lang uages": "Go", "Tools": {"in ner": 1}, 3: "x"}
+
+
+def test_a_control_character_in_a_skills_category_name_still_exports(client, test_db):
+    """The editor's skills are a dict, so the category name is a key and is printed (R30 D-01)."""
+    data = {**DATA, "skills": {"Lang\x0buages": "Go", "Tools\x00": "Jira\x0c"}}
+    _, document = _fetch(client, _resume(test_db, data=data))
+    text = [p.text for p in document.paragraphs]
+    assert "Lang uages: Go" in text
+    assert "Tools: Jira " in text
+
+
+# ── odd shapes with tracer links on (R30 D-02) ───────────────────────────────
+
+def _tracers_on(test_db):
+    for key, value in (("tracer_links_enabled", "true"), ("tracer_links_base_url", "https://t.example"),
+                       ("tracer_links_url_style", "path")):
+        test_db.add(Setting(key=key, value=value))
+    test_db.commit()
+
+
+ODD_HEADERS = {
+    "header null": {"header": None},
+    "header a string": {"header": "Dana"},
+    "contact_items null": {"header": {"name": CANDIDATE, "contact_items": None}},
+    "contact_items a dict": {"header": {"name": CANDIDATE, "contact_items": {"url": "https://x.example"}}},
+    "text null": {"header": {"name": CANDIDATE, "contact_items": [{"text": None, "url": "https://x.example"}]}},
+    "text a number": {"header": {"name": CANDIDATE, "contact_items": [{"text": 5, "url": "https://x.example"}]}},
+    "url a number": {"header": {"name": CANDIDATE, "contact_items": [{"text": "a", "url": 5}]}},
+    "url a list": {"header": {"name": CANDIDATE, "contact_items": [{"text": "a", "url": ["x"]}]}},
+    "item a string": {"header": {"name": CANDIDATE, "contact_items": ["https://x.example", None, 7]}},
+}
+
+
+@pytest.mark.parametrize("shape", list(ODD_HEADERS))
+def test_docx_survives_odd_header_shapes_with_tracers_on(client, test_db, shape):
+    _tracers_on(test_db)
+    _fetch(client, _resume(test_db, data={**ODD_HEADERS[shape], "summary": "Product leader."}))
+
+
+def test_a_null_contact_text_is_still_traced_and_labelled(client, test_db):
+    _tracers_on(test_db)
+    resume = _resume(test_db, data={"header": {"name": CANDIDATE, "contact_items": [
+        {"text": None, "url": "https://x.example"}, {"text": 5, "url": "https://y.example"}]}})
+    _, document = _fetch(client, resume)
+    links = test_db.query(TracerLink).filter(TracerLink.resume_id == resume.id).all()
+    assert sorted(link.source_label for link in links) == ["5", "Link 1"]
+    assert sorted(_links(document)) == sorted(f"https://t.example/cv/{link.token}" for link in links)
+
+
+def test_an_empty_contact_text_keeps_its_job_token(test_db):
+    """A string text labels the link as it always did, so a job-derived token that is
+    already printed in sent PDFs ({short_id} plus the first three letters) never moves."""
+    from backend.api.routes_resumes import _rewrite_urls_with_tracers
+
+    for key, value in (("tracer_links_enabled", "true"), ("tracer_links_base_url", "https://t.example"),
+                       ("tracer_links_url_style", "path_jobid")):
+        test_db.add(Setting(key=key, value=value))
+    job = make_job(test_db, short_id=77)
+    resume = _resume(test_db, is_base=False, job_id=job.id, data={"header": {"contact_items": [
+        {"text": "", "url": "https://x.example"}, {"text": "GitHub", "url": "https://gh.example"}]}})
+    out = _rewrite_urls_with_tracers(resume.json_data, str(resume.id), test_db)
+    assert [i["url"] for i in out["header"]["contact_items"]] == \
+        ["https://t.example/cv/77", "https://t.example/cv/77git"]
+
+
+# ── download filename (R30 D-03) ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("name,base,ascii_stem,utf8_stem", [
+    ("José Müller", "Base CV", "JoseMuller_BaseCV_Resume", "JoséMüller_BaseCV_Resume"),
+    ("Dana Okonkwo", "Base CV", "DanaOkonkwo_BaseCV_Resume", "DanaOkonkwo_BaseCV_Resume"),
+    ("Дана", "Базовое", "Resume", "Дана_Базовое_Resume"),
+    ("王小明", "CV", "CV_Resume", "王小明_CV_Resume"),
+    ("Søren Łukasz Straße", "Æble", "SorenLukaszStrasse_AEble_Resume", "SørenŁukaszStraße_Æble_Resume"),
+])
+def test_docx_filename_keeps_a_non_ascii_name(client, test_db, name, base, ascii_stem, utf8_stem):
+    from urllib.parse import quote, unquote
+
+    resume = _resume(test_db, data={**DATA, "header": {**DATA["header"], "name": name}}, name=base)
+    response, _ = _fetch(client, resume)
+    disposition = response.headers["content-disposition"]
+    assert f'filename="{ascii_stem}.docx"' in disposition
+    assert f"filename*=UTF-8''{quote(utf8_stem + '.docx', safe='')}" in disposition
+    assert unquote(disposition.split("UTF-8''", 1)[1]) == f"{utf8_stem}.docx"
+    disposition.encode("latin-1")   # a header value must stay encodable
+
+
+def test_content_disposition_quotes_what_would_break_the_header():
+    from backend.api.routes_resumes import _content_disposition
+
+    value = _content_disposition('Zoë "x"; y=1\r\n', "pdf")
+    assert "\r" not in value and "\n" not in value
+    assert value.startswith('attachment; filename="Zoe')
+    tail = value.split("filename*=UTF-8''", 1)[1]
+    assert ";" not in tail and " " not in tail and '"' not in tail
 
 
 # ── footer: the PDF's opt-in switch ──────────────────────────────────────────

@@ -16,7 +16,7 @@ from backend.models.db import get_db, CoverLetter, Resume, Job, Persona, TracerL
 from backend.accounts.settings import get_setting
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.api.routes_resumes import _get_browser, _rewrite_urls_with_tracers, _resolve_tailoring_jd  # shared with resumes
+from backend.api.routes_resumes import _header_name, _render_pdf, _rewrite_urls_with_tracers, _resolve_tailoring_jd  # shared with resumes
 
 logger = logging.getLogger("jobnavigator.cover_letters")
 
@@ -62,7 +62,7 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
     from jinja2 import Environment, FileSystemLoader
     from markupsafe import Markup
 
-    from backend.api.routes_resumes import _load_template_fonts, resolve_template_dir
+    from backend.api.routes_resumes import _load_template_fonts, _render_safe_links, resolve_template_dir
 
     # Same on-disk allowlist the résumé renderer uses — the folder comes from the
     # directory listing, the request name is only a key (R4-T5-01).
@@ -77,7 +77,7 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
 
     fonts = _load_template_fonts(str(template_dir / "fonts"))
 
-    return template.render(**json_data, page_format=page_format, fonts=fonts)
+    return template.render(**_render_safe_links(json_data or {}), page_format=page_format, fonts=fonts)
 
 
 @router.get("/templates")
@@ -277,20 +277,17 @@ async def export_pdf(cl_id: str, db: Session = Depends(get_db)):
     paper_format = "A4" if fmt.lower() == "a4" else "Letter"
 
     try:
-        browser = await _get_browser()
-        page = await browser.new_page()
-        await page.set_content(html, wait_until="networkidle")
-        pdf_bytes = await page.pdf(
-            format=paper_format, print_background=True,
+        # JavaScript off, no network but Google Fonts: the letter's text is HTML here.
+        pdf_bytes = await _render_pdf(
+            html, format=paper_format, print_background=True,
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
         )
-        await page.close()
     except Exception as e:
         logger.error(f"Cover-letter PDF generation failed: {e}")
         raise HTTPException(500, f"PDF generation failed: {str(e)}")
 
     # Filename: {Name}_{Type}_CoverLetter_{number}.pdf
-    header_name = (cl.json_data or {}).get("header", {}).get("name", "CoverLetter").replace(" ", "")
+    header_name = (_header_name(cl.json_data) or "CoverLetter").replace(" ", "")
     def _safe(text: str) -> str:
         """ASCII, no spaces or punctuation that muddles a download filename."""
         out = "".join(c for c in (text or "") if c.isalnum() or c in " -_").strip()

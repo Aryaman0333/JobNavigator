@@ -135,8 +135,12 @@ def _fake_browser(monkeypatch, captured: dict):
     fake_page.set_content = AsyncMock(side_effect=fake_set_content)
     fake_page.pdf = AsyncMock(side_effect=fake_pdf)
     fake_page.close = AsyncMock(return_value=None)
+    fake_context = MagicMock()
+    fake_context.new_page = AsyncMock(return_value=fake_page)
+    fake_context.route = AsyncMock(return_value=None)
+    fake_context.close = AsyncMock(return_value=None)
     fake_browser = MagicMock()
-    fake_browser.new_page = AsyncMock(return_value=fake_page)
+    fake_browser.new_context = AsyncMock(return_value=fake_context)
 
     async def fake_get_browser():
         return fake_browser

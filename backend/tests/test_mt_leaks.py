@@ -497,10 +497,9 @@ def _offline(monkeypatch):
     async def _no_browser(*a, **k):
         raise RuntimeError("browser disabled in the leak harness")
     from backend.scraper._shared import browser
-    from backend.api import routes_cover_letters, routes_resumes
+    from backend.api import routes_resumes
     monkeypatch.setattr(browser, "_get_browser", _no_browser)
     monkeypatch.setattr(routes_resumes, "_get_browser", _no_browser)
-    monkeypatch.setattr(routes_cover_letters, "_get_browser", _no_browser)
 
     import jobspy
     monkeypatch.setattr(jobspy, "scrape_jobs", _no_network)
