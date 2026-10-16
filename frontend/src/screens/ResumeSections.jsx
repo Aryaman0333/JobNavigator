@@ -168,7 +168,7 @@ export function SettingsEditor({ data, setField }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 10 }}>
       <Switch on={data.footer_enabled === true} onChange={(v) => setField('footer_enabled', v)} label="Page footer"
         title="Print your name, the job title and the company at the foot of every page of this résumé's PDF and Word downloads." />
-      <Helper>Adds “name - job title - company” in small type at the foot of every page, so a loose page still says whose it is and which role it was written for.</Helper>
+      <Helper>Adds “name - job title - company” in small type at the foot of every page.</Helper>
     </div>
   )
 }
