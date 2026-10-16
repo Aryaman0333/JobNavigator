@@ -23,7 +23,10 @@ Target keys
   - trulyremote: one key for every search. The roster (`llms-full.txt`) is the whole corpus
     with no query, so all trulyremote searches of all accounts share one fetch; results_wanted
     caps each subscriber's new job pages after its own dedup, so it is not a fetch parameter.
-    The `.md` job pages are read once per shared fetch (`SharedFetch.memo`).
+    The `.md` job pages are read once per shared fetch (`SharedFetch.memo`). The parsed roster
+    is also kept in-process for as long as the board's Cache-Control allows (at most an hour;
+    `trulyremote._fetch_roster`), which the memo rule allows: it is raw board data, the same
+    for every account.
   - linkedin_personal, jobright and anything unknown read the account's own session, so
     they are never shared: their key carries the search id.
   - apify is never shared either (deliberately, not by omission): every run is paid with

@@ -119,7 +119,7 @@ def test_parse_detail_prefers_the_md_twin():
     assert out["title"] == "Affiliate Manager"
     assert out["company"] == "Growe"
     assert out["location"] == "Worldwide (Fully Remote)"
-    assert out["posted"] == "Thu Oct 01 2026"
+    assert out["posted"] == "2026-10-01"   # the page's date, as ISO (R13)
     assert out["apply_url"] == "https://job-boards.eu.greenhouse.io/growetalents/jobs/4965477101"
     assert out["description"] == "The full description body."
 

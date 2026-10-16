@@ -118,7 +118,7 @@ const noteFor = (mode) => {
   if (mode === 'jobright') return ['Recommendations from your Jobright.ai account. Enter a search term to search instead. Credentials are in Settings › Accounts.', 'sm-jobright']
   if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted (at most 200) caps every board on every run, each run carries a spend cap and stops after 15 minutes, and Test fetches 20 jobs per board at most. A new Apify search starts paused: check the boards, then press Paused to resume it.', 'sm-apify']
   if (mode === 'caribbeanjobs') return ['Set the filters on caribbeanjobs.com and paste the search URL, or enter a term. The description of each result is read from its own page; Test reads at most 20 of those pages. A salary in a local currency is kept as text in the description, not as a number.', 'sm-caribbeanjobs']
-  if (mode === 'trulyremote') return ['Reads TrulyRemoteWork.com’s full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so you narrow it with the title filters below.', 'sm-trulyremote']
+  if (mode === 'trulyremote') return ['Reads TrulyRemoteWork.com’s full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so you narrow it with the title filters and company excludes below. Each new job’s description is read from its own page; Test reads at most 20 of those pages.', 'sm-trulyremote']
   if (mode === 'extension') return ['Jobs come from the “Save to Job Feed” button on any website. The filters and auto-score depth below apply to each job as it is saved.', 'sm-levels']
   if (mode === 'linkedin_extension') return ['Jobs are captured while you browse linkedin.com/jobs/collections pages. The filters below are applied on import.', 'sm-levels']
   return null
@@ -162,7 +162,7 @@ const summaryOf = (s, boards = []) => {
     if (s.direct_url) bits.push(short(s.direct_url))
     return (bits.join(' · ') || 'caribbeanjobs.com') + last
   }
-  if (m === 'trulyremote') return `Worldwide remote · max ${s.results_wanted || 100}${last}`
+  if (m === 'trulyremote') return `Worldwide remote · max ${s.results_wanted || 100} new${last}`
   return `${short(s.direct_url) || 'no URL'}${last}`
 }
 
@@ -362,8 +362,10 @@ function ConfigForm({ d, set }) {
       <Cell key="rw" label="Results wanted · 1–500" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
     )
   } else if (m === 'trulyremote') {
+    // The whole board is read on every run; this caps the new jobs whose pages one run opens.
     fields.push(
-      <Cell key="rw" label="Results wanted · 1–500" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
+      <Cell key="rw" label="New jobs per run · 1–500" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })}
+        sub="The whole board is read; this caps how many new jobs’ pages one run opens" />,
     )
   }
 
@@ -967,7 +969,7 @@ function TestModal({ test, tab, setTab, onClose }) {
     if (cfg.results_wanted) params.push(`${cfg.results_wanted} wanted`)
   } else if (cfg.mode === 'trulyremote') {
     params.push('worldwide remote')
-    if (cfg.results_wanted) params.push(`${cfg.results_wanted} wanted`)
+    if (cfg.results_wanted) params.push(`${cfg.results_wanted} new per run`)
   } else {
     if (cfg.location) params.push(cfg.location)
     if (cfg.is_remote === true) params.push('remote only')
