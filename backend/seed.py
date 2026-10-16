@@ -134,10 +134,9 @@ DEFAULT_SETTINGS = {
         {"provider": "ollama", "model": "mistral:7b"},
         {"provider": "ollama", "model": "gemma2:9b"},
         {"provider": "ollama", "model": "phi3:14b"},
-        # OpenCode Go (subscription) — chat/completions models only; the model id is bare, not the
-        # CLI's `opencode-go/` alias. A Go API key is required. Left out: GPT and Grok (they use
-        # the Responses API) and MiniMax/Qwen (the Anthropic /messages API), which this OpenAI
-        # chat/completions provider does not call.
+        # OpenCode Go (subscription) — models that answer on /chat/completions; the model id is
+        # bare, not the CLI's `opencode-go/` alias. A Go API key is required. A model Go serves on
+        # another protocol fails with a readable "another protocol" error, not a retry.
         {"provider": "opencode_go", "model": "glm-5.3"},
         {"provider": "opencode_go", "model": "glm-5.3-flash"},
         {"provider": "opencode_go", "model": "glm-5.2"},
@@ -153,6 +152,9 @@ DEFAULT_SETTINGS = {
         {"provider": "opencode_go", "model": "mimo-v2.5-pro"},
         {"provider": "opencode_go", "model": "longcat-2.0"},
         {"provider": "opencode_go", "model": "hy3"},
+        {"provider": "opencode_go", "model": "minimax-m3"},
+        {"provider": "opencode_go", "model": "qwen3.8-max"},
+        {"provider": "opencode_go", "model": "qwen3.8-flash"},
         # OpenRouter — one key reaches every vendor; slugs are vendor-prefixed.
         # A popular starter set; the full ~420 are fetchable in Settings via the API.
         {"provider": "openrouter", "model": "anthropic/claude-fable-5.1"},

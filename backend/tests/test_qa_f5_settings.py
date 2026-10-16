@@ -342,7 +342,7 @@ async def test_opencode_go_env_key_reaches_owner_and_inherit_never_a_member_on_o
         seen.append((api_key, base_url))
         return {"text": "ok", "usage": {}}
 
-    async def fake_stream(prompt, system, model, api_key, max_tokens, base_url=None, effort=""):
+    async def fake_stream(prompt, system, model, api_key, max_tokens, base_url=None, effort="", feature=""):
         seen.append((api_key, base_url))
         yield "ok"
 

@@ -77,7 +77,7 @@ class _FakeOpenAI:
 @pytest.fixture
 def openai_seen(monkeypatch):
     seen = []
-    monkeypatch.setattr(L, "_openai_client", lambda api_key, base_url: _FakeOpenAI(seen, api_key, base_url))
+    monkeypatch.setattr(L, "_openai_client", lambda api_key, base_url, feature=None: _FakeOpenAI(seen, api_key, base_url))
     return seen
 
 

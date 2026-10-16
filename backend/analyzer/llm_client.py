@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional
 from backend.models.db import SessionLocal
@@ -161,7 +162,8 @@ async def call_email_llm(prompt: str, system: str, max_tokens: int = 150) -> dic
     provider, model = cfg["provider"], cfg["model"]
 
     logger.info(f"Email LLM call: provider={provider}, model={model}, max_tokens={max_tokens}")
-    res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens, effort=cfg["effort"])
+    with llm_feature("email"):
+        res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens, effort=cfg["effort"])
     return {**res, "provider": provider, "model": model}
 
 
@@ -171,7 +173,8 @@ async def call_cv_tailor_llm(prompt: str, system: str, max_tokens: int = 3000) -
     provider, model = cfg["provider"], cfg["model"]
 
     logger.info(f"CV tailor LLM call: provider={provider}, model={model}, max_tokens={max_tokens}")
-    res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens, effort=cfg["effort"])
+    with llm_feature("cv_tailor"):
+        res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens, effort=cfg["effort"])
     return {**res, "provider": provider, "model": model}
 
 
@@ -183,8 +186,9 @@ async def call_cover_letter_llm(prompt: str, system: str, max_tokens: int = 1500
 
     logger.info(f"Cover-letter LLM call: provider={provider}, model={model}, max_tokens={max_tokens}, "
                 f"caching={'on' if cached_prefix and provider == 'claude_api' else 'off'}")
-    res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens,
-                          cached_prefix=cached_prefix, effort=cfg["effort"])
+    with llm_feature("cover_letter"):
+        res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens,
+                              cached_prefix=cached_prefix, effort=cfg["effort"])
     return {**res, "provider": provider, "model": model}
 
 
@@ -196,8 +200,9 @@ async def call_autofill_llm(prompt: str, system: str, max_tokens: int = 400,
 
     logger.info(f"Autofill LLM call: provider={provider}, model={model}, max_tokens={max_tokens}, "
                 f"caching={'on' if cached_prefix and provider == 'claude_api' else 'off'}")
-    res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens,
-                          cached_prefix=cached_prefix, effort=cfg["effort"])
+    with llm_feature("autofill"):
+        res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens,
+                              cached_prefix=cached_prefix, effort=cfg["effort"])
     return {**res, "provider": provider, "model": model}
 
 
@@ -222,7 +227,7 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
     combined = f"{cached_prefix}\n\n{prompt}" if cached_prefix else prompt
     if provider in ("openai", "openrouter", "opencode_go"):
         base = {"openrouter": OPENROUTER_BASE_URL, "opencode_go": OPENCODE_GO_BASE_URL}.get(provider)
-        async for c in _stream_openai(combined, system, model, api_key, cap, base, effort):
+        async for c in _stream_openai(combined, system, model, api_key, cap, base, effort, feature="autofill"):
             yield c
         return
     # Non-streaming providers can't emit tokens as they generate, so simulate it:
@@ -266,16 +271,44 @@ OPENROUTER_HEADERS = {"HTTP-Referer": "https://github.com/vesaias/JobNavigator",
 # The current Go docs list https://opencode.ai/inference/go/openai/v1 (chat) and /inference/go/v1/models.
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_USER_AGENT = "JobNavigator/1.0 (+https://github.com/vesaias/JobNavigator)"
-_OPENCODE_SESSION = str(uuid.uuid4())   # stable for this backend process
+# One session id per (account, feature): stable while the backend runs, so a feature's repeated
+# prompts (the same résumé prefix) route and cache together, and never shared between accounts.
+# The namespace is random per process, so the ids say nothing about the install.
+_OPENCODE_SESSION_NS = uuid.uuid4()
+# The feature an LLM call is made for ("" = the Primary slot); set by the per-feature wrappers.
+_llm_feature: ContextVar[str] = ContextVar("jn_llm_feature", default="")
 
 
-def _openai_client(api_key: str, base_url: str | None):
+@contextmanager
+def llm_feature(name: str):
+    """Mark the calls in this block as made for `name` (scoring, cv_tailor, ...)."""
+    token = _llm_feature.set(name)
+    try:
+        yield
+    finally:
+        _llm_feature.reset(token)
+
+
+def _opencode_session(feature: str | None = None) -> str:
+    """The x-opencode-session id for the current account and `feature` (default: the context's)."""
+    from backend.accounts.context import current_account, owner_account_id
+    account = current_account.get()
+    if account is None:
+        try:
+            account = owner_account_id()
+        except Exception:
+            account = None
+    feature = _llm_feature.get() if feature is None else feature
+    return str(uuid.uuid5(_OPENCODE_SESSION_NS, f"{account or 'install'}|{feature or 'primary'}"))
+
+
+def _openai_client(api_key: str, base_url: str | None, feature: str | None = None):
     from openai import AsyncOpenAI
     if base_url == OPENROUTER_BASE_URL:
         headers = OPENROUTER_HEADERS
     elif base_url == OPENCODE_GO_BASE_URL:
         # Identify as JobNavigator, not the SDK, and send the session id Go routes on.
-        headers = {"User-Agent": OPENCODE_USER_AGENT, "x-opencode-session": _OPENCODE_SESSION}
+        headers = {"User-Agent": OPENCODE_USER_AGENT, "x-opencode-session": _opencode_session(feature)}
     else:
         headers = None
     # Never None: the SDK would then read OPENAI_API_KEY, which must not reach OpenRouter,
@@ -324,8 +357,8 @@ def _output_cap(provider: str, max_tokens: int, effort: str) -> int:
     return max_tokens + REASONING_HEADROOM
 
 
-async def _stream_openai(prompt, system, model, api_key, max_tokens, base_url=None, effort=""):
-    client = _openai_client(api_key, base_url)
+async def _stream_openai(prompt, system, model, api_key, max_tokens, base_url=None, effort="", feature=""):
+    client = _openai_client(api_key, base_url, feature)
     stream = await client.chat.completions.create(
         model=model, stream=True,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -936,19 +969,51 @@ async def _call_openai(prompt: str, system: str, model: str, api_key: str, max_t
     }
 
 
-# A 400/404 counts as "this model is not served here" only when the message says the model is
-# unknown, unsupported or not found. Context-length, max_tokens and other request 400s that merely
-# mention "model" take the normal error path (retry, then the fallback model).
-_UNKNOWN_MODEL_RE = re.compile(
-    r"model_not_found|no such model|(?:unknown|unsupported|invalid) model"
-    r"|\bmodel\b.{0,80}?\b(?:does not exist|doesn't exist|not found|not supported|is not available|unsupported|unknown)",
-    re.IGNORECASE)
-_REQUEST_LIMIT_RE = re.compile(r"context (?:length|window)|max_tokens|max_completion_tokens|maximum|parameter",
-                               re.IGNORECASE)
+# OpenCode Go's own error payloads (probed by @mreid-tt, #25). A model Go serves on another
+# protocol (Responses or Anthropic Messages) answers chat/completions with
+#   {"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}
+# and that type is the signal. An unknown model and a contributor model are both plain
+# `server_error`s, told apart only by the message:
+#   "Upstream request failed: Model is unavailable."
+#   "This Go model trains on request data. Allow paid endpoints that train..."
+# These three cannot succeed on a retry; every other error takes the normal retry -> fallback path.
+_GO_PROTOCOL_TYPE = "ModelProtocolUnsupported"
+_GO_UNKNOWN_MODEL_MSG = "model is unavailable."
+_GO_CONTRIBUTOR_MSG = "trains on request data"
 
 
-def _is_unknown_model_error(body: str) -> bool:
-    return bool(_UNKNOWN_MODEL_RE.search(body)) and not _REQUEST_LIMIT_RE.search(body)
+def _go_error_fields(e: Exception) -> tuple[str, str]:
+    """(error.type, error.message) of a Go error. The SDK keeps the inner `error` object as
+    `e.body` and its type as `e.type`; the message falls back to the exception text."""
+    body = getattr(e, "body", None)
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        body = body["error"]
+    if not isinstance(body, dict):
+        body = {}
+    etype = body.get("type") or getattr(e, "type", None) or ""
+    message = body.get("message") or str(e)
+    return str(etype), str(message)
+
+
+def _opencode_go_error(e: Exception, model: str):
+    """The NonRetryableLLMError a Go failure maps to, or None for the normal retry path."""
+    etype, message = _go_error_fields(e)
+    if etype == _GO_PROTOCOL_TYPE:
+        return NonRetryableLLMError(
+            f"OpenCode Go serves {model} on another protocol, not chat completions — pick another model")
+    # Unknown and contributor models share the type `server_error`, so here the message decides.
+    if etype in ("", "server_error"):
+        lowered = message.lower()
+        if _GO_UNKNOWN_MODEL_MSG in lowered:
+            return NonRetryableLLMError(
+                f"OpenCode Go does not know the model {model} (\"Model is unavailable.\") — "
+                "check the name against the Model catalog")
+        if _GO_CONTRIBUTOR_MSG in lowered:
+            return NonRetryableLLMError(
+                f"{model} is an OpenCode Go contributor model that trains on request data; Go refuses "
+                "it until paid endpoints that train are allowed in your OpenCode account — allow "
+                "that there or pick another model")
+    return None
 
 
 async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, max_tokens: int,
@@ -963,16 +1028,12 @@ async def _call_opencode_go(prompt: str, system: str, model: str, api_key: str, 
         raise
     except Exception as e:
         status = getattr(e, "status_code", None)
-        body = str(e)
-        if status == 401 or "Missing API key" in body:
+        if status == 401 or "Missing API key" in str(e):
             raise NonRetryableLLMError(
                 "OpenCode Go needs an API key — paste it under Settings › Models") from e
-        if status in (400, 404) and _is_unknown_model_error(body):
-            # Go serves only some models on /chat/completions; GPT and Grok use /responses, and
-            # MiniMax and Qwen use the Anthropic /messages API.
-            raise NonRetryableLLMError(
-                f"OpenCode Go does not serve '{model}' on the chat/completions endpoint — pick a "
-                f"model whose endpoint is /chat/completions (GPT, Grok, MiniMax and Qwen use others)") from e
+        mapped = _opencode_go_error(e, model)
+        if mapped is not None:
+            raise mapped from e
         raise
 
 

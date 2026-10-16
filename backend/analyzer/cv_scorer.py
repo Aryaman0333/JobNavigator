@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from backend.analyzer.llm_client import call_llm
+from backend.analyzer.llm_client import call_llm, llm_feature
 from backend.analyzer.llm_logger import log_llm_call
 from backend.analyzer.model_json import UNPARSEABLE_MESSAGE, parse_model_json
 from backend.models.db import SessionLocal, Job
@@ -393,9 +393,10 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
         # Honor the prompt_caching_enabled setting — setting cached_prefix=None disables
         # the cache_control block on the Anthropic request, so caching is fully off.
         effective_prefix = cached_prefix if caching_enabled else None
-        resp = await call_llm(user_prompt, system_msg, max_tokens, cached_prefix=effective_prefix,
-                              provider=provider_for_log, model=model_for_log, api_key=scoring_api_key,
-                              effort=scoring_effort)
+        with llm_feature("scoring"):
+            resp = await call_llm(user_prompt, system_msg, max_tokens, cached_prefix=effective_prefix,
+                                  provider=provider_for_log, model=model_for_log, api_key=scoring_api_key,
+                                  effort=scoring_effort)
         text = resp["text"]
         usage = resp.get("usage", usage)
         # If call_llm fell back to the secondary pair, log what actually ran.
