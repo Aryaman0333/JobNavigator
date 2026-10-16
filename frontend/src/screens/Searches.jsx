@@ -53,6 +53,7 @@ const MODES = {
   freehire: ['FREEHIRE.ME', 'sm-freehire'],
   apify: ['APIFY', 'sm-apify'],
   caribbeanjobs: ['CARIBBEANJOBS.COM', 'sm-caribbeanjobs'],
+  trulyremote: ['TRULYREMOTEWORK.COM', 'sm-trulyremote'],
   linkedin_extension: ['EXTENSION', 'sm-extension'],
   extension: ['EXTENSION', 'sm-extension'],
 }
@@ -64,13 +65,14 @@ const MODE_OPTIONS = [
   ['freehire', 'freehire.me'],
   ['apify', 'Apify'],
   ['caribbeanjobs', 'CaribbeanJobs.com'],
+  ['trulyremote', 'TrulyRemoteWork.com'],
 ]
 // /monitor/active carries every background job; only POST /searches/{id}/run
 // tags its run with job_type 'search_run' (routes_searches.py) — filter on that.
 const isSearchRun = (r) => r?.job_type === 'search_run'
 const EXT_MODES = ['linkedin_extension', 'extension']
 const isExt = (m) => EXT_MODES.includes(m)
-const TESTABLE = ['keyword', 'levels_fyi', 'linkedin_personal', 'jobright', 'freehire', 'apify', 'caribbeanjobs']
+const TESTABLE = ['keyword', 'levels_fyi', 'linkedin_personal', 'jobright', 'freehire', 'apify', 'caribbeanjobs', 'trulyremote']
 // Keyword sources have no account-based "recommended" feed, so a term or a pre-filtered URL is
 // what there is to search for. Run/Test are blocked until one is set, rather than launching a
 // run that quietly finds nothing.
@@ -116,6 +118,7 @@ const noteFor = (mode) => {
   if (mode === 'jobright') return ['Recommendations from your Jobright.ai account. Enter a search term to search instead. Credentials are in Settings › Accounts.', 'sm-jobright']
   if (mode === 'apify') return ['Runs Apify actors with the API key from Settings › Apify. Apify bills your account for each result: Results wanted (at most 200) caps every board on every run, each run carries a spend cap and stops after 15 minutes, and Test fetches 20 jobs per board at most. A new Apify search starts paused: check the boards, then press Paused to resume it.', 'sm-apify']
   if (mode === 'caribbeanjobs') return ['Set the filters on caribbeanjobs.com and paste the search URL, or enter a term. The description of each result is read from its own page; Test reads at most 20 of those pages. A salary in a local currency is kept as text in the description, not as a number.', 'sm-caribbeanjobs']
+  if (mode === 'trulyremote') return ['Reads TrulyRemoteWork.com’s full corpus of worldwide-remote roles. Every listing is remote with no location restriction, so you narrow it with the title filters below.', 'sm-trulyremote']
   if (mode === 'extension') return ['Jobs come from the “Save to Job Feed” button on any website. The filters and auto-score depth below apply to each job as it is saved.', 'sm-levels']
   if (mode === 'linkedin_extension') return ['Jobs are captured while you browse linkedin.com/jobs/collections pages. The filters below are applied on import.', 'sm-levels']
   return null
@@ -159,6 +162,7 @@ const summaryOf = (s, boards = []) => {
     if (s.direct_url) bits.push(short(s.direct_url))
     return (bits.join(' · ') || 'caribbeanjobs.com') + last
   }
+  if (m === 'trulyremote') return `Worldwide remote · max ${s.results_wanted || 100}${last}`
   return `${short(s.direct_url) || 'no URL'}${last}`
 }
 
@@ -355,6 +359,10 @@ function ConfigForm({ d, set }) {
       <Cell key="url" label="caribbeanjobs.com URL · required without a term" mono span={2} value={d.direct_url} onChange={(v) => set({ direct_url: v })}
         placeholder="https://www.caribbeanjobs.com/ShowResults.aspx?Keywords=engineer&Location=123"
         sub="Keywords, Location, Category and job type are taken from the URL as is" />,
+      <Cell key="rw" label="Results wanted · 1–500" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
+    )
+  } else if (m === 'trulyremote') {
+    fields.push(
       <Cell key="rw" label="Results wanted · 1–500" mono type="number" min={BOUNDS.results_wanted[0]} max={BOUNDS.results_wanted[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
     )
   }
@@ -956,6 +964,9 @@ function TestModal({ test, tab, setTab, onClose }) {
   } else if (cfg.mode === 'caribbeanjobs') {
     if (cfg.search_term) params.push(`“${cfg.search_term}”`)
     if (cfg.direct_url) params.push(short(cfg.direct_url, 60))
+    if (cfg.results_wanted) params.push(`${cfg.results_wanted} wanted`)
+  } else if (cfg.mode === 'trulyremote') {
+    params.push('worldwide remote')
     if (cfg.results_wanted) params.push(`${cfg.results_wanted} wanted`)
   } else {
     if (cfg.location) params.push(cfg.location)
