@@ -30,12 +30,15 @@ Everything that scores, tailors or writes needs a language model. Choose one pri
 | Claude API | an Anthropic API key | per token |
 | OpenAI | an OpenAI API key | per token |
 | OpenRouter | an OpenRouter key; hundreds of models, live search | per token |
-| Ollama | Ollama running on the host with a pulled model, no key | free |
+| Ollama | Ollama running on the host with a pulled model, no key; see the note below | free |
+| LM Studio | LM Studio's local server running on the host, no key; see the note below | free |
 | Claude Code | a Claude Pro/Max subscription, see below | subscription |
 | Codex CLI | a ChatGPT subscription, see below | subscription |
 | OpenCode Go | a Go subscription key; OpenAI-compatible endpoint, no login | subscription |
 
 Pick the model from the list (or search the provider's catalog under Model catalog). Save.
+
+**Ollama or LM Studio on the host, backend in Docker.** Inside the container `localhost` is the container itself, so the default addresses (`http://localhost:11434` for Ollama, `http://localhost:1234/v1` for LM Studio) do not reach your host. Set the address under **Settings › AI › Models** (the Ollama and LM Studio address boxes appear while some model uses that provider), e.g. `http://host.docker.internal:11434` for Ollama and `http://host.docker.internal:1234/v1` for LM Studio, or put `OLLAMA_BASE_URL` / `LMSTUDIO_BASE_URL` in `.env` and run `docker compose up -d backend`. The addresses are install-wide: only the owner edits them.
 
 **Subscriptions instead of API keys.** Both CLIs are installed in the backend image, so you log in through the container:
 

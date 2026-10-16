@@ -73,7 +73,7 @@ Scrape career pages and aggregators, score jobs against your résumés with an L
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           RESUME + COVER LETTER                             │
 │                                                                             │
-│   Templates ── 8 resume + 8 cover-letter, auto-discovered (add your own!)   │
+│   Templates ── 9 resume + 8 cover-letter, auto-discovered (add your own!)   │
 │   AI Tailor ── Rewrites resume bullets/keywords from the scoring report     │
 │   AI Letter ── Job-specific cover letters from resume + JD, voice presets   │
 │   Export ───── Live-preview PDF via Playwright with export                  │
@@ -99,7 +99,7 @@ Scrape career pages and aggregators, score jobs against your résumés with an L
 |---------|-------------|
 | **Discovery** | Career pages (Playwright + 11 ATS handlers), JobSpy (LinkedIn, Indeed, ZipRecruiter, Google), Apify (Indeed, LinkedIn, Glassdoor, Greenhouse/Lever/Ashby/Workday search; not on the Apify Creator plan), LinkedIn collections, Levels.fyi, Jobright.ai, freehire.me, CaribbeanJobs.com, TrulyRemoteWork.com, the Chrome extension |
 | **Scoring** | Claude, OpenAI, OpenRouter, Ollama, Claude Code, Codex CLI, Antigravity CLI or OpenCode Go; live model search, a model per feature; Light (score) or Full (report, keyword coverage, requirement mapping) against every base résumé; prompt caching on Anthropic |
-| **Résumés** | Structured base résumés, tailoring per job with a review step, 8 PDF templates (drop in your own), tracked links that record opens |
+| **Résumés** | Structured base résumés, tailoring per job with a review step, 9 PDF templates (drop in your own) and a Word (.docx) export, an opt-in page footer (name, job title, company) on tailored copies, tracked links that record opens |
 | **Cover letters** | Generated from the paired résumé and persona; voice and length presets, 8 templates, PDF |
 | **Dedup** | URL identity hash (tracking params stripped) plus company + title hash across sources |
 | **Jobs** | Filters, sorting, keyboard shortcuts (`?`), full report, collapsible analysis pane, bulk actions with undo, posting preview |
