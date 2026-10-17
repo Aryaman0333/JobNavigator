@@ -136,12 +136,12 @@ Upgrading from 2.x: back up first, then follow [the 3.0 upgrade steps](CHANGELOG
 
 Any API key goes straight into Settings › AI. A subscription needs one login inside the container first (OpenCode Go needs none):
 
-| Subscription | Once after the containers start | Then pick |
-|---|---|---|
-| OpenCode Go | nothing: paste the Go API key under Settings › AI | **OpenCode Go** |
-| Claude Pro / Max | `docker compose exec backend claude setup-token`, put the printed token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`, then `docker compose up -d backend` | **Claude Code** |
-| ChatGPT | `docker compose exec backend codex login --device-auth` (check with `codex login status`; the login lives in the `codex_auth` volume) | **Codex CLI** |
-| Google Antigravity | `docker compose exec -it backend agy` — the container has no browser, so the CLI prints a URL and asks for the code it shows (the login lives in the `antigravity_auth` volume) | **Antigravity CLI** |
+| Subscription | Once after the containers start |
+|---|---|
+| Claude Pro / Max | `docker compose exec backend claude setup-token`, put the printed token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`, then `docker compose up -d backend` |
+| ChatGPT | `docker compose exec backend codex login --device-auth` (check with `codex login status`; the login lives in the `codex_auth` volume) |
+| Google Antigravity | `docker compose exec -it backend agy` — the container has no browser, so the CLI prints a URL and asks for the code it shows (the login lives in the `antigravity_auth` volume) |
+| OpenCode Go | nothing: paste the Go API key under Settings › AI |
 
 No pay-per-token key needed for any of them. A plan limit fails over to the fallback provider without retrying. With several accounts, `docker compose exec backend python -m backend.scripts.cli_login <codex|agy|claude> "<account>"` prints a member's own login command.
 
