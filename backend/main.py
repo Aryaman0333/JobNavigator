@@ -42,6 +42,10 @@ for _noisy in ("httpx", "httpcore"):
 async def lifespan(app: FastAPI):
     """Startup: create tables, seed data, start scheduler."""
     logger.info("Starting JobNavigator backend...")
+    # First, so the line is in the log even if the migration below fails: code
+    # pulled without pulling or rebuilding the image runs in the old image.
+    from backend.image_check import log_image_status
+    log_image_status()
     # Boot DDL waits for locks without the app's lock_timeout (S2-01): a restart during
     # a long pg_dump must wait for it, not fail.
     from backend.models.db import lock_timeout_exempt
@@ -105,7 +109,7 @@ OPENAPI_TAGS = [
     {"name": "system", "description": "Health check and system info"},
 ]
 
-APP_VERSION = "3.0"  # released version (major.minor); shown in Settings and on /health
+from backend.version import APP_VERSION  # noqa: E402 — released version (major.minor); Settings and /health
 
 app = FastAPI(
     title="JobNavigator API",
@@ -638,8 +642,19 @@ def health_check():
     Deliberately touches no database: it is the one endpoint that must answer
     while the pool is drained, and it is in _PUBLIC_PREFIXES so the auth
     middleware's settings read is skipped too.
+
+    `image_outdated` is true when the image's packages (or build stamp) do not
+    match the mounted code; `image_message` then says what differs and how to fix
+    it. Computed once per process (image_check.py).
     """
-    return {"status": "ok", "service": "JobNavigator", "version": APP_VERSION}
+    from backend.image_check import image_status
+    status = image_status()
+    return {
+        "status": "ok", "service": "JobNavigator", "version": APP_VERSION,
+        "image_outdated": status["image_outdated"],
+        "image_message": status["image_message"],
+        "image_details": status["image_details"],
+    }
 
 
 async def _tracer_click_and_redirect(token: str, request: Request):

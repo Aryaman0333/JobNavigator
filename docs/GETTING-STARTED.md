@@ -166,4 +166,4 @@ docker compose exec -T db sh -c 'pg_restore -U $POSTGRES_USER -d $POSTGRES_DB --
 
 To try a copy of your data elsewhere without it scraping, mailing or backing up as the real install, set `JN_SCHEDULER_DISABLED=1` in that copy's `.env`; the scheduler then does not start (manual runs still work).
 
-Update: `git pull && docker compose pull && docker compose up -d` (or `--build` if you build from source). Tables and settings migrate on startup; nothing to run by hand.
+Update: `git pull && docker compose pull && docker compose up -d` (or `--build` if you build from source). Tables and settings migrate on startup; nothing to run by hand. `git pull` alone is not enough — the images must be pulled or rebuilt; an image older than the code is reported in the backend log, on `/health` (`image_outdated`) and in the dashboard's health line.

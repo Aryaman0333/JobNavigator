@@ -4,6 +4,16 @@
 
 Scrape career pages and aggregators, score jobs against your résumés with an LLM, tailor résumés and cover letters, auto-fill applications from your persona, get Telegram alerts, track every application. One install serves one person or a household: up to five accounts, each with its own jobs, résumés, settings and optional PIN, sharing one scrape.
 
+**Updating from 2.x**
+
+```bash
+docker compose exec -T db sh -c 'pg_dump -U $POSTGRES_USER $POSTGRES_DB' > backups/pre-3.0.sql   # back up first
+git pull
+docker compose pull && docker compose up -d      # or: docker compose up --build -d
+```
+
+Then reload the extension (`chrome://extensions` › reload). `git pull` alone is not enough — the images must be pulled or rebuilt. Full steps: [Upgrading from 2.x](CHANGELOG.md#upgrading-from-2x).
+
 <p align="center">
   <img src="docs/demo.gif" alt="JobNavigator — feed, scoring, tailoring, applications" width="100%">
 </p>
@@ -129,8 +139,6 @@ docker compose pull && docker compose up -d      # prebuilt images from GHCR
 ```
 
 Open `http://localhost`. To build from source instead (or on ARM), use `docker compose up --build -d`; every release is also published as `ghcr.io/vesaias/jobnavigator-backend` and `-frontend`, pinnable with `JN_IMAGE_TAG=3.0` in `.env`. On first run sign in with a blank key, then set one in Settings › System › Advanced.
-
-Upgrading from 2.x: back up first, then follow [the 3.0 upgrade steps](CHANGELOG.md#upgrading-from-2x).
 
 **2. Connect a model**
 

@@ -8,6 +8,7 @@ import api, { authFailure } from './api'
 import { useTheme, themeAttrs, appearanceTitle, MODE_ICON } from './theme'
 import { Avatar, CheckGlyph, Helper, Menu, MenuHead, MenuItem, kb } from './ui'
 import { useToasts, ToastStack } from './Toast'
+import { useVersionWarning } from './versionCheck'
 import {
   useAccounts, switchAccount, finishSwitch, openPicker, takeSwitchedNote,
   switchShortcutIndex, roleLabel, SWITCH_MOD, MAX_SHORTCUTS, MAX_ACCOUNTS,
@@ -220,6 +221,10 @@ export default function Shell() {
   // all read it, so a click here moves every one without a reload.
   const look = useTheme()
   const appearanceTip = appearanceTitle(look.mode)
+  // backend image older than its code, or this dashboard on another release than
+  // the backend: an error toast once per session + the health line below
+  const versionToasts = useToasts()
+  const versionWarn = useVersionWarning(__APP_VERSION__, versionToasts.push)
   const [needAccount, setNeedAccount] = useState(false)
   useEffect(() => {
     const on = () => setNeedAccount(true)
@@ -283,11 +288,13 @@ export default function Shell() {
   useEffect(() => { try { localStorage.setItem(CACHE_KEY, JSON.stringify({ counts, warn, health })) } catch {} }, [counts, warn, health])
 
   const failing = (warn.companies || 0) + (warn.searches || 0)
-  const healthy = !down && failing === 0 && health?.status !== 'failed'
+  const healthy = !down && !versionWarn && failing === 0 && health?.status !== 'failed'
   // rail gives this line ~166px at 11.5px; unhealthy variant drops the
   // timestamp rather than ellipsing away the part that matters
   const healthText = down
     ? 'Backend unreachable'
+    : versionWarn
+    ? versionWarn.short
     : failing
       ? `${failing} source${failing === 1 ? ' needs' : 's need'} attention`
       : health
@@ -299,6 +306,8 @@ export default function Shell() {
   const lastSweep = health ? (ago(health.finished_at || health.started_at) || '—') : 'no scrape run recorded yet'
   const healthTip = down
     ? 'The dashboard could not reach the backend. Nothing below is live — check that the server is running.'
+    : versionWarn
+    ? versionWarn.message
     : failing
     ? `${nC} compan${nC === 1 ? 'y' : 'ies'} and ${nS} search${nS === 1 ? '' : 'es'} need attention. Click to open Run history.`
     : health?.status === 'failed'
@@ -421,6 +430,7 @@ export default function Shell() {
             of painting "Couldn't load …" for the 401s it got; picking reloads the page */}
         {needAccount ? null : <Outlet />}
       </main>
+      {versionToasts.toasts.length > 0 && <ToastStack toasts={versionToasts.toasts} onClose={versionToasts.dismiss} />}
     </div>
   )
 }

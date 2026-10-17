@@ -1421,6 +1421,8 @@ def _content_disposition(stem: str, ext: str) -> str:
 # follows the PDF's opt-in switch (`_resume_footer_text`).
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DOCX_MISSING_DETAIL = ("python-docx is missing from this image — pull or rebuild it: "
+                       "`docker compose pull && docker compose up -d`, or `docker compose up --build -d`.")
 
 # XML 1.0 forbids the C0 controls other than tab, LF and CR (plus U+FFFE/U+FFFF and lone
 # surrogates); lxml refuses them, and PDF imports can leave a \x0b or \x0c in the text.
@@ -1611,6 +1613,10 @@ def export_docx(resume_id: str, template: Optional[str] = None, format: Optional
     data = _rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db)
     try:
         content = _build_docx(data, fmt, _resume_footer_text(db, resume))
+    except ImportError as error:
+        # 3.0 code in a pre-3.0 image (git pull without pulling or rebuilding it)
+        logger.error("DOCX export unavailable, python-docx cannot be imported: %s", error)
+        raise HTTPException(status_code=503, detail=DOCX_MISSING_DETAIL)
     except Exception as error:
         logger.error("DOCX generation failed: %s", error)
         raise HTTPException(status_code=500, detail="DOCX generation failed")
