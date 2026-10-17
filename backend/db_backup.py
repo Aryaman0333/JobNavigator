@@ -62,7 +62,8 @@ def prune(prefix: str, keep: int = KEEP) -> int:
     return n
 
 
-def run_pg_dump(prefix: str = ROTATION_PREFIX, suffix: str = "", rotate: bool = True) -> dict:
+def run_pg_dump(prefix: str = ROTATION_PREFIX, suffix: str = "", rotate: bool = True,
+                timeout: int = 300) -> dict:
     """Dump the database to `<BACKUP_DIR>/<prefix><timestamp><suffix>.sql`.
 
     Returns {"path", "file", "size_mb", "pruned"}; raises RuntimeError when pg_dump fails
@@ -87,7 +88,7 @@ def run_pg_dump(prefix: str = ROTATION_PREFIX, suffix: str = "", rotate: bool = 
         ["pg_dump", "-h", parsed.hostname, "-p", str(parsed.port or 5432),
          "-U", parsed.username, "-d", parsed.path.lstrip("/"),
          "-f", raw_file],
-        env=env, capture_output=True, text=True, timeout=300
+        env=env, capture_output=True, text=True, timeout=timeout
     )
     if result.returncode != 0:
         if os.path.exists(raw_file):

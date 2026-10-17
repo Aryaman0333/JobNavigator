@@ -46,6 +46,10 @@ async def lifespan(app: FastAPI):
     # pulled without pulling or rebuilding the image runs in the old image.
     from backend.image_check import log_image_status
     log_image_status()
+    # Before ANY migration: a release change backs the database up first, and a
+    # failed backup stops startup here (upgrade_backup.py; JN_SKIP_UPGRADE_BACKUP=1 skips).
+    from backend.upgrade_backup import prepare_upgrade, mark_booted
+    prepare_upgrade()
     # Boot DDL waits for locks without the app's lock_timeout (S2-01): a restart during
     # a long pg_dump must wait for it, not fail.
     from backend.models.db import lock_timeout_exempt
@@ -87,6 +91,12 @@ async def lifespan(app: FastAPI):
         await refresh_openrouter_prices(force=True)
     except Exception as e:
         logger.warning(f"OpenRouter price warmup failed: {e}")
+
+    # Booted: the database is on this release now (install-level marker, see upgrade_backup.py).
+    try:
+        mark_booted()
+    except Exception as e:  # the next boot then backs up once more; not worth failing over
+        logger.warning(f"Could not record the release marker: {e}")
 
     yield
 

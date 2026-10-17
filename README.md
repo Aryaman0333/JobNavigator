@@ -12,7 +12,7 @@ git pull
 docker compose pull && docker compose up -d      # or: docker compose up --build -d
 ```
 
-Then reload the extension (`chrome://extensions` › reload). `git pull` alone is not enough — the images must be pulled or rebuilt. Full steps: [Upgrading from 2.x](CHANGELOG.md#upgrading-from-2x).
+Then reload the extension (`chrome://extensions` › reload). 3.0 backs up the database automatically before upgrading (`backups/pre_upgrade_*.sql`); a manual backup is still recommended. `git pull` alone is not enough — the images must be pulled or rebuilt. Full steps: [Upgrading from 2.x](CHANGELOG.md#upgrading-from-2x).
 
 <p align="center">
   <img src="docs/demo.gif" alt="JobNavigator — feed, scoring, tailoring, applications" width="100%">
