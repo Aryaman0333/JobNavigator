@@ -4,16 +4,6 @@
 
 Scrape career pages and aggregators, score jobs against your résumés with an LLM, tailor résumés and cover letters, auto-fill applications from your persona, get Telegram alerts, track every application. One install serves one person or a household: up to five accounts, each with its own jobs, résumés, settings and optional PIN, sharing one scrape.
 
-**Updating from 2.x**
-
-```bash
-docker compose exec -T db sh -c 'pg_dump -U $POSTGRES_USER $POSTGRES_DB' > backups/pre-3.0.sql   # back up first
-git pull
-docker compose pull && docker compose up -d      # or: docker compose up --build -d
-```
-
-Then reload the extension (`chrome://extensions` › reload). 3.0 backs up the database automatically before upgrading (`backups/pre_upgrade_*.sql`); a manual backup is still recommended. `git pull` alone is not enough — the images must be pulled or rebuilt. Full steps: [Upgrading from 2.x](CHANGELOG.md#upgrading-from-2x).
-
 <p align="center">
   <img src="docs/demo.gif" alt="JobNavigator — feed, scoring, tailoring, applications" width="100%">
 </p>
@@ -26,6 +16,20 @@ Then reload the extension (`chrome://extensions` › reload). 3.0 backs up the d
   <br>
   <sub>Five themes, each in light and dark: Paper (above), Green Paper, Stone, V1 Style, Windows 98.</sub>
 </p>
+
+**Updating from 2.x**
+
+Full steps: [Upgrading from 2.x](CHANGELOG.md#upgrading-from-2x)
+
+Short version:
+```bash
+docker compose exec -T db sh -c 'pg_dump -U $POSTGRES_USER $POSTGRES_DB' > backups/pre-3.0.sql   # backup
+git pull
+docker compose pull && docker compose up -d      # or: docker compose up --build -d
+```
+
+Then reload the extension (`chrome://extensions` › reload). 3.0 backs up the database automatically before upgrading (`backups/pre_upgrade_*.sql`); a manual backup is still recommended. 
+`git pull` alone is not enough — the images must be pulled or rebuilt.
 
 ## How It Works
 
@@ -190,23 +194,13 @@ Install: `chrome://extensions` › Developer mode › Load unpacked › `extensi
 | AI | Anthropic SDK, OpenAI SDK, Ollama, LM Studio, Claude Code CLI, Codex CLI, Antigravity CLI, OpenCode Go endpoint |
 | Extension | Chrome Manifest V3 |
 
-## Contributing
-
-PRs welcome, see [CONTRIBUTING.md](CONTRIBUTING.md). Good first ones: an ATS handler, a résumé template, a theme.
-
 ## Backups
 
 Scheduled `pg_dump`s land in `backups/` (five kept). They contain the settings table, API keys included: treat them like `.env`. The folder is git-ignored.
 
-## Security
-
-Found a vulnerability? See [SECURITY.md](SECURITY.md). Please don't open public issues for security bugs.
-
-## Privacy
+## Disclaimer
 
 Self-hosted. Your résumés, jobs and credentials stay on your machine; the only outside party is the AI provider you configure.
-
-## Disclaimer
 
 Personal use. Not affiliated with any job platform; some scrapers are off by default and you are responsible for the terms of the sites you use. See [LEGAL_DISCLAIMER.md](LEGAL_DISCLAIMER.md).
 
