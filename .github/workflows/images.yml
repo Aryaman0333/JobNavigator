@@ -1,7 +1,7 @@
 name: Images
 
 # Builds the backend and frontend images and publishes them to GHCR on every
-# version tag (v2.1.0 → :2.1.0, :2.1 and :latest) so a clone can `docker compose
+# version tag (v3.0.0 → :3.0.0, :3.0 and :latest) so a clone can `docker compose
 # pull` instead of building Playwright's Chromium for five minutes. `workflow_dispatch`
 # publishes :edge from whatever ref it runs on.
 on:
