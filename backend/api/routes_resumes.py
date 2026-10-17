@@ -1426,7 +1426,8 @@ DOCX_MISSING_DETAIL = ("python-docx is missing from this image — pull or rebui
 
 # XML 1.0 forbids the C0 controls other than tab, LF and CR (plus U+FFFE/U+FFFF and lone
 # surrogates); lxml refuses them, and PDF imports can leave a \x0b or \x0c in the text.
-_XML_ILLEGAL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿\ud800-\udfff]")
+_XML_ILLEGAL_CHARS = "".join(map(chr, (*range(0x09), 0x0b, 0x0c, *range(0x0e, 0x20), 0xfffe, 0xffff)))
+_XML_ILLEGAL_RE = re.compile("[" + re.escape(_XML_ILLEGAL_CHARS) + r"\ud800-\udfff]")
 
 # Link schemes a Word hyperlink may carry; anything else is printed as plain text.
 _DOCX_LINK_SCHEMES = ("http", "https", "mailto", "tel")

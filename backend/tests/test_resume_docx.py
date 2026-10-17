@@ -5,6 +5,7 @@ section order, and the footer only when the copy's PDF footer switch is on.
 """
 import io
 import uuid
+from urllib.parse import urlparse
 
 import docx
 import pytest
@@ -156,7 +157,8 @@ def test_phone_links_stay_tel_links(client, test_db):
     _, document = _fetch(client, _resume(test_db, data={**DATA, "header": header}))
     links = _links(document)
     assert "tel:+15550100" in links and "tel:+15550101" in links
-    assert "https://dana.dev" in links
+    dana = [urlparse(t) for t in links if urlparse(t).hostname == "dana.dev"]
+    assert [(u.scheme, u.path) for u in dana] == [("https", "")]
     assert not any(t.startswith("https://tel:") or t.startswith("javascript:") for t in links)
     assert "x" in document.paragraphs[1].text   # an unsafe scheme is printed, not linked
 
