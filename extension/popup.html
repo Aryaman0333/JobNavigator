@@ -126,7 +126,8 @@
   .conn-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--green-dot); }
   .conn-dot.bad { background: var(--red-dot); }
   .conn-tx { font-size: 11px; color: var(--muted); }
-  .show-btn { padding: 0 12px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--ink2); cursor: pointer; }
+  /* min-height = the .in field (36px): a button outside a field row (Saves to › Change) no longer shrinks to its text */
+  .show-btn { padding: 0 12px; min-height: 36px; box-sizing: border-box; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--ink2); cursor: pointer; }
   .show-btn:hover { background: var(--hover); }
 
   /* account selector (MT-18) */
