@@ -126,9 +126,10 @@
   .conn-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--green-dot); }
   .conn-dot.bad { background: var(--red-dot); }
   .conn-tx { font-size: 11px; color: var(--muted); }
-  /* min-height = the .in field (36px): a button outside a field row (Saves to › Change) no longer shrinks to its text */
-  .show-btn { padding: 0 12px; min-height: 36px; box-sizing: border-box; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--ink2); cursor: pointer; }
+  .show-btn { padding: 0 12px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--ink2); cursor: pointer; }
   .show-btn:hover { background: var(--hover); }
+  /* the right-hand buttons of stacked fields (API key › Show, Saves to › Change) share one width so they line up */
+  .side-btn { flex: 0 0 68px; width: 68px; box-sizing: border-box; justify-content: center; }
 
   /* account selector (MT-18) */
   .adot { width: 10px; height: 10px; border-radius: 999px; background: var(--border-h); flex: 0 0 10px; }
@@ -339,7 +340,7 @@
         <div class="lbl">API key</div>
         <div style="display:flex; gap:8px">
           <input id="apiKey" type="password" class="in mono" style="flex:1; min-width:0" spellcheck="false">
-          <div class="show-btn" id="showKey">Show</div>
+          <div class="show-btn side-btn" id="showKey">Show</div>
         </div>
         <div class="conn">
           <div class="conn-dot" id="connDot"></div>
@@ -348,11 +349,16 @@
       </div>
       <!-- MT-18: only shown when the server has two or more accounts -->
       <div class="field hide" id="acctField">
-        <div class="lbl">Saves to</div>
-        <div style="display:flex; align-items:center; gap:8px">
-          <span class="adot" id="acctDot"></span>
-          <div id="acctName" style="flex:1; min-width:0; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></div>
-          <div class="show-btn" id="acctChange">Change</div>
+        <!-- Change spans the label and the name, so the row stays as tall as its text -->
+        <div style="display:flex; align-items:stretch; gap:8px">
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:5px">
+            <div class="lbl">Saves to</div>
+            <div style="display:flex; align-items:center; gap:8px">
+              <span class="adot" id="acctDot"></span>
+              <div id="acctName" style="flex:1; min-width:0; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></div>
+            </div>
+          </div>
+          <div class="show-btn side-btn" id="acctChange">Change</div>
         </div>
         <div class="conn-tx hide" id="acctNote"></div>
         <div id="acctList" class="hide" style="display:flex; flex-direction:column; gap:4px"></div>
