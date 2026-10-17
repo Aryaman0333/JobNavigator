@@ -8,7 +8,8 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **OpenCode Go returned no text on a reasoning model:** Go serves several models that reason by default and has no reasoning-effort setting, so a scoring call (600 tokens) spent the whole output cap on reasoning and failed with "used the whole output cap on reasoning and returned no text". A Go call now always gets the same output-budget headroom the Claude API calls get; the Go models accept the larger cap.
 
 ## [3.0] — 2026-10-17
 
