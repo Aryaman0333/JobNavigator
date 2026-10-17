@@ -486,7 +486,7 @@ def test_the_after_amount_patterns_keep_their_matches(text):
     end = len("$150,000")
     old_usd = re.compile(r"\s*\(?\s*USD\b")
     old_code = re.compile(r"\s*\(?\s*(?:" + se._NON_USD_CODES + r")\b")
-    assert bool(se._USD_AFTER_RE.match(text, end)) == bool(old_usd.match(text, end))
+    assert se._usd_after(text[end:end + 40]) == bool(old_usd.match(text, end))
     assert bool(se._CODE_AFTER_RE.match(text, end)) == bool(old_code.match(text, end))
 
 

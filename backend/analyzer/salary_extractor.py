@@ -180,7 +180,6 @@ _SHORT_PERIOD_RE = re.compile(r"hour|hr|da(?:y|ily)|week", re.IGNORECASE)
 _CODE_BEFORE_RE = re.compile(r"\b(?:" + _NON_USD_CODES + r"|BDS|BD|AU|NZ|HK|SG|MX|NT|TT|EC|BZ|CI)\s*$")
 # "\s*\(?\s*X" written so a run of spaces has one way to match (no quadratic backtracking).
 _CODE_AFTER_RE = re.compile(r"\s*(?:\(\s*)?(?:" + _NON_USD_CODES + r")\b")
-_USD_AFTER_RE = re.compile(r"\s*(?:\(\s*)?USD\b")
 
 
 def _period_before(text: str, start: int) -> bool:
@@ -228,7 +227,15 @@ def _foreign_near(text: str, start: int, end: int) -> bool:
 def _names_usd(text: str, start: int, end: int) -> bool:
     """True when the amount at text[start:end] says US dollars explicitly (USD, US$)."""
     return bool(_USD_RE.search(text[start:end]) or _usd_before(text[max(0, start - 6):start])
-                or _USD_AFTER_RE.match(text, end))
+                or _usd_after(text[end:end + 40]))
+
+
+def _usd_after(chunk: str) -> bool:
+    """"USD" as a word right after the amount, optionally inside "("; a string check, not a regex."""
+    t = chunk.lstrip()
+    if t.startswith("("):
+        t = t[1:].lstrip()
+    return t.startswith("USD") and not (len(t) > 3 and (t[3].isalnum() or t[3] == "_"))
 
 
 def _usd_before(chunk: str) -> bool:
