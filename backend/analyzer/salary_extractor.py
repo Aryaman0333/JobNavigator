@@ -170,6 +170,8 @@ _PERIOD_BEFORE_RE = re.compile(
     re.IGNORECASE,
 )
 _CLAUSE_BREAK_RE = re.compile(r"[.;!?|,](?:\s|$)|\n|\d")
+# Hour, day and week words (not month: a monthly figure can reach the yearly floor).
+_SHORT_PERIOD_RE = re.compile(r"hour|hr|da(?:y|ily)|week", re.IGNORECASE)
 
 # A non-USD code or a spaced country prefix right before the "$" ("CAD $150,000", "TT $180,000";
 # not "CA $", which is far more often California), or a code right after the amount.
@@ -180,7 +182,9 @@ _USD_AFTER_RE = re.compile(r"\s*\(?\s*USD\b")
 
 
 def _period_before(text: str, start: int) -> bool:
-    """True when a shorter period is named earlier in the amount's own clause."""
+    """True when a shorter period is named earlier in the amount's own clause. An hour, day or
+    week word inside a parenthetical that closes before the amount is an aside, not the amount's
+    period: "(Exempt or non-exempt hourly rate)role ranges from $140,000 to $160,000"."""
     before = text[max(0, start - 60):start]
     breaks = list(_CLAUSE_BREAK_RE.finditer(before))
     if breaks:
@@ -191,7 +195,11 @@ def _period_before(text: str, start: int) -> bool:
             if tail:
                 before = before[tail.end():]
     before = _SCHEDULE_RE.sub(" ", before)
-    return bool(_PERIOD_BEFORE_RE.search(before))
+    for m in _PERIOD_BEFORE_RE.finditer(before):
+        paren = re.search(r"[()]", before[m.end():])
+        if not (paren and paren.group() == ")" and _SHORT_PERIOD_RE.search(m.group())):
+            return True
+    return False
 
 
 def _not_yearly(text: str, start: int, end: int, low: int) -> bool:
@@ -226,8 +234,11 @@ def _to_int(amount: str) -> int:
 
 
 # A "$" that is not part of a prefixed dollar (HK$, A$, TT$): USD, US$, USD$ or a bare "$".
-_D = r"(?:\bUSD?\s?\$|(?<![A-Za-z])\$)"
-_D_OPT = r"(?:US\s?\$|USD\s*\$?|(?<![A-Za-z])\$)?"
+# A prefix is a run of one to three capitals ("HK$", "BDS$", "RD$", also glued on as in
+# "SalaryHK$"); a "$" after a longer or lower-case word is a missing space ("Compensation$102,460").
+_BARE = r"(?-i:(?<![A-Z])|(?<=[A-Z]{4}))\$"  # case-sensitive inside IGNORECASE patterns too
+_D = r"(?:(?:\b|(?-i:(?<=[a-z])))USD?\s?\$|" + _BARE + r")"
+_D_OPT = r"(?:US\s?\$|USD\s*\$?|" + _BARE + r")?"
 _SEP = r"(?:[-–—/]+|(?:and\s+)?up\s+to|to)"
 
 # Each pattern yields (low, high) from a match; k-notation multiplies by 1000.

@@ -395,3 +395,60 @@ def test_caribbeanjobs_json_ld_period_from_the_amount_text_or_unit_text():
     per_month = raw.replace('"maxValue": "6,000"', '"maxValue": "6,000", "unitText": "per_month"')
     out = caribbeanjobs._parse_detail(per_month, {"title": "x", "company": "Acme", "location": ""})
     assert out["salary_unit"] == "MONTH"
+
+
+# ── S3-01: a "$" glued to a word is a missing space, not a prefixed dollar ──
+
+@pytest.mark.parametrize("text,expected", [
+    ("Compensation$102,460 – $141,860", (102460, 141860)),
+    ("Compensation$115K – $135K", (115000, 135000)),
+    ("US - Salary Range$115,000—$140,000 USD", (115000, 140000)),
+    ("where applicable. Compensation$102,460 – $141,860 • Offers Equity", (102460, 141860)),
+    ("Pay$120,000 per year", (120000, 120000)),
+    ("COMPENSATION$102,460 - $141,860", (102460, 141860)),
+    ("CompensationUS$102,460 - US$141,860", (102460, 141860)),
+    ("CompensationUSD$102,460 - USD$141,860", (102460, 141860)),
+])
+def test_a_dollar_glued_to_a_word_is_usd(text, expected):
+    assert _pair(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "CompensationHK$600,000 – HK$800,000",
+    "Salary RangeA$150,000—A$170,000",
+    "CompensationTT$180,000 per annum",
+    "PayNZ$120,000",
+    "SalaryJ$2,400,000 - J$3,000,000 annually",
+    "Salary: RD$1,200,000 per year",
+    "Compensation BDS$150,000 - BDS$170,000",
+])
+def test_a_prefixed_dollar_glued_to_a_word_stays_foreign(text):
+    assert _pair(text) == _NONE
+
+
+# ── S3-02: a period word in an aside that closes before the amount is not its period ──
+
+@pytest.mark.parametrize("text,expected", [
+    ("(Salary Exempt or Non-exempt hourly rate)role ranges from($140,000USD to $160,000USD)",
+     (140000, 160000)),
+    ("The reasonable estimated pay for this (Salary Exempt or Non-exempt hourly rate)role ranges "
+     "from($140,000USD to $160,000USD). Actual compensation is based upon factors", (140000, 160000)),
+    ("(exempt or hourly) role: $120,000 - $150,000", (120000, 150000)),
+    ("(no daily commute) salary $130,000 - $150,000", (130000, 150000)),
+])
+def test_an_hourly_aside_does_not_reject_a_yearly_range(text, expected):
+    assert _pair(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "hourly rate $45",
+    "Non-exempt hourly rate $45 - $55",
+    "(Salary Exempt or Non-exempt hourly rate) $45 - $55",
+    "Hourly rate: $120,000 - $140,000",
+    "Hourly (non-exempt) role: $120,000 - $140,000",   # the word is not inside the aside
+    "(hourly rate $120,000 - $140,000)",               # the aside is still open
+    "Salary (monthly): $12,000 - $15,000",             # a month can reach the yearly floor
+    "(paid monthly) $150,000 - $180,000",
+])
+def test_an_attached_or_monthly_period_word_still_rejects(text):
+    assert _pair(text) == _NONE
