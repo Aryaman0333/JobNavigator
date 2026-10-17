@@ -10,7 +10,7 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 Nothing yet.
 
-## [3.0] — unreleased
+## [3.0] — 2026-10-17
 
 JobNavigator becomes a household install: one server, up to five accounts, each with its own data. An existing install keeps everything it has: the data becomes the owner's account, and with one account the dashboard looks and behaves as before.
 
