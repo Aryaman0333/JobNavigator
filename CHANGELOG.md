@@ -4,20 +4,21 @@ All notable changes to JobNavigator are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.2.0`).
 
 ## [Unreleased]
 
 Nothing yet.
 
-## [3.0.0] — unreleased
+## [3.0] — unreleased
 
 JobNavigator becomes a household install: one server, up to five accounts, each with its own data. An existing install keeps everything it has: the data becomes the owner's account, and with one account the dashboard looks and behaves as before.
 
 ### Upgrading from 2.x
 1. **Back up first.** The upgrade migrates the database in place and there is no way back to 2.x except a restore. With 2.x still running: `docker compose exec -T db sh -c 'pg_dump -U $POSTGRES_USER $POSTGRES_DB' > backups/pre-3.0.sql` (restore command in `docs/GETTING-STARTED.md` › Scheduling, backups, upkeep).
-2. **Update:** `git pull`, then `docker compose pull && docker compose up -d` (prebuilt images) or `docker compose up --build -d`. If `.env` pins `JN_IMAGE_TAG`, set it to `3.0.0`.
+2. **Update:** `git pull`, then `docker compose pull && docker compose up -d` (prebuilt images) or `docker compose up --build -d`. If `.env` pins `JN_IMAGE_TAG`, set it to `3.0`.
 3. **First boot migrates by itself:** it adds an account column to every owned table, creates the owner account (named after your Persona, else "Owner") and gives it every existing job, application, résumé, cover letter, search, company, Persona and log. Settings you already have stay install values and become the owner's (a member later inherits them or keeps its own, section by section); settings new in 3.0 are seeded with their defaults, and existing values are not touched. The install password (dashboard API key), Telegram bot and chat, and `GMAIL_REFRESH_TOKEN` keep working for the owner.
-4. **Reload the extension** (`chrome://extensions` › reload): it becomes 3.0.0; its permissions and URL patterns are unchanged, so no reinstall is needed.
+4. **Reload the extension** (`chrome://extensions` › reload): it becomes 3.0; its permissions and URL patterns are unchanged, so no reinstall is needed.
 5. **Optional:** to connect Gmail from Settings instead of `.env`, add `<your dashboard address>/api/gmail/callback` as an authorized redirect URI in the OAuth client. To add people, Settings › Accounts › **+ Add account**.
 
 ### Added
@@ -28,7 +29,7 @@ JobNavigator becomes a household install: one server, up to five accounts, each 
 - **Per-account credentials and logins:** provider API keys follow the section policy; Claude Code (token), Codex (`CODEX_HOME`) and Antigravity (state dir) get a login per account (`backend/scripts/cli_login.py` prints the command); LinkedIn, Jobright and Levels sessions and cookie files are per account.
 - **Telegram per account:** the household bot routes by chat (link with a 6-digit code and `/start <code>`), or a member brings their own bot with its own webhook. Inline buttons act only on the chat's account; system alerts go to the owner.
 - **Gmail per account:** connect from Settings with Google's consent screen instead of `.env` tokens (the OAuth client stays in `.env`; add `http://localhost/api/gmail/callback` as an authorized redirect URI). An existing `GMAIL_REFRESH_TOKEN` keeps working for the owner.
-- **Extension "Saves to":** with two or more accounts the popup picks which account captures go to (its PIN, when it has one, to change); the server then issues a signed per-account token that every request carries as `X-Account-Token`, and autofill reads that account's Persona. Scripts get the same token from Settings › Your account › API token. A bare account id never selects an account. Extension 3.0.0.
+- **Extension "Saves to":** with two or more accounts the popup picks which account captures go to (its PIN, when it has one, to change); the server then issues a signed per-account token that every request carries as `X-Account-Token`, and autofill reads that account's Persona. Scripts get the same token from Settings › Your account › API token. A bare account id never selects an account. Extension 3.0.
 - **Copy from… and clone:** a new account can start from a copy of the owner's (or another account's) Persona and Q&A bank, base résumés, companies, searches, settings, voices and excludes; Companies and Searches get a "Copy from…" picker for single rows. Never jobs or applications.
 - **OpenCode Go provider** (by @mreid-tt, #25): an OpenCode Go subscription can run scoring, tailoring, letters, autofill and email. Go is an OpenAI-compatible HTTP endpoint with an API key, so there is no CLI and no extra image weight: paste the Go key under Settings › Models (or set `OPENCODE_API_KEY`) and pick **OpenCode Go**; the Model catalog searches Go's live `/models` list. The provider identifies itself with a `JobNavigator/…` user agent and sends an `x-opencode-session` id, as Go asks: one per account and feature, so a feature's prompts cache together and no two accounts share one. The starter list holds models that answer on `/chat/completions`, MiniMax M3 and Qwen 3.8 included (existing lists gain them and keep their own edits). Go's own error payloads decide what is not retried: `ModelProtocolUnsupported` (a model Go serves on another protocol, such as GPT, Grok or Claude), "Model is unavailable." (an unknown model) and a contributor model that trains on request data each fail at once with a readable reason; every other error retries and then falls back. A member on their own Models uses only their own Go key. Cost counts as $0 (subscription).
 - **Apify search mode** (by @volkotyk, #28): a new search type that runs Apify Store actors as job boards: Indeed, LinkedIn, Glassdoor, and keyword search across every company on Greenhouse, Lever, Ashby and Workday. A search picks its boards like a keyword search picks JobSpy boards; each board reports its own row in the run summary and the health panel. The board list comes from the backend (`GET /api/searches/apify-boards`), so a new board is one entry in `backend/scraper/sources/apify.py`. Settings › Apify takes the API token; **Check key** proves the token and the plan without running a search. Apify bills the account per result: Results wanted caps every board on every run, and Test fetches 20 jobs per board at most. The actors read LinkedIn, Indeed and Glassdoor under your own Apify account and its terms; see `LEGAL_DISCLAIMER.md`.
@@ -73,7 +74,7 @@ JobNavigator becomes a household install: one server, up to five accounts, each 
 - **Work-arrangement detection runs in linear time:** a description with many `<` and no `>` made the tag stripping quadratic (CodeQL py/polynomial-redos); it is now one pass with the same result.
 - **A keyword search with no query says so instead of logging "nothing ran"** (by @mreid-tt, #26): freehire.me and CaribbeanJobs.com need a search term or a URL, so their editor fields say so, Run and Test are blocked with that reason, and the run API answers 409 with it rather than launching an empty run.
 
-## [2.2.0] — 2026-10-04
+## [2.2] — 2026-10-04
 
 Upgrade: `git pull && docker compose pull && docker compose up -d` (or `--build`); reload the extension. The backend image now pins Claude Code 2.1.281 and Codex 0.156.1.
 
@@ -108,7 +109,7 @@ Upgrade: `git pull && docker compose pull && docker compose up -d` (or `--build`
 - **Company page cap:** the ATS-dispatch fallback now honours the company's "Pages to read" like every other path.
 - **LinkedIn Personal login** (by @volkotyk, #16): the session check asks Voyager `/me` instead of probing feed markup that no longer exists, and the login form is filled by `autocomplete` attribute since LinkedIn's ids are generated per render; the refresh script shares both helpers.
 
-## [2.1.0] — 2026-09-16
+## [2.1] — 2026-09-16
 
 The classic dashboard stays at `/classic` for this release too. Upgrade: `git pull`, `docker compose up --build -d`; reload the extension from `extension/`.
 
@@ -131,7 +132,7 @@ The classic dashboard stays at `/classic` for this release too. Upgrade: `git pu
 - **Status filter:** picking nothing shows every status, like the other filters, and the pill's ✕ clears to Any; a browser with no saved filters starts on New.
 - **Feed row:** the third line never wraps — salary · arrangement · H-1B · age; when space runs out the H-1B verdict gives way first and the age stays whole. The company name keeps its width; the location line shrinks.
 - **Selection:** the first ⌘/Ctrl- or ⇧-click includes the row that is already open, on the Feed and in Applications. The bulk bar's buttons hover in the rail's own tones (Windows 98 gets a raised strip with bevel buttons); the Applications bar has no Delete.
-- **Extension** 2.1.0, same code as 2.0.0.
+- **Extension** 2.1, same code as 2.0.
 
 ### Fixed
 - **Auto-scoring and the daily digest on fresh installs** (by @volkotyk, #11): `cv_scores` is created as `json` on a new database, and comparing it with a `jsonb` literal aborted every auto-score pass after a scrape and every digest; both compare as text now. Run errors no longer store or return the failed SQL statement and its parameters.
@@ -141,12 +142,12 @@ The classic dashboard stays at `/classic` for this release too. Upgrade: `git pu
 - **Cairo and Bengaluru in a US feed:** the Amazon handler honoured no country filter, and country-first strings ("IN, KA, Bengaluru") read as Indiana; both fixed and existing rows re-parsed.
 - **Select boxes** in Paper and Green Paper no longer clip descenders.
 
-## [2.0.0] — 2026-09-06
+## [2.0] — 2026-09-06
 
 The new dashboard is the app at `http://localhost`; the previous one stays at `/classic` for one more release and old `/v2/…` links redirect. Upgrade: `git pull`, `docker compose up --build -d`.
 
-### Security (extension 2.0.0)
-- **Extension 2.0.0:** the header rules that let the Job Feed frame a posting (removing `X-Frame-Options` and `Content-Security-Policy`) applied to every page in the browser. They now apply only to sub-frames opened by the dashboard's own host, never to the dashboard's own responses (its cached-page reader is sandboxed by a CSP header), and follow the server URL set in the popup; top-level pages and frames opened by any other site keep their headers. Remove and reinstall the extension to pick it up.
+### Security (extension 2.0)
+- **Extension 2.0:** the header rules that let the Job Feed frame a posting (removing `X-Frame-Options` and `Content-Security-Policy`) applied to every page in the browser. They now apply only to sub-frames opened by the dashboard's own host, never to the dashboard's own responses (its cached-page reader is sandboxed by a CSP header), and follow the server URL set in the popup; top-level pages and frames opened by any other site keep their headers. Remove and reinstall the extension to pick it up.
 - **Extension:** a "Posting preview" toggle in the popup (on by default) turns the frame rules off entirely; the feed then falls back to Open and cached snapshots. The presence marker the feed reads is set only on the dashboard's own host.
 - **Extension:** messages are accepted only from the extension's own popup and content scripts, and other extensions can no longer connect to it. Structured autofill skips fields the user cannot see (hidden, zero-size or off-screen), so a page cannot collect the Persona through an invisible form.
 - **Classic UI:** the cached-page iframes carry a real `sandbox` attribute instead of relying on the response header alone.
@@ -213,7 +214,7 @@ The new dashboard is the app at `http://localhost`; the previous one stays at `/
 - Frontend Vitest in Docker (160 tests) and a repeatable Playwright e2e suite (16 cases).
 - Pixel and computed-style design gates; every theme step shipped with the default theme proven pixel-identical.
 
-## [1.1.0] — 2026-08-16
+## [1.1] — 2026-08-16
 
 ### Added
 - **Application Autofill** — generate a first-person answer to any free-text
@@ -229,7 +230,7 @@ The new dashboard is the app at `http://localhost`; the previous one stays at `/
 - Settings → AI: an **Application Autofill** section — LLM provider/model,
   default answer length, and an editable prompt.
 
-## [1.0.0] — 2026-08-15
+## [1.0] — 2026-08-15
 
 First stable release. Self-hosted job-hunt automation: scrape boards and career
 pages, score jobs against your résumés with Claude, tailor résumés and cover
@@ -248,10 +249,10 @@ replies, and manage it all from a React dashboard.
 - **Dashboard:** React + Tailwind (dark mode), keyboard-driven Job Feed, editable
   settings (LLM providers/models, rubric, filters) — only secrets live in `.env`.
 
-[Unreleased]: https://github.com/vesaias/JobNavigator/compare/v3.0.0...HEAD
-[3.0.0]: https://github.com/vesaias/JobNavigator/compare/v2.2.0...v3.0.0
-[2.2.0]: https://github.com/vesaias/JobNavigator/compare/v2.1.0...v2.2.0
-[2.1.0]: https://github.com/vesaias/JobNavigator/compare/v2.0.0...v2.1.0
-[2.0.0]: https://github.com/vesaias/JobNavigator/compare/v1.1.0...v2.0.0
-[1.1.0]: https://github.com/vesaias/JobNavigator/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/vesaias/JobNavigator/releases/tag/v1.0.0
+[Unreleased]: https://github.com/vesaias/JobNavigator/compare/v3.0...HEAD
+[3.0]: https://github.com/vesaias/JobNavigator/compare/v2.2.0...v3.0
+[2.2]: https://github.com/vesaias/JobNavigator/compare/v2.1.0...v2.2.0
+[2.1]: https://github.com/vesaias/JobNavigator/compare/v2.0.0...v2.1.0
+[2.0]: https://github.com/vesaias/JobNavigator/compare/v1.1.0...v2.0.0
+[1.1]: https://github.com/vesaias/JobNavigator/compare/v1.0.0...v1.1.0
+[1.0]: https://github.com/vesaias/JobNavigator/releases/tag/v1.0.0
