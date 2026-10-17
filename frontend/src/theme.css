@@ -65,6 +65,7 @@
   --cc-oraclehcm-bg:#f7ebe7; --cc-oraclehcm-fg:#96402f;
   --cc-smartrecruiters-bg:#e8eef6; --cc-smartrecruiters-fg:#3a5a86;
   --cc-rippling-bg:#edeaf6; --cc-rippling-fg:#5a4488;
+  --cc-amazon-bg:#f6eee0; --cc-amazon-fg:#8a5c22;
   --cc-eightfold-bg:#f6eee0; --cc-eightfold-fg:#8a5c22;
   --cc-talentbrew-bg:#f3e8f0; --cc-talentbrew-fg:#7a4066;
   --cc-meta-bg:#e8eef6; --cc-meta-fg:#3a5a86;
@@ -466,6 +467,7 @@
   --cc-oraclehcm-bg:#3d2823; --cc-oraclehcm-fg:#dba393;
   --cc-smartrecruiters-bg:#232f3f; --cc-smartrecruiters-fg:#a3bedd;
   --cc-rippling-bg:#2d2a3d; --cc-rippling-fg:#b7abdd;
+  --cc-amazon-bg:#3a3021; --cc-amazon-fg:#d3b083;
   --cc-eightfold-bg:#3a3021; --cc-eightfold-fg:#d3b083;
   --cc-talentbrew-bg:#392a34; --cc-talentbrew-fg:#d3aac4;
   --cc-meta-bg:#232f3f; --cc-meta-fg:#a3bedd;
@@ -1967,6 +1969,7 @@
 .jn-v2 .cc-oraclehcm{background:var(--cc-oraclehcm-bg);color:var(--cc-oraclehcm-fg)}
 .jn-v2 .cc-smartrecruiters{background:var(--cc-smartrecruiters-bg);color:var(--cc-smartrecruiters-fg)}
 .jn-v2 .cc-rippling{background:var(--cc-rippling-bg);color:var(--cc-rippling-fg)}
+.jn-v2 .cc-amazon{background:var(--cc-amazon-bg);color:var(--cc-amazon-fg)}
 .jn-v2 .cc-eightfold{background:var(--cc-eightfold-bg);color:var(--cc-eightfold-fg)}
 .jn-v2 .cc-talentbrew{background:var(--cc-talentbrew-bg);color:var(--cc-talentbrew-fg)}
 .jn-v2 .cc-meta{background:var(--cc-meta-bg);color:var(--cc-meta-fg)}

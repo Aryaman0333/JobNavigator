@@ -36,7 +36,7 @@ const errSuffix = (e) => {
 }
 
 // ATS + tier chip colors live in theme.css (.cc-*) so they flip with dark mode.
-const ATS_SLUGS = new Set(['greenhouse', 'workday', 'lever', 'ashby', 'phenom', 'oraclehcm', 'smartrecruiters', 'rippling', 'eightfold', 'talentbrew', 'meta', 'google'])
+const ATS_SLUGS = new Set(['greenhouse', 'workday', 'lever', 'ashby', 'phenom', 'oraclehcm', 'smartrecruiters', 'rippling', 'amazon', 'eightfold', 'talentbrew', 'meta', 'google'])
 const atsShort = (detected) => (detected || 'Generic')
   .replace(' API', '').replace(' AJAX', '').replace(' (Playwright)', '').replace(' Careers', '')
 const atsSlug = (short) => { const s = (short || 'generic').toLowerCase().replace(/[^a-z0-9]/g, ''); return 'cc-' + (ATS_SLUGS.has(s) ? s : 'generic') }
@@ -75,6 +75,8 @@ const detectAts = (url) => {
   if (hostMatches(url, 'greenhouse.io')) return 'Greenhouse'
   if (hostMatches(url, 'ats.rippling.com') || (hostMatches(url, 'rippling.com') && pathHas(url, '/careers'))) return 'Rippling'
   if (hostMatches(url, 'jobs.smartrecruiters.com', 'careers.smartrecruiters.com', 'api.smartrecruiters.com')) return 'SmartRecruiters'
+  // amazon.is_amazon: an amazon.jobs host with /search in the path
+  if (hostMatches(url, 'amazon.jobs') && pathHas(url, '/search')) return 'Amazon'
   if (hostMatches(url, 'metacareers.com')) return 'Meta'
   if (url.toLowerCase().includes('google.com/about/careers')) return 'Google'
   return 'Generic'

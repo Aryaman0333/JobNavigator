@@ -72,6 +72,7 @@ JobNavigator becomes a household install: one server, up to five accounts, each 
 - **Download filenames keep non-Latin names:** the PDF and Word downloads of a résumé and the PDF of a cover letter are named `JoséMüller_…` or `Дана_…` instead of `Jos?M?ller_…` or `____…` (with an ASCII `JoseMuller_…` for older clients).
 - **Tracer links no longer break exports on odd résumé data:** with tracer links on, a résumé whose header or contact list is empty (`null`), or whose contact text or address is not plain text (as a PDF import or the API can leave it), no longer fails the PDF, the Word download and the preview with a server error.
 - **Work-arrangement detection runs in linear time:** a description with many `<` and no `>` made the tag stripping quadratic (CodeQL py/polynomial-redos); it is now one pass with the same result.
+- **Amazon in the company Test scrape and the ATS chip:** testing an amazon.jobs search URL now reads it with the Amazon handler (as the real run does) instead of the generic page reader, and the URL editor, add dialog and row show an Amazon chip.
 - **A keyword search with no query says so instead of logging "nothing ran"** (by @mreid-tt, #26): freehire.me and CaribbeanJobs.com need a search term or a URL, so their editor fields say so, Run and Test are blocked with that reason, and the run API answers 409 with it rather than launching an empty run.
 
 ## [2.2] — 2026-10-04
