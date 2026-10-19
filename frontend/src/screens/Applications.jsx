@@ -59,7 +59,7 @@ const STAGES = [
   { id: 'rejected', label: 'Rejected', dot: 'var(--stage-rejected)', hint: 'Closed — kept in Stats' },
 ]
 const STAGE = Object.fromEntries(STAGES.map((s) => [s.id, s]))
-// legacy rows (ghosted / withdrawn) have no stage of their own — closed, so they list under Rejected
+// a status outside the four stages is closed, so it lists under Rejected
 const groupOf = (status) => (STAGE[status] ? status : 'rejected')
 // The Log modal writes one of two rows. `new`/`saved` are Job.status values and go to
 // POST /jobs/manual as a feed job with no application; the rest are Application.status
