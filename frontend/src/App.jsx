@@ -21,6 +21,7 @@ import Stats from './screens/Stats'
 import axios from 'axios'
 import { TitleSync } from './useTitle'
 import { alreadyWelcomed, newUiPending, markWelcomed, markNewUiSeen } from './onboarding'
+import { ROUTER_BASENAME } from './demo/config'
 
 // design-base/ (lab pages) is git-ignored and may not exist on a clone.
 // import.meta.glob yields an empty map when it matches nothing, so an absent folder costs the two routes rather than breaking the build.
@@ -120,7 +121,7 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <TitleSync />
       <Routes>
         {/* the app */}

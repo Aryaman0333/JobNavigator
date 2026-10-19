@@ -3,8 +3,18 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './base.css'
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+async function boot() {
+  // Demo build only: __DEMO__ is a build-time constant, so the branch (and the
+  // demo modules) are dropped from the normal bundle.
+  if (__DEMO__) {
+    const { installDemo } = await import('./demo/install.js')
+    await installDemo()
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
+}
+
+boot()
