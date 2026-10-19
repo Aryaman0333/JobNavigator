@@ -11,8 +11,9 @@ import * as coverLetters from './coverLetters.js'
 import * as persona from './persona.js'
 import * as settings from './settings.js'
 import * as stats from './stats.js'
+import * as ai from './ai.js'
 
-const MODULES = [auth, monitor, jobs, applications, searches, companies, resumes, coverLetters, persona, settings, stats]
+const MODULES = [auth, monitor, jobs, applications, searches, companies, resumes, coverLetters, persona, settings, stats, ai]
 
 export function registerAll() {
   clearRoutes()
