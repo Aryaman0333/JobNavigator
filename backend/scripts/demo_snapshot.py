@@ -22,6 +22,9 @@ from bs4 import BeautifulSoup, Comment, NavigableString
 
 from backend.scripts.demo_export import sanitize
 
+# Boards that keep the URL alive after a posting closes (Greenhouse shows "The job you are looking for is no longer open").
+EXPIRED = re.compile(r"no longer (?:open|available|accepting)|(?:job|position|posting) (?:has been|is) (?:closed|filled)", re.I)
+
 CSP = ("default-src 'none'; style-src 'unsafe-inline' data:; img-src data:; font-src data:; "
        "media-src 'none'; frame-src 'none'; form-action 'none'")
 MAX_RESOURCE = 2_500_000
@@ -178,7 +181,7 @@ async def capture(page_ctx, url: str, title: str, delay: float) -> tuple[str, st
         await page.evaluate("async () => { for (let y = 0; y < document.body.scrollHeight; y += 600) { window.scrollTo(0, y); await new Promise(r => setTimeout(r, 120)); } window.scrollTo(0, 0); }")
         await page.wait_for_timeout(1200)
         text = await page.evaluate("document.body ? document.body.innerText : ''")
-        if len(text) < 800 or not _title_ok(text, title):
+        if len(text) < 800 or not _title_ok(text, title) or EXPIRED.search(text):
             return "", "page does not show the posting (expired, redirected or blocked)"
         final_url = page.url
         html = await page.content()

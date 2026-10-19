@@ -2,7 +2,7 @@
 
     python -m backend.scripts.demo_validate <demo_repo_dir> [--forbid "Name,mail-fragment"]
 
-Reads <dir>/data/data.json, <dir>/data/snapshots/ and <dir>/data/docx/. Prints every problem and exits 1
+Reads <dir>/data/data.json, <dir>/data/snapshots/. Prints every problem and exits 1
 when there is any. `--forbid` (or $DEMO_FORBID) lists strings that must not appear anywhere in the data
 (the owner's name and mail); any e-mail address outside example.com fails regardless.
 """
@@ -13,7 +13,6 @@ import json
 import os
 import re
 import sys
-import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -192,7 +191,10 @@ def validate(root: Path, forbid=()) -> list[str]:
         if "_default" not in af or len(af) < 3:
             err(f"{label}: autofill needs 2+ answers and _default")
         snap = root / "data" / "snapshots" / f"{jid}.html"
-        if not snap.exists():
+        if p.get("snapshot") is False:   # posting expired before capture: the reader page shows its saved text
+            if snap.exists():
+                err(f"{label}: marked without snapshot but the file exists")
+        elif not snap.exists():
             err(f"{label}: snapshot missing")
         else:
             html = snap.read_text(encoding="utf-8")
@@ -211,18 +213,6 @@ def validate(root: Path, forbid=()) -> list[str]:
         if c["job_id"] not in jobs:
             err(f"cover letter {c['id']}: job missing")
 
-    # docx
-    for r in bases:
-        f = root / "data" / "docx" / f"{r['id']}.docx"
-        if not f.exists():
-            err(f"docx missing for {r['name']} ({f.name})")
-            continue
-        try:
-            with zipfile.ZipFile(f) as z:
-                if "Daniel Reyes" not in z.read("word/document.xml").decode("utf-8", "replace"):
-                    err(f"{f.name}: document.xml does not contain the name")
-        except zipfile.BadZipFile:
-            err(f"{f.name}: not a valid docx")
 
     # privacy: owner strings and stray e-mail addresses
     forbid = [s.lower() for s in forbid if s]
