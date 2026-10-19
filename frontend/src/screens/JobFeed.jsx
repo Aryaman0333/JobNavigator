@@ -208,9 +208,9 @@ export default function V2JobFeed() {
   const [reportTab, setReportTab] = useState(0)   // per-job: reports differ per résumé, so this resets
   const [reqFilter, setReqFilter] = useState(() => loadUI().reqFilter ?? 'all')
   const [showMatched, setShowMatched] = useState(() => loadUI().showMatched ?? false)
-  const [breakdownOpen, setBreakdownOpen] = useState(() => loadUI().breakdownOpen ?? false)
-  const [keywordOpen, setKeywordOpen] = useState(() => loadUI().keywordOpen ?? false)
-  const [reqOpen, setReqOpen] = useState(() => loadUI().reqOpen ?? false)
+  const [breakdownOpen, setBreakdownOpen] = useState(() => loadUI().breakdownOpen ?? true)
+  const [keywordOpen, setKeywordOpen] = useState(() => loadUI().keywordOpen ?? true)
+  const [reqOpen, setReqOpen] = useState(() => loadUI().reqOpen ?? true)
   useEffect(() => { try { localStorage.setItem(UI_KEY, JSON.stringify({ headOpen, reportOpen, breakdownOpen, keywordOpen, reqOpen, reqFilter, showMatched })) } catch {} }, [headOpen, reportOpen, breakdownOpen, keywordOpen, reqOpen, reqFilter, showMatched])
   const [viewCached, setViewCached] = useState(__DEMO__)
   const [cachedHtml, setCachedHtml] = useState(null)
