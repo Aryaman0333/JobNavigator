@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Newspaper, Search, Building2, Send, FileUser, Mail,
@@ -67,6 +67,10 @@ const sameWarn = (a, b) => (a.companies || 0) === (b.companies || 0) && (a.searc
 const sameHealth = (a, b) => (!a && !b) || !!(a && b && a.status === b.status && a.started_at === b.started_at && a.finished_at === b.finished_at)
 
 // ── account switcher (MT-12) ────────────────────────────────────────────────
+// The demo marker lives in the demo layer; the import is dead code (and so left out) in the normal build.
+let demoMarker
+const getDemoMarker = () => (demoMarker ||= lazy(() => import('./demo/DemoMarker.jsx')))
+
 // Rail footer row: avatar + name + role + ▴, opening a menu of the install's
 // accounts (✓ on this browser's, ⌘⇧1–5 hints), "Add account…" (owner) and
 // "Manage accounts". Collapsed rail: the avatar alone, same menu. ⌘⇧1–5 /
@@ -96,7 +100,7 @@ function AccountSwitcher({ open }) {
 
   const switchTo = useCallback(async (a) => {
     setMenu(null)
-    if (!a || !me || a.id === me.id || busy) return
+    if (!a || !me || a.id === me.id || busy || a.disabled) return
     if (a.has_pin) { openPicker(a); return }
     setBusy(true)
     try {
@@ -164,13 +168,13 @@ function AccountSwitcher({ open }) {
           {accounts.map((a, i) => {
             const cur = a.id === me.id
             return (
-              <MenuItem key={a.id} selected={cur} onClick={() => switchTo(a)}
+              <MenuItem key={a.id} selected={cur} onClick={() => switchTo(a)} disabled={!!a.disabled}
                 hint={i < MAX_SHORTCUTS ? `${SWITCH_MOD}${i + 1}` : undefined} hintMono
                 ariaLabel={`${a.name}, ${roleLabel(a)}${cur ? ', current' : ''}`}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                   <Avatar name={a.name} color={a.color} size={20} />
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                    <span style={{ lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}{a.disabled ? ' — Demo shows one account' : ''}</span>
                     <Helper size="xs">{roleLabel(a)}{a.has_pin ? ' · PIN' : ''}</Helper>
                   </span>
                   {cur && <CheckGlyph size={11} title="Current account" />}
@@ -402,6 +406,7 @@ export default function Shell() {
           ))}
         </nav>
 
+        {__DEMO__ && <Suspense fallback={null}>{React.createElement(getDemoMarker(), { open })}</Suspense>}
         <AccountSwitcher open={open} />
 
         {/* pipeline pulse — the dot yields its slot to the theme toggle when collapsed */}

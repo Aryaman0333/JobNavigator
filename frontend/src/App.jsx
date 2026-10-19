@@ -77,6 +77,7 @@ function App() {
 
   // On startup, sync localStorage API key to backend session cookie.
   useEffect(() => {
+    if (__DEMO__) return   // the demo has no session, login or PIN
     const key = localStorage.getItem('jobnavigator_api_key') || ''
     axios.post('/api/auth/set-session', { api_key: key }, { withCredentials: true }).catch((err) => {
       if (err.response?.status === 401) setShowLogin(true)
@@ -113,7 +114,7 @@ function App() {
     window.addEventListener('jn:account-changed', onChanged)
     return () => { stop(); window.removeEventListener('jn:account-changed', onChanged) }
   }, [])
-  const showPicker = !!picker && !showLogin && !changed
+  const showPicker = !__DEMO__ && !!picker && !showLogin && !changed
 
   const handleLoginSuccess = () => {
     setShowLogin(false)
@@ -158,7 +159,7 @@ function App() {
         <Route path="*" element={<Navigate to="/feed" replace />} />
       </Routes>
 
-      {showLogin && <LoginModal onSuccess={handleLoginSuccess} />}
+      {!__DEMO__ && showLogin && <LoginModal onSuccess={handleLoginSuccess} />}
       {showPicker && (
         // R6-04: keyed on the account, so a second shortcut while a PIN pad is up
         // opens a fresh picker on the NEW account's pad (not the old target's)
