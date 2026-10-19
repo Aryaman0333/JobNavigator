@@ -53,6 +53,28 @@ def rewrite_css(css: str, css_url: str, resources: dict) -> str:
     return URL_RE.sub(sub, css)
 
 
+def _scrub(soup) -> None:
+    """Strip contact details and names from text nodes and from descriptive attributes; drop mailto links."""
+    for text in soup.find_all(string=True):
+        if isinstance(text, NavigableString) and text.parent and text.parent.name not in ("style", "title"):
+            clean = sanitize(str(text))
+            if clean != str(text):
+                text.replace_with(clean)
+    for tag in soup.find_all(True):
+        for attr in ("content", "alt", "title", "aria-label", "placeholder", "value"):
+            if isinstance(tag.get(attr), str):
+                tag[attr] = sanitize(tag[attr])
+        if tag.name == "a" and str(tag.get("href", "")).lower().startswith(("mailto:", "tel:")):
+            del tag["href"]
+
+
+def rescrub(html: str) -> str:
+    """Apply the scrub to a snapshot that was saved before the attribute pass existed."""
+    soup = BeautifulSoup(html, "html.parser")
+    _scrub(soup)
+    return str(soup)
+
+
 def inline_snapshot(html: str, base_url: str, resources: dict) -> str:
     """Pure function: rendered DOM + captured resources ({absolute url: (content_type, bytes)}) -> offline page."""
     soup = BeautifulSoup(html, "html.parser")
@@ -111,11 +133,7 @@ def inline_snapshot(html: str, base_url: str, resources: dict) -> str:
         if tag.name == "form":
             tag.attrs.pop("action", None)
 
-    for text in soup.find_all(string=True):
-        if isinstance(text, NavigableString) and text.parent and text.parent.name not in ("style", "title"):
-            clean = sanitize(str(text))
-            if clean != str(text):
-                text.replace_with(clean)
+    _scrub(soup)
 
     head = soup.head or soup.new_tag("head")
     if soup.head is None:
@@ -214,7 +232,12 @@ def main(argv=None) -> int:
     ap.add_argument("--want", type=int, default=15)
     ap.add_argument("--prefer", default="")
     ap.add_argument("--delay", type=float, default=1.5)
+    ap.add_argument("--rescrub", action="store_true", help="re-run the scrub over the saved snapshots in out_dir/snapshots and exit")
     a = ap.parse_args(argv)
+    if a.rescrub:
+        for f in (Path(a.out_dir) / "snapshots").glob("*.html"):
+            f.write_text(rescrub(f.read_text(encoding="utf-8")), encoding="utf-8")
+        return 0
     prefer = [p.strip() for p in a.prefer.split(",") if p.strip()]
     idx = asyncio.run(run(Path(a.export_json), Path(a.out_dir), a.want, prefer, a.delay))
     print(f"{len(idx['ok'])} snapshots, {len(idx['failed'])} failed")
