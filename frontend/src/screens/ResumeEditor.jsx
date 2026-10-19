@@ -8,6 +8,7 @@ import ConfirmDialog from '../ConfirmDialog'
 import { downloadName } from '../download'
 import { useEscape, useSingleOpen, setFlashToast, fetchRunOutcome, runFailed, runFailureReason, useSettled, NBSP } from '../hooks'
 import { useTitle } from '../useTitle'
+import { loadDemo } from '../demoHooks'
 // The résumé-content editors are shared with /persona (a Persona's
 // resume_content is the same shape as a Resume's json_data).
 import {
@@ -683,7 +684,7 @@ export function DownloadMenu({ id, template, format, onError }) {
     try {
       const r = await api.get(`/resumes/${id}/${kind}`, { responseType: 'blob', params: { template, format } })
       if (__DEMO__ && kind === 'pdf') {   // the demo prints the rendered template through the browser
-        const { printHtml, blobText } = await import('../demo/pdf.js')
+        const { printHtml, blobText } = await loadDemo('pdf.js')
         await printHtml(await blobText(r.data)); return
       }
       const url = URL.createObjectURL(r.data)

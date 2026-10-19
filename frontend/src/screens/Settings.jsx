@@ -13,6 +13,7 @@ import {
   LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, memberGroup, rowLocked, scopeTag,
 } from './SettingsAccounts'
 import '../theme.css'
+import { loadDemo } from '../demoHooks'
 
 // QA F7 / R6-06: a locked row stays in the accessibility tree (read-only, aria-disabled);
 // its controls are taken out of the tab order and marked read-only, and given back
@@ -37,7 +38,7 @@ function lockControls(el, locked, hard) {
 
 // demo build only: the not-affiliated line (dead code, so left out, in the normal build)
 let demoNote
-const getDemoNote = () => (demoNote ||= lazy(() => import('../demo/DemoMarker.jsx').then((m) => ({ default: m.DemoNote }))))
+const getDemoNote = () => (demoNote ||= lazy(() => loadDemo('DemoMarker.jsx').then((m) => ({ default: m.DemoNote }))))
 
 const CAP_TEXT = (n) => `This install already has ${n} accounts — remove one to add another.`
 

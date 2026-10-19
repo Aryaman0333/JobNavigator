@@ -9,6 +9,7 @@ import { useTheme, themeAttrs, appearanceTitle, MODE_ICON } from './theme'
 import { Avatar, CheckGlyph, Helper, Menu, MenuHead, MenuItem, kb } from './ui'
 import { useToasts, ToastStack } from './Toast'
 import { useVersionWarning } from './versionCheck'
+import { loadDemo } from './demoHooks'
 import {
   useAccounts, switchAccount, finishSwitch, openPicker, takeSwitchedNote,
   switchShortcutIndex, roleLabel, SWITCH_MOD, MAX_SHORTCUTS, MAX_ACCOUNTS,
@@ -69,7 +70,7 @@ const sameHealth = (a, b) => (!a && !b) || !!(a && b && a.status === b.status &&
 // ── account switcher (MT-12) ────────────────────────────────────────────────
 // The demo marker lives in the demo layer; the import is dead code (and so left out) in the normal build.
 let demoMarker
-const getDemoMarker = () => (demoMarker ||= lazy(() => import('./demo/DemoMarker.jsx')))
+const getDemoMarker = () => (demoMarker ||= lazy(() => loadDemo('DemoMarker.jsx')))
 
 // Rail footer row: avatar + name + role + ▴, opening a menu of the install's
 // accounts (✓ on this browser's, ⌘⇧1–5 hints), "Add account…" (owner) and

@@ -11,6 +11,7 @@ import { useUndoRemove, BandRule } from './ResumeSections'
 import { Button, Card as UiCard, DashedAdd, FooterRow, Heading, HeaderRow, Helper, IconButton, Input, Label, Link, Menu, MenuItem, ModalPanel, MoveArrows, NavLink, RemoveX, SectionHead, Spinner, Surface, ToolbarTrigger } from '../ui'
 import '../theme.css'
 import { useTitle } from '../useTitle'
+import { loadDemo } from '../demoHooks'
 import { fetchRunOutcome, runFailed, runFailureReason, useSettled, useSingleOpen, NBSP } from '../hooks'
 
 const EMPTY = {
@@ -187,7 +188,7 @@ export default function CoverLetterEditor() {
     try {
       const r = await api.get(`/cover-letters/${id}/pdf`, { responseType: 'blob' })
       if (__DEMO__) {   // the demo prints the rendered template through the browser
-        const { printHtml, blobText } = await import('../demo/pdf.js')
+        const { printHtml, blobText } = await loadDemo('pdf.js')
         await printHtml(await blobText(r.data)); return
       }
       const url = URL.createObjectURL(r.data)

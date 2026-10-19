@@ -21,7 +21,7 @@ import Stats from './screens/Stats'
 import axios from 'axios'
 import { TitleSync } from './useTitle'
 import { alreadyWelcomed, newUiPending, markWelcomed, markNewUiSeen } from './onboarding'
-import { ROUTER_BASENAME } from './demo/config'
+import { ROUTER_BASENAME } from './demoHooks'
 
 // design-base/ (lab pages) is git-ignored and may not exist on a clone.
 // import.meta.glob yields an empty map when it matches nothing, so an absent folder costs the two routes rather than breaking the build.
