@@ -15,6 +15,8 @@ const UI_KEY = 'v2_feed_ui'   // persisted panel open/collapse prefs
 const loadUI = () => { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {} } catch { return {} } }
 // A grab-line above the detail header folds the whole right-side top (metadata header + score/report band) away.
 // Its own key, deliberately not part of UI_KEY — survives reloads and job selection.
+// The server's reason for a refused start (409 already running, 400 nothing to score with…), when it gave one.
+const detailSuffix = (e) => (typeof e?.response?.data?.detail === 'string' ? ' — ' + e.response.data.detail : '')
 const ANA_KEY = 'jn_feed_analysis_collapsed'
 const loadAnaCollapsed = () => { try { return localStorage.getItem(ANA_KEY) === '1' } catch { return false } }
 // Per-host frame-check cache ({host: 1 embeddable | 0 blocked}). A known host answers instantly;
@@ -615,7 +617,7 @@ export default function V2JobFeed() {
     // the one-click path sends no cv_ids, so the run covers every base résumé
     api.post(`/analyze/${job.id}?depth=${defaultDepth}`, {}).then(() => {
       markFlight(job.id, ANALYZE, { resume_names: resumes.map((r) => r.name).filter(Boolean), depth: defaultDepth })
-    }).catch((e) => { delete pendingRef.current[job.id]; pushToast({ kind: 'error', msg: `Scoring failed for "${job.title}"` }); console.error(e) })
+    }).catch((e) => { delete pendingRef.current[job.id]; pushToast({ kind: 'error', msg: `Scoring failed for "${job.title}"${detailSuffix(e)}` }); console.error(e) })
   }, [pushToast, defaultDepth, resumes, markFlight])
 
   // rescoreJob holds { label, jobs:[...] } — one job or a bulk set
@@ -669,7 +671,7 @@ export default function V2JobFeed() {
           await api.post('/resumes/tailor', { base_resume_id: baseId, job_id: job.id })
           markFlight(job.id, TAILOR, { base_name: baseName, replaces: !!job.tailored_resume_id })
         }
-      } catch (e) { delete pendingRef.current[job.id]; pushToast({ kind: 'error', msg: `${mode === 'copy' ? 'Copy' : 'Tailor'} failed for "${job.title}"` }); console.error(`${mode} failed`, e.response?.data?.detail || e.message) }
+      } catch (e) { delete pendingRef.current[job.id]; pushToast({ kind: 'error', msg: `${mode === 'copy' ? 'Copy' : 'Tailor'} failed for "${job.title}"${detailSuffix(e)}` }); console.error(`${mode} failed`, e.response?.data?.detail || e.message) }
     }
     setChecked(new Set())
   }, [pushToast, resumes, markFlight, navigate])
