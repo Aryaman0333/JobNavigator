@@ -930,7 +930,7 @@ export default function Settings() {
                   // `_meta.set_by_owner` (the value is blanked); the row says so, read-only.
                   const r = member && r0.key && meta?.[r0.key]?.set_by_owner ? { ...r0, kind: 'ownerset', ownerName } : r0
                   const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
-                  const demo = !!S._demo   // the demo build's read-only settings
+                  const demo = !!S._demo && id !== 'appearance'   // the demo build's read-only settings (Display is browser-only, so it stays live)
                   if (!member && !meErr && !demo) return row
                   // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and
                   // read-only. R6-06: not `inert` — that hid the value from screen readers; the

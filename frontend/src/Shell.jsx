@@ -175,7 +175,7 @@ function AccountSwitcher({ open }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                   <Avatar name={a.name} color={a.color} size={20} />
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}{a.disabled ? ' — Demo shows one account' : ''}</span>
+                    <span style={{ lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
                     <Helper size="xs">{roleLabel(a)}{a.has_pin ? ' · PIN' : ''}</Helper>
                   </span>
                   {cur && <CheckGlyph size={11} title="Current account" />}
