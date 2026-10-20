@@ -8,7 +8,8 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+- **Prebuilt images for ARM:** the backend and frontend images are published for `linux/arm64` as well as `linux/amd64`, so an ARM host (Apple Silicon, Raspberry Pi, RK35xx boards) runs `docker compose pull` instead of building Chromium from source. The arm64 build runs under QEMU in the same job, so the backend image takes about 12 minutes on a cold cache.
 
 ## [3.0] — 2026-10-17
 
