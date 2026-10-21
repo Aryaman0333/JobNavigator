@@ -220,6 +220,6 @@ def test_patch_accepts_valid_values(api_client, test_db):
 def test_patch_ignores_the_redacted_placeholder(api_client, test_db):
     """A GET returns '••••••' for secrets; PATCHing that back must not be validated or written as a real value."""
     _seed_first_run(test_db)
-    resp = api_client.patch("/api/settings", json={"llm_api_key": "•" * 6})
+    resp = api_client.patch("/api/settings", json={"anthropic_api_key": "•" * 6})
     assert resp.status_code == 200
     assert resp.json()["updated"] == []

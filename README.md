@@ -138,7 +138,7 @@ Open `http://localhost`. To build from source instead, use `docker compose up --
 
 **2. Connect a model**
 
-Any API key goes straight into Settings › AI. A subscription needs one login inside the container first (OpenCode Go needs none):
+Any API key goes straight into Settings › AI, once per provider: every model slot on that provider uses it, and switching a slot to another provider and back keeps it. A subscription needs one login inside the container first (OpenCode Go needs none):
 
 | Subscription | Once after the containers start |
 |---|---|

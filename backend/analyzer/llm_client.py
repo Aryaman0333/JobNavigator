@@ -37,6 +37,15 @@ def _get_setting(db, key, default=""):
     return get_setting(db, key) or default
 
 
+def provider_api_key(db, provider: str) -> str:
+    """The API key setting of `provider` (one per provider, 3.1), or "" for a keyless provider or
+    an empty box. The env fallback is applied at dispatch (`_anthropic_key` & co.), where a member
+    on its own Models section is kept off the owner's env key."""
+    from backend.accounts.settings import PROVIDER_KEY_SETTINGS
+    setting = PROVIDER_KEY_SETTINGS.get(provider)
+    return (_get_setting(db, setting, "") or "").strip() if setting else ""
+
+
 def resolve_llm_config(feature: str = "", db=None) -> dict:
     """Resolve the provider/model/api_key/effort a feature dispatches with: `<feature>_llm_*` setting -> primary `llm_*` setting -> shipped default. Single source of truth for both dispatch and logging."""
     own_db = db is None
@@ -46,26 +55,18 @@ def resolve_llm_config(feature: str = "", db=None) -> dict:
         prefix = f"{feature}_" if feature else ""
         provider = _get_setting(db, f"{prefix}llm_provider", "")
         model = _get_setting(db, f"{prefix}llm_model", "")
-        # L-01: a slot's own key belongs to the slot's own provider. With no provider of its own
-        # the slot follows the Primary, so a key left in it (an override switched off) is stale
-        # and must not reach the Primary's provider.
-        api_key = _get_setting(db, f"{prefix}llm_api_key", "") if (provider or not feature) else ""
         effort = _get_setting(db, f"{prefix}llm_effort", "")
         provider = provider or _get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER
         if feature:
             model = model or _get_setting(db, "llm_model", "")
-            # Keys and effort values are per provider, so the Primary's carry over only to a slot
-            # on the same provider: a slot on another provider with no key of its own gets "" and
-            # dispatch then applies that provider's env fallback (B1: never another provider's key).
-            same_provider = provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER)
-            if not api_key and same_provider:
-                api_key = _get_setting(db, "llm_api_key", "")
-            if not effort and same_provider:
+            # Effort values are per provider, so the Primary's carries over only to a slot on the
+            # same provider.
+            if not effort and provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER):
                 effort = _get_setting(db, "llm_effort", "")
         return {
             "provider": provider,
             "model": model or DEFAULT_MODEL,
-            "api_key": api_key,
+            "api_key": provider_api_key(db, provider),
             "effort": effort,
         }
     finally:
@@ -94,10 +95,7 @@ async def call_llm(prompt: str, system: str, max_tokens: int = 1200,
             effort = primary["effort"] if provider == primary["provider"] else ""
         fallback_provider = _get_setting(db, "llm_fallback_provider", "")
         fallback_model = _get_setting(db, "llm_fallback_model", "")
-        fb_api_key = _get_setting(db, "llm_fallback_api_key", "")
-        # B2: like a feature slot, the fallback reuses the Primary's key only on the same provider.
-        if not fb_api_key and fallback_provider == primary["provider"]:
-            fb_api_key = primary["api_key"]
+        fb_api_key = provider_api_key(db, fallback_provider)
         fb_effort = _get_setting(db, "llm_fallback_effort", "")
     finally:
         db.close()
@@ -384,6 +382,7 @@ _KEYED_PROVIDERS = {"claude_api": "Claude API", "openai": "OpenAI", "openrouter"
 OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY"
 OPENAI_KEY_ENV = "OPENAI_API_KEY"
 ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 
 
 def _env_key(env_name: str) -> str:
@@ -425,11 +424,14 @@ def _anthropic_key(api_key: str) -> str:
 
 
 def _openrouter_key(api_key: str) -> str:
-    """The OpenRouter key to send. OpenRouter has no env fallback, so an empty key used to send
-    an empty bearer and retry the 401 (L-02); it is a config error instead."""
-    if not api_key:
-        raise NonRetryableLLMError("No API key for OpenRouter — set it in Settings › Models")
-    return api_key
+    """The OpenRouter key to send: the resolved setting, else OPENROUTER_API_KEY for the owner and
+    members on 'inherit'. An empty key used to send an empty bearer and retry the 401 (L-02); no
+    key at all is a config error instead."""
+    key = api_key or _env_key(OPENROUTER_KEY_ENV)
+    if not key:
+        raise NonRetryableLLMError(
+            "No API key for OpenRouter — set it in Settings › Models (or OPENROUTER_API_KEY in .env)")
+    return key
 
 
 def _require_own_key(provider: str, api_key: str) -> None:

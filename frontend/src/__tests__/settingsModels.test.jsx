@@ -1,5 +1,5 @@
-// Settings › Models (owner). R30 L-01: switching an override off clears its API key too, since
-// the key belongs to the override's provider and is hidden once the row closes. L-03: an empty
+// Settings › Models (owner). 3.1: one API key per provider — every slot's key box shows and saves
+// the key of the slot's current provider, and switching an override off keeps it. L-03: an empty
 // LM Studio / Ollama address shows the address in use (GET /settings `_effective`) as its placeholder.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
@@ -44,21 +44,36 @@ beforeEach(() => { vi.clearAllMocks() })
 afterEach(() => cleanup())
 
 describe('Settings › Models', () => {
-  it('switching an override off clears its provider, model, effort and key', async () => {
-    mockApi({ ...BASE, autofill_llm_provider: 'openai', autofill_llm_model: 'gpt-5', autofill_llm_api_key: '••••••' })
-    await renderSettings('Autofill — override the Primary model')
-    fireEvent.click(screen.getByLabelText('Autofill — override the Primary model'))
-    await waitFor(() => expect(api.patch).toHaveBeenCalledTimes(4))
-    expect(patchedKeys()).toEqual(['autofill_llm_provider', 'autofill_llm_model', 'autofill_llm_effort', 'autofill_llm_api_key'])
-    expect(api.patch).toHaveBeenLastCalledWith('/settings', { autofill_llm_api_key: '' })
-  })
-
-  it('an override with no key sends no key PATCH', async () => {
-    mockApi({ ...BASE, autofill_llm_provider: 'openai', autofill_llm_model: 'gpt-5', autofill_llm_api_key: '' })
+  it('switching an override off clears its provider, model and effort, and keeps the provider key', async () => {
+    mockApi({ ...BASE, autofill_llm_provider: 'openai', autofill_llm_model: 'gpt-5', openai_api_key: '••••••' })
     await renderSettings('Autofill — override the Primary model')
     fireEvent.click(screen.getByLabelText('Autofill — override the Primary model'))
     await waitFor(() => expect(api.patch).toHaveBeenCalledTimes(3))
-    expect(patchedKeys()).not.toContain('autofill_llm_api_key')
+    expect(patchedKeys()).toEqual(['autofill_llm_provider', 'autofill_llm_model', 'autofill_llm_effort'])
+  })
+
+  it("an override's key box saves the key of its provider", async () => {
+    mockApi({ ...BASE, autofill_llm_provider: 'openrouter', autofill_llm_model: 'openai/gpt-5' })
+    await renderSettings('Autofill — API key')
+    const box = screen.getByLabelText('Autofill — API key')
+    fireEvent.change(box, { target: { value: 'sk-or' } })
+    fireEvent.blur(box)
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/settings', { openrouter_api_key: 'sk-or' }))
+  })
+
+  it("the Primary's key box follows the Primary's provider", async () => {
+    mockApi({ ...BASE, llm_provider: 'openai', llm_model: 'gpt-5', openai_api_key: 'sk-openai', anthropic_api_key: 'sk-ant' })
+    await renderSettings('API key')
+    expect(screen.getByLabelText('API key').value).not.toBe('')
+    const box = screen.getByLabelText('API key')
+    fireEvent.focus(box)                      // reveal the stored key
+    expect(box.value).toBe('sk-openai')
+  })
+
+  it('a provider without a key shows no key box for the Primary', async () => {
+    mockApi(BASE)                             // the Primary is LM Studio
+    await renderSettings('LM Studio address')
+    expect(screen.queryByLabelText('API key')).toBeNull()
   })
 
   it('an empty local server address shows the address in use as its placeholder', async () => {
