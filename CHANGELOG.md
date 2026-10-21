@@ -9,6 +9,7 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 ## [Unreleased]
 
 ### Fixed
+- **Levels.fyi job links:** since 2026-10-09 levels.fyi job ids are letters and digits (`jobId=2ci7r6weraiqb`) instead of 18 digits. The scraper kept only the leading digits, so a job was stored as `jobId=2`: its link opened a 404 page, scoring read that page and failed on every run, and jobs whose ids began with the same digits were merged into one. The scraper now keeps the whole id.
 - **Antigravity CLI expired login** (by @volkotyk): `agy` 1.3.3 and later reports an expired or revoked token as "Authentication expired. Please log back in." The adapter now treats it as "not logged in": the call goes straight to the fallback provider and the error names the login command. Before, it was a plain failure that the backend retried.
 
 ### Changed
