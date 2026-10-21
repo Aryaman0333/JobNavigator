@@ -15,6 +15,7 @@ import {
   EMPTY, resumeSectionNames, sectionCounts, makeMutators,
   SectionShell, SectionEditor, BandRule,
 } from './ResumeSections'
+import ResumeName from './ResumeName'
 import { Band, Button, Check, ChoiceCard, ChoiceModal, ChoiceRow, FooterRow, Heading, HeaderRow, Helper, IconButton, Input, Label, Menu, MenuHead, MenuItem, ModalPanel, Mono, NavLink, Pill, Rule, ScoreRing, Spinner, Surface, Textarea, ToolbarTrigger } from '../ui'
 
 // contiguous prefix/suffix word diff → { before, removed, added, after }
@@ -99,6 +100,7 @@ export default function ResumeEditor() {
   const [baseCopyCount, setBaseCopyCount] = useState(null)
   const [scoring, setScoring] = useState(false)
   const [headMenu, setHeadMenu] = useState(false)
+  const [renaming, setRenaming] = useState(false)   // the top-bar name is an input
   const [confirm, setConfirm] = useState(null)   // v2 dialog, not window.confirm
   const [jobErr, setJobErr] = useState(false)   // the linked job failed to load
   const [parentName, setParentName] = useState(null)   // the base this copy came from
@@ -370,6 +372,21 @@ export default function ResumeEditor() {
     })
   }, [doc, id, navigate, pushToast])
 
+  // Saves on its own (not through the debounced persist): `persist` keeps one pending patch,
+  // so a rename sent through it would replace an unsaved json_data edit.
+  // Both setDoc calls check the id: the request can end after the user opens another résumé.
+  const rename = useCallback(async (value) => {
+    setRenaming(false)
+    const next = (value || '').trim()
+    if (!next || next === doc.name) return
+    const mine = String(doc.id), prev = doc.name
+    const setName = (n) => setDoc((d) => (d && String(d.id) === mine ? { ...d, name: n } : d))
+    setName(next)
+    try { await api.patch(`/resumes/${mine}`, { name: next }); setSavedAt(new Date().toISOString()) }
+    catch (e) { setName(prev); pushToast({ kind: 'error', msg: `Rename failed — ${e.response?.data?.detail || e.message || 'try again'}.` }) }
+  }, [doc, pushToast])
+  const startRename = () => { setHeadMenu(false); setRenaming(true) }
+
   const goCover = () => { setHeadMenu(false); navigate(`/cover-letters?resume=${id}${doc.job_id ? `&job=${doc.job_id}` : ''}`) }
 
   // the "one next step" stage for a tailored copy: Score is offered only when there's
@@ -497,8 +514,7 @@ export default function ResumeEditor() {
         <span style={{ color: 'var(--line)' }}>|</span>
         {/* ui: keep — Tag-role uppercase badge (bg + r99, not a Label); case/tracking read --label-case/--label-tracking-scale so an alt skin can turn both off */}
         <span style={{ fontSize: 9.5, letterSpacing: 'calc(.08em * var(--label-tracking-scale))', textTransform: 'var(--label-case)', padding: '2px 7px', borderRadius: 'var(--radius-control)', background: isCopy ? 'var(--ai-soft)' : 'var(--surface-2)', color: isCopy ? 'var(--ai)' : 'var(--muted)' }}>{isCopy ? 'tailored' : 'base'}</span>
-        {/* every other v2 screen names itself with an h1; visually identical to the old span (margin/font reset inline) */}
-        <h1 title={doc.name} style={{ margin: 0, fontFamily: 'var(--font-body)', fontSize: 14, lineHeight: '20px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 460 }}>{doc.name}</h1>
+        <ResumeName name={doc.name} editing={renaming} onEdit={() => setRenaming(true)} onDone={rename} />
         <Helper style={{ marginLeft: 'auto' }}>{saving ? 'Saving…' : savedAt ? `saved ${timeAgo(savedAt)} · autosaves` : 'autosaves'}</Helper>
       </HeaderRow>
 
@@ -562,6 +578,7 @@ export default function ResumeEditor() {
                   <MenuItem icon="◎" hint="score only" onClick={() => runScore('light')}>Score again · light</MenuItem>
                   <MenuItem icon="◎" hint="with report" onClick={() => runScore('full')}>Score again · full</MenuItem>
                   {changes.length > 0 && <MenuItem icon="≋" hint={`${changes.length} to review`} onClick={() => { setHeadMenu(false); setReviewOpen(true) }}>Review changes</MenuItem>}
+                  <MenuItem icon="✎" onClick={startRename}>Rename</MenuItem>
                   <Rule style={{ margin: '4px 8px' }} />
                   <MenuHead>Job</MenuHead>
                   {/* `hint` slots deliberately empty: they read as single-letter
@@ -596,6 +613,7 @@ export default function ResumeEditor() {
                 <Menu ariaLabel="Résumé actions" style={{ position: 'absolute', top: '100%', right: 0, marginTop: 5, zIndex: 45, width: 244 }}>
                   <MenuHead>This base</MenuHead>
                   <MenuItem icon="✦" hint="adds a copy" onClick={() => { setHeadMenu(false); setTailorOpen(true) }}>Tailor for a job…</MenuItem>
+                  <MenuItem icon="✎" onClick={startRename}>Rename</MenuItem>
                   <MenuItem danger icon="✕" onClick={deleteResume}>Delete résumé</MenuItem>
                 </Menu>
               </>

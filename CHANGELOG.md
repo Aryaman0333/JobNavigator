@@ -8,6 +8,9 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 ## [Unreleased]
 
+### Added
+- **Rename a résumé** (by @volkotyk): in the résumé editor, click the name in the top bar (or ⋯ › Rename) to edit it. Enter or a click outside saves, Escape cancels, and a blank name keeps the old one. Before, the name came only from the create dialog or the imported PDF file name, so two imports of the same file got the same name. The API now rejects a blank or non-string name on `PATCH /api/resumes/{id}` with 400, the same as on create. Job scores already stored under the old name keep that label; a new scoring run uses the new name.
+
 ### Fixed
 - **Search modes checked by the API:** creating or switching a search to an unknown mode, or to one of the two built-in extension modes, is refused (400); a built-in extension search keeps its mode. `sources` is checked against the mode (JobSpy boards, LinkedIn collections, Apify boards) and is empty for a mode that takes none, so a Levels.fyi or freehire search no longer stores JobSpy's default boards, and a search switched from Apify back to JobSpy gets JobSpy's boards instead of keeping Apify's (whose next run failed). A manual run of a Levels.fyi search without a URL or an Apify search without a term or board now says what is missing.
 - **Levels.fyi job links:** since 2026-10-09 levels.fyi job ids are letters and digits (`jobId=2ci7r6weraiqb`) instead of 18 digits. The scraper kept only the leading digits, so a job was stored as `jobId=2`: its link opened a 404 page, scoring read that page and failed on every run, and jobs whose ids began with the same digits were merged into one. The scraper now keeps the whole id.
