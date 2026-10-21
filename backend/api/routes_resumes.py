@@ -1168,6 +1168,9 @@ def update_resume(resume_id: str, body: dict, db: Session = Depends(get_db)):
         validate_template_name(body["template"], TEMPLATES_DIR)
     # Re-linking a résumé: the new parent / job must be the account's own (MT-5).
     body = dict(body)
+    # A rename gets the same check as a create: a blank or non-string name is a 400.
+    if "name" in body:
+        body["name"] = str_field(body, "name", required=True)
     if "parent_id" in body:
         body["parent_id"] = owned_id_or_404(db, Resume, body["parent_id"], "Parent resume not found")
     if "job_id" in body:

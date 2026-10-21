@@ -8,6 +8,9 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 ## [Unreleased]
 
+### Added
+- **Rename a résumé** (by @volkotyk): in the résumé editor, click the name in the top bar (or ⋯ › Rename) to edit it. Enter or a click outside saves, Escape cancels, and a blank name keeps the old one. Before, the name came only from the create dialog or the imported PDF file name, so two imports of the same file got the same name. The API now rejects a blank or non-string name on `PATCH /api/resumes/{id}` with 400, the same as on create. Job scores already stored under the old name keep that label; a new scoring run uses the new name.
+
 ### Fixed
 - **Antigravity CLI expired login** (by @volkotyk): `agy` 1.3.3 and later reports an expired or revoked token as "Authentication expired. Please log back in." The adapter now treats it as "not logged in": the call goes straight to the fallback provider and the error names the login command. Before, it was a plain failure that the backend retried.
 
