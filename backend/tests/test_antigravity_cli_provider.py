@@ -75,7 +75,8 @@ async def test_antigravity_sends_one_ndjson_line_and_parses_the_result_event(mon
     sent = json.loads(process.input.decode())
     assert sent == {"event": "user",
                     "message": {"role": "user",
-                                "content": "score against the resume\n\njob description"}}
+                                "content": f"{llm_client._AGY_NO_TOOLS}\n\n"
+                                           "score against the resume\n\njob description"}}
     assert result == {
         "text": "matched",
         "usage": {"input_tokens": 81, "output_tokens": 12,
@@ -176,6 +177,60 @@ async def test_antigravity_discards_the_transcript_when_the_call_times_out(monke
     with pytest.raises(llm_client.CLITimeoutError):
         await llm_client._call_antigravity_cli("prompt", "system", "", 10)
     assert discarded == ["c-hung"]
+
+
+@pytest.mark.asyncio
+async def test_antigravity_tells_the_agent_to_answer_without_tools(monkeypatch):
+    """agy offers its tools whatever the deny list says; a -high model spent two turns on
+    `ls` and read_file before it answered. The line comes first, before the caller's system."""
+    process = FakeProcess(stdout=_events(_result()))
+    _install(monkeypatch, process)
+
+    await llm_client._call_antigravity_cli("prompt", "system", "", 10)
+
+    content = json.loads(process.input.decode())["message"]["content"]
+    assert content.startswith(llm_client._AGY_NO_TOOLS + "\n\n")
+    assert "Do not call any tool" in llm_client._AGY_NO_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_antigravity_gets_its_own_timeout_for_the_kill_and_the_cli(monkeypatch):
+    """-high models can think past 300 s; the agy limit is its own, codex/claude keep CLI_TIMEOUT."""
+    seen = {}
+
+    async def fake_run_cli(cmd, stdin, env=None, timeout=None, cwd=None):
+        seen.update(cmd=cmd, timeout=timeout)
+        return 0, _events(_result()), b""
+
+    monkeypatch.setattr(llm_client, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(llm_client, "_agy_install_settings", lambda: [])
+    monkeypatch.setattr(llm_client, "_agy_assert_denied", lambda path, rules: None)
+    monkeypatch.setattr(llm_client, "_agy_discard", lambda cid: None)
+
+    await llm_client._call_antigravity_cli("prompt", "system", "", 10)
+
+    assert seen["timeout"] == llm_client.AGY_TIMEOUT
+    assert seen["cmd"][seen["cmd"].index("--print-timeout") + 1] == f"{llm_client.AGY_TIMEOUT}s"
+    assert llm_client.AGY_TIMEOUT > llm_client.CLI_TIMEOUT == 300
+
+
+def test_antigravity_timeout_stays_under_the_proxy_read_timeout():
+    """The PDF import waits on the request itself; Caddy cuts it at read_timeout."""
+    caddyfile = Path(__file__).resolve().parents[2] / "Caddyfile"
+    if not caddyfile.exists():
+        pytest.skip("Caddyfile is not in the backend image")
+    import re
+    read_timeout = int(re.search(r"read_timeout\s+(\d+)s", caddyfile.read_text()).group(1))
+    assert llm_client.AGY_TIMEOUT < read_timeout
+
+
+def test_antigravity_shipped_deny_list_keeps_every_rule():
+    """The deny list is the guard; the no-tools line only saves the turns."""
+    shipped = json.loads((Path(llm_client.__file__).resolve().parents[1]
+                          / "antigravity-settings.json").read_text())
+    assert shipped["toolPermission"] == "strict"
+    assert {"command(*)", "read_file(/)", "write_file(/)", "read_url(*)",
+            "execute_url(*)"} <= set(shipped["permissions"]["deny"])
 
 
 @pytest.mark.asyncio
