@@ -114,7 +114,7 @@ const summaryOf = (s, boards = []) => {
     if ((s.sources || []).length) bits.push((s.sources || []).join(', '))
     return bits.join(' · ') + last
   }
-  if (m === 'levels_fyi') return `${short(s.direct_url)} · ${s.max_pages || 50} pages${last}`
+  if (m === 'levels_fyi') return `${s.direct_url ? short(s.direct_url) : 'No levels.fyi URL yet'} · ${s.max_pages || 50} pages${last}`
   if (m === 'linkedin_personal') return `Collections: ${((s.sources || []).length ? s.sources : ['recommended', 'top-applicant']).join(', ')} · credentials in Settings${last}`
   if (m === 'jobright') {
     const bits = [s.search_term ? `“${s.search_term}”` : 'AI recommendations', `max ${s.results_wanted || 100}`]
