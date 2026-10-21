@@ -1389,7 +1389,7 @@ MOCK_RESUME_JSON = {
     ],
 }
 
-EXTENSION_SEARCH_MODES = ("extension", "linkedin_extension")
+from backend.scraper.search_modes import EXTENSION_MODES as EXTENSION_SEARCH_MODES  # noqa: E402
 
 
 def ensure_extension_searches(db, account_id) -> int:

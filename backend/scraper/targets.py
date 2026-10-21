@@ -58,9 +58,7 @@ from backend.accounts.context import unscoped
 
 logger = logging.getLogger("jobnavigator.scraper.targets")
 
-EXTENSION_MODES = ("linkedin_extension", "extension")
-# Modes whose fetch depends on the account's own login/session, never shared.
-_PER_ACCOUNT_MODES = ("linkedin_personal", "jobright")
+# Which modes may share a fetch is `search_modes.SearchMode.shareable`.
 
 
 # ── Shared fetch ─────────────────────────────────────────────────────────────
@@ -304,16 +302,10 @@ def search_key(search) -> tuple:
 
 def search_fetch_params(subscribers: list) -> dict:
     """The fetch-side values for a shared search target: the max of the trimmed fields."""
-    mode = subscribers[0].search_mode or "keyword"
-    if mode == "keyword":
-        return {
-            "results_wanted": max((s.results_wanted or 50) for s in subscribers),
-            "hours_old": max((s.hours_old or 24) for s in subscribers),
-        }
-    if mode in ("freehire", "caribbeanjobs"):
-        return {"results_wanted": max((s.results_wanted or 100) for s in subscribers)}
-    # trulyremote: the roster is fetched whole; results_wanted applies per subscriber after dedup.
-    return {}
+    from backend.scraper.search_modes import get_mode
+    mode = get_mode(subscribers[0].search_mode)
+    return {field: max((getattr(s, field) or default) for s in subscribers)
+            for field, default in (mode.fetch_params if mode else ())}
 
 
 # QA F10 / R4-05: when JobSpy subscribers may share one fetch. A shared fetch runs at the
@@ -381,8 +373,10 @@ def split_search_targets(targets: list) -> list:
 
 
 def is_shareable_search(search) -> bool:
-    # Never "apify": each account's run is billed to its own token (see the docstring).
-    return (search.search_mode or "keyword") in ("keyword", "levels_fyi", "freehire", "caribbeanjobs", "trulyremote")
+    # Never "apify" (billed per account) nor the own-session modes; see search_modes.py.
+    from backend.scraper.search_modes import get_mode
+    mode = get_mode(search.search_mode)
+    return bool(mode and mode.shareable)
 
 
 # ── Due-ness ─────────────────────────────────────────────────────────────────
