@@ -20,11 +20,13 @@ const BASE = {
   email_llm_provider: 'ollama', email_llm_model: 'llama3',
 }
 
-const mockApi = (settings) => {
+const MEMBER = { id: 'm1', name: 'Mila', color: '#e8590c', role: 'member', has_pin: false }
+const mockApi = (settings, accounts = 1) => {
   api.get.mockImplementation((path) => {
+    const others = accounts > 1 ? [MEMBER] : []
     const data = {
-      '/auth/me': { account: OWNER, accounts_count: 1, owner_has_pin: false },
-      '/accounts': { accounts: [{ ...OWNER, is_self: true }], max_accounts: 5, self_id: 'o1' },
+      '/auth/me': { account: OWNER, accounts_count: accounts, owner_has_pin: false },
+      '/accounts': { accounts: [{ ...OWNER, is_self: true }, ...others], max_accounts: 5, self_id: 'o1' },
       '/resumes': [],
       '/settings': settings,
     }[path]
@@ -68,6 +70,12 @@ describe('Settings › Models', () => {
     const box = screen.getByLabelText('API key')
     fireEvent.focus(box)                      // reveal the stored key
     expect(box.value).toBe('sk-openai')
+  })
+
+  it('with several accounts the owner sees the local server addresses even when no slot of its own uses them (R30 L-10)', async () => {
+    mockApi({ ...BASE, llm_provider: 'claude_code', email_llm_provider: '' }, 2)
+    await renderSettings('LM Studio address')
+    expect(screen.getByLabelText('Ollama address')).toBeTruthy()
   })
 
   it('a provider without a key shows no key box for the Primary', async () => {

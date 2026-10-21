@@ -540,13 +540,14 @@ export default function Settings() {
           text: 'docker compose exec backend python -m backend.scripts.cli_login codex "<account name>"', hide: () => !usedBy('codex_cli').length },
         { kind: 'note', label: 'Antigravity CLI login', help: `No token to paste: Antigravity signs in once from a terminal. Used by: ${usedBy('antigravity_cli').join(', ')}.`,
           text: 'docker compose exec backend python -m backend.scripts.cli_login agy "<account name>"', hide: () => !usedBy('antigravity_cli').length },
-        // The local model servers' addresses: owner-only settings (one host per install), shown to the owner while some slot uses that provider.
+        // The local model servers' addresses: owner-only settings (one host per install), shown to the owner while some slot uses that provider,
+        // and always with several accounts, since a member's own slots may use it and the owner sets the address (R30 L-10).
         B('LM Studio address', 'Empty uses LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker: http://host.docker.internal:1234/v1.'
             + (usedBy('lmstudio').length ? ` Used by: ${usedBy('lmstudio').join(', ')}.` : ''),
-          'lmstudio_base_url', { mono: true, w: '340px', placeholder: effective.lmstudio_base_url, hide: () => member || !usedBy('lmstudio').length }),
+          'lmstudio_base_url', { mono: true, w: '340px', placeholder: effective.lmstudio_base_url, hide: () => member || (!multi && !usedBy('lmstudio').length) }),
         B('Ollama address', 'Empty uses OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker: http://host.docker.internal:11434.'
             + (usedBy('ollama').length ? ` Used by: ${usedBy('ollama').join(', ')}.` : ''),
-          'ollama_base_url', { mono: true, w: '340px', placeholder: effective.ollama_base_url, hide: () => member || !usedBy('ollama').length }),
+          'ollama_base_url', { mono: true, w: '340px', placeholder: effective.ollama_base_url, hide: () => member || (!multi && !usedBy('ollama').length) }),
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
           { info: 'Used only when the scoring call fails or is rate-limited. One retry, then the job stays unscored until the next run. Choose a cheap model from a different provider than the primary.' }),

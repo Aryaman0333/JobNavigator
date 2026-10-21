@@ -174,7 +174,7 @@ async def test_member_on_own_never_gets_the_owner_or_env_key(test_db, member, mo
 
 @pytest.mark.asyncio
 async def test_member_on_inherit_gets_the_env_openai_key(test_db, member, monkeypatch, openai_seen):
-    _anthropic_primary(test_db, autofill_llm_provider="openai")
+    _anthropic_primary(test_db, autofill_llm_provider="openai", autofill_llm_model="gpt-5")
     monkeypatch.setenv("OPENAI_API_KEY", ENV_OPENAI)
     with use_account(member):
         await L.call_autofill_llm("p", "s")

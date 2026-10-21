@@ -1,5 +1,5 @@
 """R30 review nits fixed in 3.1: D-09 (résumé JSON type and size), D-10 (download filenames),
-L-07 (OpenCode Go usage limit not retried), L-08 (Ollama errors without the server address),
+L-05 (an override on another provider never borrows the Primary model), L-07 (OpenCode Go usage limit not retried), L-08 (Ollama errors without the server address),
 L-09 (streamed autofill logged), S-17 (Apify 402 names Apify's reason)."""
 import httpx
 import pytest
@@ -121,3 +121,29 @@ def test_an_apify_402_names_apify_s_own_reason():
     assert reason in str(err) and "no credit" not in str(err)
     bare = apify._api_error(httpx.Response(402, json={}))
     assert "no credit left" in str(bare)
+
+
+# ── L-05 ────────────────────────────────────────────────────────────────────
+
+def test_an_override_on_another_provider_never_borrows_the_primary_model(test_db):
+    from backend.tests.r4_support import set_setting
+    set_setting(test_db, "llm_provider", "claude_api")
+    set_setting(test_db, "llm_model", "claude-sonnet-5")
+    set_setting(test_db, "autofill_llm_provider", "openai")
+    assert llm_client.resolve_llm_config("autofill", db=test_db)["model"] == ""
+    set_setting(test_db, "scoring_llm_provider", "claude_api")      # same provider: inherits
+    assert llm_client.resolve_llm_config("scoring", db=test_db)["model"] == "claude-sonnet-5"
+
+
+@pytest.mark.asyncio
+async def test_an_api_provider_without_a_model_fails_once_and_names_the_fix(monkeypatch):
+    with pytest.raises(NonRetryableLLMError, match="No model picked for OpenAI"):
+        await llm_client._dispatch("openai", "", "sk", "p", "s", 10)
+    seen = []
+
+    async def fake_cc(prompt, system, model, max_tokens, effort=""):
+        seen.append(model)
+        return {"text": "ok", "usage": {}}
+    monkeypatch.setattr(llm_client, "_call_claude_code", fake_cc)
+    await llm_client._dispatch("claude_code", "", "", "p", "s", 10)   # a CLI keeps its own default
+    assert seen == [""]

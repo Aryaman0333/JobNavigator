@@ -58,11 +58,18 @@ def resolve_llm_config(feature: str = "", db=None) -> dict:
         effort = _get_setting(db, f"{prefix}llm_effort", "")
         provider = provider or _get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER
         if feature:
-            model = model or _get_setting(db, "llm_model", "")
-            # Effort values are per provider, so the Primary's carries over only to a slot on the
-            # same provider.
-            if not effort and provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER):
+            # Models and effort values are per provider, so the Primary's carry over only to a slot
+            # on the same provider (R30 L-05: an OpenAI override with no model sent the Primary's
+            # Claude model name to OpenAI). Elsewhere an empty model stays empty and dispatch
+            # names it.
+            same_provider = provider == (_get_setting(db, "llm_provider", "") or DEFAULT_PROVIDER)
+            if not model and same_provider:
+                model = _get_setting(db, "llm_model", "")
+            if not effort and same_provider:
                 effort = _get_setting(db, "llm_effort", "")
+            if not model and not same_provider:
+                return {"provider": provider, "model": "", "api_key": provider_api_key(db, provider),
+                        "effort": effort}
         return {
             "provider": provider,
             "model": model or DEFAULT_MODEL,
@@ -217,6 +224,7 @@ async def call_autofill_llm_stream(prompt: str, system: str, max_tokens: int = 4
 
     if provider in _KEYED_PROVIDERS:
         _require_own_key(provider, api_key)
+    _require_model(provider, model)
     if provider == "opencode_go":
         api_key = _opencode_go_key(api_key)
     elif provider == "openai":
@@ -447,11 +455,25 @@ def _require_own_key(provider: str, api_key: str) -> None:
         f"No API key for {_KEYED_PROVIDERS[provider]} — set it in Settings › Models")
 
 
+# Providers that cannot run without a model name (the subscription CLIs fall back to their own default).
+_MODEL_REQUIRED = {**_KEYED_PROVIDERS, "ollama": "Ollama", "lmstudio": "LM Studio"}
+
+
+def _require_model(provider: str, model: str) -> None:
+    """R30 L-05: an override on another provider with no model of its own no longer borrows the
+    Primary's model; an API provider without one fails once, naming the fix, instead of four
+    retries of an unknown-model error."""
+    if not model and provider in _MODEL_REQUIRED:
+        raise NonRetryableLLMError(
+            f"No model picked for {_MODEL_REQUIRED[provider]} — pick one in Settings › Models")
+
+
 async def _dispatch(provider: str, model: str, api_key: str,
                     prompt: str, system: str, max_tokens: int,
                     cached_prefix: str | None = None, effort: str = "") -> dict:
     """Route to the correct provider; only `claude_api` supports prompt caching, others get cached_prefix concatenated into the prompt (no cache discount). `effort` reaches only the providers in REASONING_EFFORTS."""
     _require_own_key(provider, api_key)
+    _require_model(provider, model)
     effort = _supported_effort(provider, effort)
     max_tokens = _output_cap(provider, max_tokens, effort)
     if provider == "claude_api":

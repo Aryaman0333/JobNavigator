@@ -163,6 +163,7 @@ async def test_streaming_autofill_uses_the_member_policy(test_db, two_configs, m
     a, b = two_configs
     set_setting(test_db, "llm_provider", "claude_api")
     _own(test_db, b, "autofill_llm_provider", "claude_api")   # stream natively in both cases
+    _own(test_db, b, "autofill_llm_model", "member-claude")   # its own model: not the OpenAI Primary's (L-05)
     _own(test_db, b, "anthropic_api_key", "sk-member-autofill")
     if own:
         _models_own(test_db, b)
@@ -176,7 +177,7 @@ async def test_streaming_autofill_uses_the_member_policy(test_db, two_configs, m
     with use_account(b):
         out = [c async for c in L.call_autofill_llm_stream("p", "s")]
     assert out == ["hi"]
-    assert seen == [("member-model", "sk-member-autofill") if own else ("owner-model", "sk-owner")]
+    assert seen == [("member-claude", "sk-member-autofill") if own else ("owner-model", "sk-owner")]
 
 
 def test_streaming_route_over_http_runs_as_the_member(client, test_db, two_configs, monkeypatch):
