@@ -8,7 +8,11 @@ Releases are named major.minor ("3.0"); tags before 3.0 carry a `.0` patch (`v2.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **Antigravity CLI expired login** (by @volkotyk): `agy` 1.3.3 and later reports an expired or revoked token as "Authentication expired. Please log back in." The adapter now treats it as "not logged in": the call goes straight to the fallback provider and the error names the login command. Before, it was a plain failure that the backend retried.
+
+### Changed
+- **Antigravity CLI 1.4.3 in the backend image** (by @volkotyk): `AGY_VERSION` is now 1.4.3, so the next `docker compose build backend` reinstalls the CLI instead of keeping a cached 1.2.13 layer. Flags, the deny list and the result event were checked against 1.4.3.
 
 ## [3.0] — 2026-10-17
 
