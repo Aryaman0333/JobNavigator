@@ -255,6 +255,12 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
     if "scoring_max_concurrent" in install_updated:
         _reconfigure("reset_scoring_semaphore", reset_scoring_semaphore)
 
+    if "scrape_max_concurrent" in install_updated:
+        def _reset_scraping():
+            from backend.job_monitor import reset_limiter
+            reset_limiter("scraping")
+        _reconfigure("reset_scrape_gate", _reset_scraping)
+
     if "tailoring_max_concurrent" in install_updated:
         def _reset_tailoring():
             from backend.api.routes_resumes import reset_tailoring_semaphore

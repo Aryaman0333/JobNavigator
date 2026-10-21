@@ -316,8 +316,9 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
     from backend.accounts.background import account_session, acting_as
     from backend.accounts.context import current_account
     from backend.scraper.targets import (
-        SharedFetch, group_targets, is_shareable_search, load_active, search_due,
-        search_fetch_params, search_key, search_target_due, split_search_targets,
+        group_targets, is_shareable_search, load_active, reusable_key, search_due,
+        search_fetch_params, search_key, search_target_due, shared_fetch_for,
+        split_search_targets,
     )
     db = SessionLocal()
     errors: list = []
@@ -392,8 +393,11 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                     continue
 
             run_id = uuid.uuid4()
-            shared = (SharedFetch(target.key, search_fetch_params(target.subscribers))
-                      if target.shared else None)
+            # Every shareable target gets a SharedFetch, even with one subscriber, so a later
+            # run (another account's Run all, the scheduled scrape) can reuse it; per-account
+            # modes (own session, paid Apify) keep calling their source directly.
+            shared = (shared_fetch_for(target.key, search_fetch_params(target.subscribers))
+                      if reusable_key(target.key) else None)
             for search in target.subscribers:
                 sid, sname, account = ident[id(search)]
                 # QA F10 / R1-05: each subscriber works in a fresh session of its own
@@ -428,7 +432,7 @@ async def run_all(force: bool = False, account_ids=None, skip=None):
                         logger.info(
                             f"Search '{sname}': found={result.get('jobs_found', 0)}, "
                             f"new={result.get('new_jobs', 0)}, duration={result.get('duration', 0):.1f}s"
-                            + (f" (shared fetch, {len(target.subscribers)} subscribers)" if shared else "")
+                            + (f" (shared fetch, {len(target.subscribers)} subscribers)" if target.shared else "")
                         )
 
                         # Auto CV-score: mark the account for one pool sweep after all searches

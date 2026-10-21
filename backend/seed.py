@@ -173,6 +173,7 @@ DEFAULT_SETTINGS = {
     ]), "Known LLM models per provider (JSON array, user can add custom entries)"),
     "scoring_max_concurrent": ("5", "Max parallel scoring jobs (others queue until a slot opens)"),
     "tailoring_max_concurrent": ("2", "Max concurrent resume-tailoring LLM calls"),
+    "scrape_max_concurrent": ("1", "Scrapes at once, 1 or 2: Run all, one company, one search and the scheduled scrape; others wait their turn"),
     "tailor_auto_quick_score": ("light", "After tailoring finishes, auto-launch a score chain. Values: 'off' | 'light' | 'full'. Default 'light'. Legacy 'true'='light', 'false'='off'."),
     "prompt_caching_enabled": ("true", "Use Anthropic prompt caching on resume scoring (claude_api only; ~50% cheaper input tokens on same-batch calls). Set false to disable as a rollback lever."),
     "scoring_default_depth": ("light", "Default scoring depth: light or full"),

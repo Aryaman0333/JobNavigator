@@ -492,7 +492,7 @@ export default function Searches() {
   const { ready } = useSettled([
     () => load(),
     () => loadAux(),
-    () => api.get('/monitor/active').then(({ data }) => { const m = {}; (data || []).filter(isSearchRun).forEach((r) => { if (r.scope_key) m[r.scope_key] = true }); setRunning(m) }).catch(() => { /* silent: poller — the interval below retries */ }),
+    () => api.get('/monitor/active').then(({ data }) => { const m = {}; (data || []).filter(isSearchRun).forEach((r) => { if (r.scope_key) m[r.scope_key] = r.waiting ? 'waiting' : true }); setRunning(m) }).catch(() => { /* silent: poller — the interval below retries */ }),
   ], reload)
 
   // One interval for the life of the screen — state and callbacks are read via
@@ -507,13 +507,13 @@ export default function Searches() {
       try {
         const { data } = await api.get('/monitor/active')
         if (!mounted.current) return
-        const m = {}; (data || []).filter(isSearchRun).forEach((r) => { if (r.scope_key) m[r.scope_key] = true })
+        const m = {}; (data || []).filter(isSearchRun).forEach((r) => { if (r.scope_key) m[r.scope_key] = r.waiting ? 'waiting' : true })
         setRunning((prev) => {
           const pk = Object.keys(prev)
           if (pk.some((k) => !m[k])) { cbRef.current.load(); cbRef.current.loadAux() }
           // keep the same object when nothing changed - otherwise every tick
           // re-rendered the whole list for nothing
-          return (pk.length === Object.keys(m).length && pk.every((k) => m[k])) ? prev : m
+          return (pk.length === Object.keys(m).length && pk.every((k) => m[k] === prev[k])) ? prev : m
         })
       } catch { /* retry */ }
     }, 3000)
@@ -850,10 +850,10 @@ export default function Searches() {
                   <span style={{ flex: '0 0 169px', marginLeft: -11, display: 'flex', justifyContent: 'flex-end', gap: 3, position: 'relative' }} onClick={(e) => e.stopPropagation()}>
                     {/* ui: keep — running-state box: these 25px pills are padded 0 9, and the running "Running" pill was measured at that width; canonical 0 10 would widen it 2px. */}
                     <Pill size="xs" line="inherit" disabled={!!cfgErr} onClick={() => runNow(s)}
-                      title={cfgErr || (spin ? 'Run in progress — the summary line updates when it finishes' : `Run ${s.name} now, outside the schedule`)}
+                      title={cfgErr || (running[s.id] === 'waiting' ? 'Queued: another scrape is running, this one starts when it finishes' : spin ? 'Run in progress — the summary line updates when it finishes' : `Run ${s.name} now, outside the schedule`)}
                       style={{ padding: '0 9px', ...(spin ? { color: 'var(--pill-busy-ink)' } : null) }}>
                       {spin ? <Spinner /> : <span style={{ fontSize: 11 }}>↻</span>}
-                      {spin ? 'Running' : 'Run'}
+                      {running[s.id] === 'waiting' ? 'Waiting' : spin ? 'Running' : 'Run'}
                     </Pill>
                     {/* ui: keep — running-state box: 0 9 like its twin above, so the spinner branch keeps the width it was measured at. */}
                     {TESTABLE.includes(s.search_mode) && (

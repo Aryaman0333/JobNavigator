@@ -65,8 +65,8 @@ _SECTIONS = [
     # A résumé id belongs to one account: never inherited (MT-4 leftover).
     ("default_resume", "Default résumé", OWN_ALWAYS, OWN, ["scoring"], ["default_resume_id"]),
     # Process-wide semaphores: one value for the install.
-    ("limits", "Parallel limits", OWNER_ONLY, INHERIT, ["scoring", "tailoring"], [
-        "scoring_max_concurrent", "tailoring_max_concurrent"]),
+    ("limits", "Parallel limits", OWNER_ONLY, INHERIT, ["scoring", "tailoring", "scheduler"], [
+        "scoring_max_concurrent", "tailoring_max_concurrent", "scrape_max_concurrent"]),
     ("tailoring", "Tailoring", POLICY, INHERIT, ["tailoring"], [
         "cv_tailor_prompt", "persona_tailor_prompt", "tailor_auto_quick_score"]),
     ("letters", "Cover letters", POLICY, INHERIT, ["letters"], [

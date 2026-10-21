@@ -626,6 +626,8 @@ export default function Settings() {
       ]],
       ['scheduler', 'Pipeline', 'Scheduler', 'intervals in minutes (0 = off) · crons empty = off', [
         B('Scrape all companies', 'Runs every active company scrape on this interval.', 'scrape_interval_minutes', { mono: true, int: true, w: '135px' }),
+        B('Scrapes at once', '1 or 2. Run all, one company, one search and the scheduled scrape wait their turn beyond this.', 'scrape_max_concurrent', { mono: true, int: true, w: '135px',
+          info: 'Each scrape can start its own Chromium, so 1 keeps memory low: a second Run all, from you or another account, waits until the first finishes. A fetch another run made in the last 10 minutes is reused instead of downloaded again.' }),
         B('Email check', 'Polls Gmail for replies to your applications.', 'email_check_interval_minutes', { mono: true, int: true, w: '135px' }),
         B('Cleanup after', 'Days before ignored and skipped job postings are removed.', 'job_archive_after_days', { mono: true, int: true, w: '135px' }),
         B('Auto-reject threshold', 'Days of silence before an application is auto-moved to Rejected.', 'auto_reject_after_days', { mono: true, int: true, w: '135px',
