@@ -5,7 +5,7 @@ import { useFlushBeforeSwitch } from '../accounts'
 import '../theme.css'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
-import { downloadName } from '../download'
+import { downloadErrorReason, downloadName } from '../download'
 import { useEscape, useSingleOpen, setFlashToast, fetchRunOutcome, runFailed, runFailureReason, useSettled, NBSP } from '../hooks'
 import { useTitle } from '../useTitle'
 import { loadDemo } from '../demoHooks'
@@ -416,12 +416,14 @@ export default function ResumeEditor() {
     pendingSave.current = patch
     saveTimer.current = setTimeout(() => { pendingSave.current = null; sendSave(patch) }, 500)
   }, [sendSave])
-  useFlushBeforeSwitch(() => {
+  // Sends the patch the timer still owes now (a switch, a download); undefined when none.
+  const flushSave = useCallback(() => {
     const patch = pendingSave.current
     if (!patch) return undefined
     clearTimeout(saveTimer.current); pendingSave.current = null
     return sendSave(patch)
-  })
+  }, [sendSave])
+  useFlushBeforeSwitch(flushSave)
   const onData = useCallback((next) => { setData(next); persist({ json_data: next }) }, [persist])
   const pickTemplate = (t) => { setTemplate(t); setTplOpen(false); persist({ template: t }) }
   const pickFormat = (f) => { setFormat(f); setFmtOpen(false); persist({ page_format: f }) }
@@ -662,7 +664,7 @@ export default function ResumeEditor() {
                   </Menu>
               )}
             </div>}
-            <DownloadMenu id={id} template={template} format={format} onError={(msg) => pushToast({ kind: 'error', msg })} />
+            <DownloadMenu id={id} template={template} format={format} beforeDownload={flushSave} onError={(msg) => pushToast({ kind: 'error', msg })} />
           </HeaderRow>
           <Surface radius="none" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             {pdfUrl && <iframe title="pdf" src={`${pdfUrl}#view=FitH`} style={{ width: '100%', height: '100%', border: 'none' }} />}
@@ -692,14 +694,16 @@ export default function ResumeEditor() {
 // @mrAlishah. Each choice goes through axios and saves the blob, like the cover-letter
 // download, so the X-API-Key header travels and a failed export is an error toast rather
 // than a JSON page in a new tab. The current template and paper ride along, so a fresh
-// pick that the debounced save hasn't stored yet is still what downloads.
-export function DownloadMenu({ id, template, format, onError }) {
+// pick that the debounced save hasn't stored yet is still what downloads. `beforeDownload`
+// sends an edit the debounced save still owes, so the file has the last keystroke (R30 D-06).
+export function DownloadMenu({ id, template, format, onError, beforeDownload }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   useEscape(() => setOpen(false), open)
   const download = async (kind) => {
     setOpen(false); setBusy(true)
     try {
+      await beforeDownload?.()
       const r = await api.get(`/resumes/${id}/${kind}`, { responseType: 'blob', params: { template, format } })
       if (__DEMO__ && kind === 'pdf') {   // the demo prints the rendered template through the browser
         const { printHtml, blobText } = await loadDemo('pdf.js')
@@ -712,7 +716,8 @@ export function DownloadMenu({ id, template, format, onError }) {
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (e) {
       console.error(e)
-      onError?.(kind === 'docx' ? 'Could not download the Word document.' : 'Could not download the PDF.')
+      const reason = await downloadErrorReason(e)
+      onError?.((kind === 'docx' ? 'Could not download the Word document' : 'Could not download the PDF') + (reason ? ` — ${reason}` : '.'))
     } finally { setBusy(false) }
   }
   // Overrides keep the toolbar's own 29px height and 12px label.

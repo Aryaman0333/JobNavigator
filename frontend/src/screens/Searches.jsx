@@ -727,7 +727,7 @@ export default function Searches() {
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
           <CopyFrom kind="searches" pushToast={pushToast} onCloned={async (row) => {
-            await load(); loadAux(); bumpCounts()
+            await load(); loadAux(); bumpCounts(); notePaused(row, 'was copied')   // R30 I-04
             setNewOpen(false); setMenuFor(null); setEditing(row.id); setDraft(draftOf(row))
           }} />
           <Button onClick={() => { setNewOpen((v) => !v); setEditing(null); setMenuFor(null) }}>+ New search</Button>

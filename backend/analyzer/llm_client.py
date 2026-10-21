@@ -1060,6 +1060,10 @@ def _opencode_go_error(e: Exception, model: str):
                 f"{model} is an OpenCode Go contributor model that trains on request data; Go refuses "
                 "it until paid endpoints that train are allowed in your OpenCode account — allow "
                 "that there or pick another model")
+    # R30 L-07: Go is a subscription with usage limits, like the CLIs: a 429 or a limit
+    # message does not clear within the 14 s of retries, so go to the fallback at once.
+    if getattr(e, "status_code", None) == 429 or _QUOTA_RE.search(message):
+        return NonRetryableLLMError(f"OpenCode Go usage limit reached: {message}")
     return None
 
 
@@ -1104,19 +1108,32 @@ async def _call_openrouter(prompt: str, system: str, model: str, api_key: str, m
 async def _call_ollama(prompt: str, system: str, model: str, max_tokens: int) -> dict:
     """Call local Ollama instance. Returns {text, usage}."""
     import httpx
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            f"{local_base_url('ollama')}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "system": system,
-                "stream": False,
-                "options": {"num_predict": max_tokens},
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{local_base_url('ollama')}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "system": system,
+                    "stream": False,
+                    "options": {"num_predict": max_tokens},
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as e:
+        # R30 L-08: httpx names the URL, which is the owner's server address; a member on
+        # inherit sees this text in toasts and the LLM log, so it carries the status only.
+        detail = ""
+        try:
+            detail = str((e.response.json() or {}).get("error") or "")[:200]
+        except Exception:
+            pass
+        raise RuntimeError(f"Ollama answered HTTP {e.response.status_code}"
+                           + (f": {detail}" if detail else "")) from None
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Ollama is not reachable ({type(e).__name__})") from None
     return {
         "text": data["response"].strip(),
         "usage": {
