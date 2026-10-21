@@ -607,6 +607,10 @@ class NonRetryableLLMError(RuntimeError):
 
 
 CLI_TIMEOUT = 300   # seconds one subscription-CLI completion may take before it is killed
+# agy -high models can think for 5 minutes and more on one tailoring (gemini-3.8-flash-high:
+# 11k-56k thinking tokens, 86-368 s over six runs), so 300 s cut off answers that were on the
+# way. It stays under Caddy's 480 s read_timeout, so the synchronous PDF import gets its reply.
+AGY_TIMEOUT = 450
 # codex exec processes share one auth.json and rewrite it on token refresh; OpenAI's docs say not
 # to run many against the same file, so at most two at a time whatever the scoring limiter allows.
 # QA F8 / R5-12 (decision, no change): the gates stay process-wide although members on own
@@ -623,6 +627,11 @@ _AGY_LOGIN_HINT = "run `docker compose exec -it backend agy` and sign in"
 # 1.3.3+ reports an expired or revoked token as "Authentication expired. Please log back in."
 _AGY_AUTH_RE = re.compile(r"authentication (required|failed|expired)|not logged in|sign in|log back in", re.I)
 _AGY_STATE = "~/.gemini/antigravity-cli"
+# agy is an agent and offers its ~60 tools whatever the deny list says; a -high model spent
+# two turns (~45 s) on `ls` and read_file in the empty workdir before it answered. The deny
+# list blocks those calls, this line stops the model from making them.
+_AGY_NO_TOOLS = ("Answer in this one reply, from the text below only. Do not call any tool: "
+                 "there are no files to read and no commands to run.")
 # The deny list the image ships. It lives outside the state directory because agy rewrites
 # settings.json on every start, and a read-only copy there only makes that write fail.
 _AGY_SETTINGS_SOURCE = "/opt/antigravity-settings.json"
@@ -913,7 +922,8 @@ async def _agy_run(prompt: str, system: str, model: str, env: dict, login_hint: 
     import tempfile
 
     message = _json.dumps({"event": "user",
-                           "message": {"role": "user", "content": f"{system}\n\n{prompt}"}})
+                           "message": {"role": "user",
+                                       "content": f"{_AGY_NO_TOOLS}\n\n{system}\n\n{prompt}"}})
 
     denied = _agy_install_settings()
     stdout = b""
@@ -925,12 +935,12 @@ async def _agy_run(prompt: str, system: str, model: str, env: dict, login_hint: 
                 log_path = os.path.join(workdir, "cli.log")
                 # `-p` always swallows the next token, so it goes last with an attached empty value.
                 cmd = ["agy", "--input-format", "stream-json", "--output-format", "stream-json",
-                       "--print-timeout", f"{int(CLI_TIMEOUT)}s", "--log-file", log_path]
+                       "--print-timeout", f"{int(AGY_TIMEOUT)}s", "--log-file", log_path]
                 if model:
                     cmd.extend(["--model", model])
                 cmd.append("-p=")
                 rc, stdout, stderr = await _run_cli(cmd, (message + "\n").encode(),
-                                                    env=env, cwd=workdir)
+                                                    env=env, timeout=AGY_TIMEOUT, cwd=workdir)
                 _agy_assert_denied(log_path, denied)
     except CLITimeoutError as e:
         stdout = e.stdout
