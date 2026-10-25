@@ -5,11 +5,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.scraper.sources.linkedin_extension import _session_path
 
 logger = logging.getLogger("jobnavigator.linkedin")
 
@@ -41,14 +42,18 @@ def _require_session_writer() -> None:
     raise HTTPException(status_code=403, detail="LinkedIn is shared from the account owner; only the owner can refresh the session")
 
 
+# which session: mock (the extension import and the lookup) or main (LinkedIn Personal)
+Which = Annotated[str, Query(pattern="^(mock|main)$")]
+
+
 @router.get("/session")
-def session_status():
-    """Cookie-jar age plus the phase of any refresh currently running. `shared` is true for a member on 'inherit' LinkedIn: the session shown is the owner's."""
+def session_status(which: Which = "mock"):
+    """One session's cookie-jar age, whose sign-in saved it, and the phase of any sign-in running. `shared` is true for a member on 'inherit' LinkedIn: the session shown is the owner's."""
     from backend import refresh_linkedin_session as rls
 
     shared = _shared_from_owner()
-    path = _session_path()   # the caller's cookie jar (MT-16; the owner's when shared)
-    state = rls.state()
+    path = rls.jar(which)   # the caller's cookie jar (MT-16; the owner's when shared)
+    state = rls.state(which)
     exists = os.path.exists(path)
     age_days = None
     refreshed_at = None
@@ -75,28 +80,30 @@ def session_status():
         "phase": state.get("phase", "idle"),
         "detail": state.get("detail", ""),
         "shared": shared,
+        "which": which,
+        "signed_in_as": (rls.signed_in_as(which) or {}).get("email"),
     }
 
 
 @router.post("/session/refresh", status_code=202)
-async def session_refresh():
-    """Start the interactive login. Poll /session until phase leaves 'running'. Signs in and saves the caller's own session (MT-16)."""
+async def session_refresh(which: Which = "mock"):
+    """Start one session's interactive login. Poll /session?which= until phase leaves 'running'. Signs in and saves the caller's own session (MT-16)."""
     from backend import refresh_linkedin_session as rls
 
     _require_session_writer()
-    state = rls.state()
+    state = rls.state(which)
     if state.get("phase") in ("running", "awaiting_pin"):
         return {"run_id": None, "status": state["phase"]}
     try:
-        run_id = launch_background("linkedin_session_refresh", rls.run_refresh,
-                                   trigger="manual", scope_key="linkedin")
+        run_id = launch_background("linkedin_session_refresh", rls.run_refresh, which,
+                                   trigger="manual", scope_key=f"linkedin-{which}")
     except JobAlreadyRunningError:
         return {"run_id": None, "status": "running"}
     return {"run_id": run_id, "status": "running"}
 
 
 @router.post("/session/pin")
-def session_pin(body: PinIn):
+def session_pin(body: PinIn, which: Which = "mock"):
     """Hand the emailed PIN to the waiting login (it polls the account's PIN file)."""
     from backend import refresh_linkedin_session as rls
 
@@ -104,6 +111,6 @@ def session_pin(body: PinIn):
     digits ="".join(c for c in (body.pin or "") if c.isdigit())
     if not digits:
         return {"ok": False, "detail": "Enter the digits from LinkedIn's email."}
-    with open(rls.pin_file(), "w") as f:
+    with open(rls.pin_file(which), "w") as f:
         f.write(digits)
     return {"ok": True}

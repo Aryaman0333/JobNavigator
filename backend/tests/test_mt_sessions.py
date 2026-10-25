@@ -156,6 +156,12 @@ async def test_personal_scraper_saves_and_loads_the_accounts_own_jar(test_db, ac
 async def test_extension_import_reads_the_accounts_own_session(test_db, accounts, roots):
     from backend.scraper.sources import linkedin_extension as ext
     a, b = accounts
+    # the import reads the mock session of an account that has a mock account set (Task 8)
+    from backend.accounts.context import unscoped
+    with unscoped():   # the owner reads the install row, the member (LinkedIn 'own') its own
+        test_db.add_all([Setting(key="linkedin_mock_email", value="mock@x.io", account_id=None),
+                         Setting(key="linkedin_mock_email", value="mock@x.io", account_id=b)])
+        test_db.commit()
     (roots / "li").mkdir(parents=True)
     (roots / "li" / "li_cookies.json").write_text(json.dumps([{"name": "li_at", "value": "owner"}]))
     with use_account(a):
@@ -229,15 +235,15 @@ async def test_refresh_writes_the_current_accounts_jar_only(test_db, accounts, r
 async def test_refresh_state_and_pin_drop_are_per_account(test_db, accounts, roots):
     from backend import refresh_linkedin_session as rls
     a, b = accounts
-    rls.STATE.update(phase="idle", detail="")
+    rls.STATES["mock"].update(phase="idle", detail="")
     rls._MEMBER_STATES.clear()
     with use_account(b):
         rls._phase("awaiting_pin", "mail")
         assert rls.state()["phase"] == "awaiting_pin"
         assert rls.pin_file() == str(roots / "tmp" / f"li_pin_{b}.txt")
-    assert rls.STATE["phase"] == "idle"
+    assert rls.STATES["mock"]["phase"] == "idle"
     with use_account(a):
-        assert rls.state() is rls.STATE
+        assert rls.state() is rls.STATES["mock"]
         assert rls.pin_file() == str(roots / "tmp" / "li_pin.txt")
 
 

@@ -372,10 +372,10 @@ def _mt14(c, opg, mpg, owner_id, owner_name, member_id, member_name):
             c.check('F5: the member’s LinkedIn row reads “Set by <owner>”',
                     mpg.evaluate("""(t) => { const h = document.querySelector('[data-sec="sec-linkedin"]');
                       return !!h && h.parentElement.textContent.includes(t) }""", f'Set by {owner_name}'))
-            c.check('F5: … and its Refresh cookie row is locked (owner-only refresh)',
+            c.check('F5: … and its session rows are locked (owner-only sign-in)',
                     mpg.evaluate("""() => { const h = document.querySelector('[data-sec="sec-linkedin"]');
                       return !!h && [...h.parentElement.querySelectorAll('[data-locked="true"]')]
-                        .some((x) => x.textContent.includes('Session cookie')) }"""))
+                        .some((x) => x.textContent.includes('Mock session')) }"""))
             mpg.screenshot(path=f'{SHOTS}/member-linkedin-set-by-owner.png')
         st, li = _api('GET', '/linkedin/session', account=member_id)
         c.check('F5: the member’s LinkedIn session is the owner’s (shared)', (li or {}).get('shared') is True, li)

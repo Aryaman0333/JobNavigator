@@ -15,6 +15,7 @@ account: it refuses to run when that session is the personal account.
   so it joins the employer's posting the account already has.
 """
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -28,12 +29,16 @@ STOP_AFTER_NO_DATA = 3
 
 
 
-def mock_account_in_use(db) -> bool:
-    """The extension session is the mock account's (refresh_linkedin_session._creds' rule)."""
+def mock_session_problem(db):
+    """None when the mock session can be used, else why not: a mock account must be set, and the
+    jar's sign-in record (refresh_linkedin_session.record_sign_in) must say the mock signed it."""
+    from backend import refresh_linkedin_session as rls
     from backend.accounts.settings import get_setting
-    switch = str(get_setting(db, "linkedin_use_mock_account") or "").strip().lower()
-    has_mock = bool(str(get_setting(db, "linkedin_mock_email") or "").strip())
-    return (switch or ("true" if has_mock else "false")) == "true"
+    if not str(get_setting(db, "linkedin_mock_email") or "").strip():
+        return "no mock account is set (Settings › LinkedIn)"
+    if (rls.signed_in_as(rls.MOCK) or {}).get("account") != rls.MOCK:
+        return "the mock session has no sign-in record: sign the mock account in (Settings › LinkedIn)"
+    return None
 
 
 def pending_ids(db, limit: int) -> list:
@@ -107,15 +112,22 @@ async def _fetcher(fetch):
     from backend.accounts.background import acting_as
     from backend.models.db import SessionLocal
     from backend.scraper.sources import linkedin_extension as le
+    from backend import refresh_linkedin_session as rls
     with acting_as(None):
         sdb = SessionLocal()
         try:
-            mock = mock_account_in_use(sdb)
+            problem = mock_session_problem(sdb)
         finally:
             sdb.close()
-        cookies = le._load_session_cookies() if mock else None
-    if not mock:
-        yield None, "the LinkedIn session is not the mock account"
+        cookies = None
+        if problem is None:
+            try:   # the mock jar itself, never the import's fallback to the main session
+                with open(rls.jar(rls.MOCK)) as f:
+                    cookies = json.load(f) or None
+            except (OSError, ValueError):
+                cookies = None
+    if problem is not None:
+        yield None, problem
         return
     if not cookies:
         yield None, "no LinkedIn mock session"

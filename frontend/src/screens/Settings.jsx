@@ -230,7 +230,7 @@ export default function Settings() {
   const [editFor, setEditFor] = useState(null)
   const [modelsOpen, setModelsOpen] = useState(false)
   const [efforts, setEfforts] = useState({})  // provider -> reasoning-effort values, from GET /llm/efforts
-  const [li, setLi] = useState(null)          // linkedin session status
+  const [li, setLi] = useState({})            // {main, mock}: each LinkedIn session's status
   const [gmail, setGmail] = useState(null)    // MT-19: GET /gmail/status {status, source, configured}
   const [toast, setToast] = useState(null)
   const [loadErr, setLoadErr] = useState(null)   // set on a failed GET /settings
@@ -402,7 +402,8 @@ export default function Settings() {
     // This is the Default résumé picker's entire option list — empty, it looks like a setting with nothing to choose.
     () => api.get('/resumes', { params: { is_base: true } }).then(({ data }) => setResumes(data || [])).catch((e) => { console.error(e); flash('Could not load your résumés — the default-résumé picker is empty', true) }),
     () => api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in that picker */ }),
-    () => api.get('/linkedin/session').then(({ data }) => setLi(data)).catch(() => { /* silent: the LinkedIn row reads “unknown” and its own actions report their failures */ }),
+    () => Promise.all(['main', 'mock'].map((which) => api.get('/linkedin/session', { params: { which } }).then(({ data }) => [which, data])))
+      .then((pairs) => setLi(Object.fromEntries(pairs))).catch(() => { /* silent: the LinkedIn rows read “unknown” and their own actions report their failures */ }),
     () => loadAccounts(),
     () => api.get('/gmail/status').then(({ data }) => setGmail(data || null)).catch(() => { /* silent: the Gmail row stays hidden */ }),
   ])
@@ -729,18 +730,18 @@ export default function Settings() {
             info: 'Jobright hands out a 60-day cookie. The scraper stores it, reuses it across restarts and renews it on its own when it expires or is rejected; nothing here needs doing unless you want to force a fresh sign-in.' }),
       ]],
       ['linkedin', '', 'LinkedIn', '', [
-        B('Personal email', 'Used by LinkedIn Personal collections.', 'linkedin_email', { w: '260px' }),
-        B('Personal password', 'Stored locally.', 'linkedin_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', lockKey: 'linkedin_email', label: 'Session cookie', help: 'The extension import reuses a signed-in session. LinkedIn asks for an emailed PIN at login.' },
-        SW('Use a mock account', 'The session signs in with the mock account below.', 'Off — the session signs in with the personal account above.', 'linkedin_use_mock_account',
-          { dflt: !!val('linkedin_mock_email'), info: 'Optional. The extension captures jobs while you browse LinkedIn collections. A separate account keeps rate limits, CAPTCHAs or bans off your real profile.' }),
-        ...(isOn('linkedin_use_mock_account', !!val('linkedin_mock_email')) ? [
-          B('Mock account email', 'The extension browses specific jobs with this mock account.', 'linkedin_mock_email', { w: '260px' }),
-          B('Mock account password', 'Stored locally only.', 'linkedin_mock_password', { secret: true, w: '260px' }),
-          B('Employer link lookup · cron', 'LinkedIn jobs from any source get the employer’s apply link through the mock account. Empty = off.', 'linkedin_lookup_cron',
-            { mono: true, cron: true, w: '135px', info: 'Each LinkedIn job is asked about once, one every 15 seconds, and the answer is kept for every account. Easy Apply jobs are marked as such. A run stops when LinkedIn stops answering.' }),
-          B('Lookups per run', 'Most LinkedIn jobs asked about per run.', 'linkedin_lookup_per_run', { mono: true, int: true, w: '80px' }),
-        ] : []),
+        // Two sessions, each signed in on its own (no switch): the main account for LinkedIn
+        // Personal, the mock account for the extension import and the employer-link lookup.
+        B('Main account email', 'Your own LinkedIn account. LinkedIn Personal searches use it.', 'linkedin_email', { w: '260px' }),
+        B('Main account password', 'Stored locally.', 'linkedin_password', { secret: true, w: '260px' }),
+        { kind: 'linkedin', which: 'main', lockKey: 'linkedin_email', label: 'Main session', help: 'Signed in with the main account. LinkedIn emails a PIN at sign-in.' },
+        B('Mock account email', 'A separate account for the extension import and the employer-link lookup.', 'linkedin_mock_email',
+          { w: '260px', info: 'Optional. Keeps rate limits, CAPTCHAs or bans off your real profile. Without a mock account the extension import uses the main session, and the employer-link lookup stays off: it never uses your own account.' }),
+        B('Mock account password', 'Stored locally only.', 'linkedin_mock_password', { secret: true, w: '260px' }),
+        { kind: 'linkedin', which: 'mock', lockKey: 'linkedin_email', label: 'Mock session', help: 'Signed in with the mock account. The extension import and the employer-link lookup use it.' },
+        B('Employer link lookup · cron', 'LinkedIn jobs from any source get the employer’s apply link through the mock account. Empty = off.', 'linkedin_lookup_cron',
+          { mono: true, cron: true, w: '135px', info: 'Each LinkedIn job is asked about once, one every 15 seconds, and the answer is kept for every account. Easy Apply jobs are marked as such. A run stops when LinkedIn stops answering or the mock session is signed out.' }),
+        B('Lookups per run', 'Most LinkedIn jobs asked about per run.', 'linkedin_lookup_per_run', { mono: true, int: true, w: '80px' }),
       ]],
       ['advanced', 'System', 'Advanced', '', [
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),
@@ -1153,7 +1154,7 @@ function Row({ r, ctx }) {
       case 'ownerset':
         return <Helper style={{ flex: 1, minWidth: 0 }}>Set by {r.ownerName}</Helper>
       case 'linkedin':
-        return <LinkedInRow li={li} setLi={setLi} flash={flash} />
+        return <LinkedInRow which={r.which} li={li[r.which]} setLi={(data) => setLi((prev) => ({ ...prev, [r.which]: data }))} flash={flash} />
       default:
         return null
     }
@@ -1243,18 +1244,18 @@ function ApiKeyRow({ value, save, flash }) {
   )
 }
 
-function LinkedInRow({ li, setLi, flash }) {
+function LinkedInRow({ which, li, setLi, flash }) {
   const [pin, setPin] = useState('')
   const poll = useRef(null)
   useEffect(() => () => clearInterval(poll.current), [])
 
   const start = async () => {
     try {
-      await api.post('/linkedin/session/refresh')
+      await api.post('/linkedin/session/refresh', null, { params: { which } })
       clearInterval(poll.current)
       poll.current = setInterval(async () => {
         try {
-          const { data } = await api.get('/linkedin/session')
+          const { data } = await api.get('/linkedin/session', { params: { which } })
           setLi(data)
           if (!['running', 'awaiting_pin'].includes(data.phase)) clearInterval(poll.current)
         } catch { /* keep polling */ }
@@ -1272,7 +1273,7 @@ function LinkedInRow({ li, setLi, flash }) {
         {phase === 'awaiting_pin' ? (li?.detail || 'LinkedIn emailed a PIN.')
           : phase === 'running' ? (li?.detail || 'Signing in…')
             : phase === 'failed' && li?.detail ? li.detail
-            : (li?.summary || 'Unknown')}
+            : (li?.signed_in_as ? `${li.signed_in_as} · ` : '') + (li?.summary || 'Unknown')}
       </Helper>
       {phase === 'awaiting_pin' && (
         <>
@@ -1280,14 +1281,14 @@ function LinkedInRow({ li, setLi, flash }) {
             ariaLabel="LinkedIn sign-in PIN" mono style={{ ...MONO_FIELD, flex: '0 1 120px' }} />
           <ActionBtn label="Submit PIN" state="" onClick={async () => {
             try {
-              const { data } = await api.post('/linkedin/session/pin', { pin })
+              const { data } = await api.post('/linkedin/session/pin', { pin }, { params: { which } })
               if (!data.ok) flash(data.detail || 'Enter the digits from the email', true)
               else { setPin(''); flash('PIN sent') }
             } catch (e) { flash(errorText(e, 'Could not send the PIN'), true) }
           }} />
         </>
       )}
-      {phase !== 'awaiting_pin' && <ActionBtn label="Refresh cookie" state={busy ? 'running' : ''} onClick={start} />}
+      {phase !== 'awaiting_pin' && <ActionBtn label="Sign in" state={busy ? 'running' : ''} onClick={start} />}
     </>
   )
 }

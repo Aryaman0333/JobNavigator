@@ -71,10 +71,18 @@ _linkedin_import_progress = _PerAccountProgress()
 # Persisted (mounted) Playwright session cookies — written by
 # backend/refresh_linkedin_session.py. Survives container restarts.
 def _session_path() -> str:
-    """The current account's cookie jar (MT-16): the owner's is today's
-    /root/.linkedin_api/li_cookies.json, a member's lives under accounts/<id>/."""
-    from backend.accounts.credentials import linkedin_extension_cookies
-    return linkedin_extension_cookies()
+    """The jar the LinkedIn import reads: the mock account's session when a mock account is set
+    (Settings › LinkedIn), else the main account's. MT-16: the current account's jars (the
+    owner's mock jar is /root/.linkedin_api/li_cookies.json, a member's lives under accounts/<id>/)."""
+    from backend.accounts.credentials import linkedin_extension_cookies, linkedin_personal_cookies
+    from backend.accounts.settings import get_setting
+    from backend.models.db import SessionLocal
+    db = SessionLocal()
+    try:
+        mock = (get_setting(db, "linkedin_mock_email") or "").strip()
+    finally:
+        db.close()
+    return linkedin_extension_cookies() if mock else linkedin_personal_cookies()
 
 # The exact Voyager endpoint + decoration the linkedin-api library used; returns plain JSON
 # with top-level title/companyDetails/description/formattedLocation/applyMethod.

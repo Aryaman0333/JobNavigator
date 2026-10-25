@@ -38,7 +38,6 @@ DEFAULT_SETTINGS = {
     "linkedin_password": ("", "LinkedIn account password for personal scrape mode"),
     "linkedin_mock_email": ("", "LinkedIn mock account email for Extension Voyager API"),
     "linkedin_mock_password": ("", "LinkedIn mock account password for Extension Voyager API"),
-    "linkedin_use_mock_account": ("false", "Sign the extension session in with the mock account. false = use the personal account (linkedin_email/linkedin_password)"),
     "jobright_email": ("", "Jobright.ai account email"),
     "jobright_password": ("", "Jobright.ai account password"),
     "jobright_session_id": ("", "Jobright.ai session cookie (auto-managed, 60-day expiry)"),
@@ -565,14 +564,6 @@ def seed_settings(db):
         if key not in existing:
             db.add(Setting(key=key, value=value, description=desc))
     db.commit()
-    # One-shot: a DB that already holds a mock account keeps signing in with it;
-    # every other DB starts on the personal account.
-    if "linkedin_use_mock_account" not in existing:
-        mock = install_row(db, "linkedin_mock_email")
-        if mock is not None and (mock.value or "").strip():
-            db.query(Setting).filter(Setting.key == "linkedin_use_mock_account",
-                                     Setting.account_id.is_(None)).update({"value": "true"})
-            db.commit()
     # One-shot: seeded empty above so the row is visible in /api/settings; the
     # real cryptographically random value is generated here on first run.
     row = install_row(db, "telegram_webhook_secret")
@@ -1135,6 +1126,8 @@ def seed_h1b_slugs(db):
 def cleanup_removed_settings(db):
     """Remove settings that have been removed from DEFAULT_SETTINGS."""
     removed_keys = [
+        # 3.2: two LinkedIn sessions, each with its own Sign in, replaced the switch
+        "linkedin_use_mock_account",
         "followup_reminder_days",
         "h1b_exclusion_phrases",
         "language_exclude_phrases",

@@ -28,9 +28,24 @@ async def _no_resolve(url):
     return url
 
 
-def _mock_on(db):
-    db.add(Setting(key="linkedin_use_mock_account", value="true"))
-    db.commit()
+@pytest.fixture
+def mock_jar(tmp_path, monkeypatch):
+    """Both LinkedIn jars in a temp dir; `ready(db, cookies=, signed=)` sets the mock account up."""
+    import json as _json
+    from backend import refresh_linkedin_session as rls
+    from backend.accounts import credentials as C
+    monkeypatch.setattr(C, "LI_EXTENSION_OWNER", str(tmp_path / "li_cookies.json"))
+    monkeypatch.setattr(C, "LI_PERSONAL_OWNER", str(tmp_path / "linkedin_cookies.json"))
+
+    def ready(db, cookies=True, signed=True):
+        db.add(Setting(key="linkedin_mock_email", value="mock@x.io"))
+        db.commit()
+        if cookies:
+            with open(rls.jar(rls.MOCK), "w") as f:
+                _json.dump([{"name": "li_at", "value": "x", "domain": ".linkedin.com", "path": "/"}], f)
+        if signed:
+            rls.record_sign_in(rls.MOCK, "mock@x.io")
+    return ready
 
 
 async def _run(fetch, per_run=20, resolve=_no_resolve):
@@ -102,11 +117,9 @@ async def test_lookup_follows_a_short_employer_link(test_db):
 
 
 @pytest.mark.asyncio
-async def test_lookup_without_a_session_does_nothing(test_db, monkeypatch):
-    _mock_on(test_db)
+async def test_lookup_without_a_session_does_nothing(test_db, mock_jar):
+    mock_jar(test_db, cookies=False)
     job = _li(test_db)
-    from backend.scraper.sources import linkedin_extension as le
-    monkeypatch.setattr(le, "_load_session_cookies", lambda: None)
     out = await ll.run_lookup(per_run=20, pause=0)
     test_db.refresh(job)
     assert out["stopped"] == "no LinkedIn mock session"
@@ -114,14 +127,22 @@ async def test_lookup_without_a_session_does_nothing(test_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lookup_refuses_the_personal_account(test_db, monkeypatch):
-    test_db.add(Setting(key="linkedin_use_mock_account", value="false"))
-    test_db.commit()
+async def test_lookup_needs_a_mock_account(test_db, mock_jar):
     _li(test_db)
-    from backend.scraper.sources import linkedin_extension as le
-    monkeypatch.setattr(le, "_load_session_cookies", lambda: [{"name": "li_at", "value": "x"}])
     out = await ll.run_lookup(per_run=20, pause=0)
-    assert out["stopped"] == "the LinkedIn session is not the mock account"
+    assert out["stopped"] == "no mock account is set (Settings › LinkedIn)"
+
+
+@pytest.mark.asyncio
+async def test_lookup_needs_the_mock_accounts_own_sign_in(test_db, mock_jar):
+    """A jar saved before the sessions were split (or by the main sign-in) proves nothing."""
+    from backend import refresh_linkedin_session as rls
+    mock_jar(test_db, signed=False)
+    _li(test_db)
+    out = await ll.run_lookup(per_run=20, pause=0)
+    assert out["stopped"] == "the mock session has no sign-in record: sign the mock account in (Settings › LinkedIn)"
+    rls.record_sign_in(rls.MAIN, "me@x.io")
+    assert (await ll.run_lookup(per_run=20, pause=0))["stopped"].startswith("the mock session has no sign-in record")
 
 
 @pytest.mark.asyncio
@@ -244,11 +265,11 @@ async def test_the_lookup_run_also_follows_short_links(test_db):
 
 
 def _fake_browser(monkeypatch, landed: str, me: int, li_at: bool = True):
+    # the mock jar and its sign-in record come from the `mock_jar` fixture
     """The lookup's browser, faked: where opening the feed lands, what /voyager/api/me answers,
     and whether the jar holds `li_at`. Returns the list of Voyager job requests made."""
     from backend.scraper.sources import linkedin_extension as le
     from backend.scraper.sources import linkedin_personal as lp
-    monkeypatch.setattr(le, "_load_session_cookies", lambda: [{"name": "li_at", "value": "x"}])
     asked = []
 
     class Page:
@@ -288,9 +309,9 @@ def _fake_browser(monkeypatch, landed: str, me: int, li_at: bool = True):
 
 
 @pytest.mark.asyncio
-async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeypatch):
+async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeypatch, mock_jar):
     """LinkedIn signed the mock session out: the feed redirects to the login page."""
-    _mock_on(test_db)
+    mock_jar(test_db)
     job = _li(test_db)
     asked = _fake_browser(monkeypatch, "https://www.linkedin.com/uas/login?session_redirect=x", 401)
     out = await ll.run_lookup(per_run=20, pause=0)
@@ -300,10 +321,10 @@ async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_live_session_whose_me_call_refuses_still_runs(test_db, monkeypatch):
+async def test_a_live_session_whose_me_call_refuses_still_runs(test_db, monkeypatch, mock_jar):
     """/voyager/api/me can answer 401 for a live session; the feed reached with li_at counts
     as signed in (linkedin_personal._is_logged_in)."""
-    _mock_on(test_db)
+    mock_jar(test_db)
     job = _li(test_db)
     asked = _fake_browser(monkeypatch, "https://www.linkedin.com/feed/", 401)
     out = await ll.run_lookup(per_run=20, pause=0, resolve=_no_resolve)
