@@ -515,3 +515,17 @@ def test_backfill_turns_old_duplicates_into_classified_copies(test_db):
         migrate_posting_keys(test_db)
     test_db.refresh(old)
     assert old.status == "ignored" and old.copy_kind == "link" and old.duplicate_of == orig.id
+
+
+def test_the_api_names_a_copys_original(test_db, api_client):
+    from backend.models.db import Setting
+    test_db.add(Setting(key="dashboard_api_key", value=""))
+    _copy_setting(test_db, "city", "new")
+    orig = _job(test_db, WD.format("SEATTLE-WA"), company="Wells Fargo", title="LPM",
+                location="Seattle, WA", city=("Seattle", "WA"), days_old=1)
+    ny = _job(test_db, WD.format("NEW-YORK-NY"), company="Wells Fargo", title="LPM",
+              location="New York, NY", city=("New York", "NY"))
+    body = api_client.get(f"/api/jobs/{ny.id}").json()
+    assert body["copy_kind"] == "city"
+    assert body["copy_of"] == {"id": str(orig.id), "location": "Seattle, WA", "source": "jobright"}
+    assert api_client.get(f"/api/jobs/{orig.id}").json()["copy_of"] is None

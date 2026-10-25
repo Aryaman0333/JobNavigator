@@ -654,6 +654,13 @@ export default function Settings() {
       ['dedup', '', 'Dedup tracking params', '', [
         E('Stripped params', 'Query params removed from job URLs before duplicate detection. All utm_* are always stripped.', 'dedup_tracking_params', { list: true, sub: 'one param per line' }),
       ]],
+      // where each kind of copy of a posting goes (backend posting_links.py); every copy stays
+      // listed on its original under Also listed
+      ['copies', '', 'Copies of a posting', '', [
+        SEL('Same posting, another link', 'The same posting found again under another link, in the same city.', 'dedup_copy_link', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same role, another city', 'The same posting or role listed in another city.', 'dedup_copy_city', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same role, new posting', 'The same role posted again under a new id in the same city: another opening or a repost.', 'dedup_copy_repost', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+      ]],
       ['notifications', 'Integrations', 'Notifications', '', [
         SW('Telegram', 'New high-scoring jobs and the daily digest are sent to your chat. The digest schedule is under Scheduler.', 'Off — no push notifications.', 'telegram_enabled'),
         // MT-17: a member sends through the household (owner's) bot or a bot of its own; the owner always uses the household bot.

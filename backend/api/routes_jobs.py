@@ -206,6 +206,7 @@ def list_jobs(
     names = resume_names(db)
     also_on = _also_on(db, job_ids)
     skipped = _skipped_roles(db, jobs)
+    origins = _copy_origins(db, jobs)
     rows = [
         _job_to_dict(
             j,
@@ -215,6 +216,7 @@ def list_jobs(
             names=names,
             also_on=also_on.get(j.id, []),
             same_role_skipped=skipped.get(j.id),
+            copy_of=origins.get(j.id),
         )
         for j in jobs
     ]
@@ -1024,6 +1026,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
         in_flight_detail=[{"job_type": r.job_type, "meta": r.meta} for r in running],
         also_on=_also_on(db, [job.id]).get(job.id, []),
         same_role_skipped=_skipped_roles(db, [job]).get(job.id),
+        copy_of=_copy_origins(db, [job]).get(job.id),
     )
 
 
@@ -1287,6 +1290,17 @@ def _also_on(db, job_ids) -> dict:
     return out
 
 
+def _copy_origins(db, jobs) -> dict:
+    """{job id: {"id", "location", "source"}}: the original a copy belongs to (posting_links.py)."""
+    want = {j.duplicate_of for j in jobs if getattr(j, "duplicate_of", None)}
+    if not want:
+        return {}
+    found = {i: (loc, src) for i, loc, src in
+             db.query(Job.id, Job.location, Job.source).filter(Job.id.in_(list(want))).all()}
+    return {j.id: {"id": str(j.duplicate_of), "location": found[j.duplicate_of][0], "source": found[j.duplicate_of][1]}
+            for j in jobs if getattr(j, "duplicate_of", None) in found}
+
+
 def _skipped_roles(db, jobs) -> dict:
     """{job id: {"id", "location"}}: the job the user skipped that is the same role as this one
     in another place (posting_links.py `same_role_as`)."""
@@ -1300,7 +1314,8 @@ def _skipped_roles(db, jobs) -> dict:
 
 def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = None,
                  in_flight_detail: list[dict] | None = None, names: dict | None = None,
-                 also_on: list | None = None, same_role_skipped: dict | None = None) -> dict:
+                 also_on: list | None = None, same_role_skipped: dict | None = None,
+                 copy_of: dict | None = None) -> dict:
     """`names` is {résumé id: name} for the account (score_keys.resume_names), loaded once by a
     list caller; a single job loads it itself."""
     from backend.analyzer.score_keys import display, resume_names
@@ -1331,6 +1346,8 @@ def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = 
         "open_checked_at": j.open_checked_at.isoformat() if j.open_checked_at else None,
         "link": job_link(j),   # the employer's link when there is one: what Open opens
         "same_role_skipped": same_role_skipped,
+        "copy_kind": j.copy_kind,
+        "copy_of": copy_of,
         "source": j.source,
         "search_id": str(j.search_id) if j.search_id else None,
         "description": j.description,

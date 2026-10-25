@@ -99,7 +99,7 @@ const SOURCE_LABELS = {
 // `boards` (useApifyBoards) names the `apify_<board>` sources.
 const srcLabel = (s, boards = []) => SOURCE_LABELS[s] || apifySourceLabel(boards, s) || s || ''
 // `duplicate`: a copy of a posting the feed already has (posting_links.py); the posting lists it under "Also on".
-const STATUS_OPTS = [['new', 'New'], ['saved', 'Saved'], ['applied', 'Applied'], ['skip', 'Skip'], ['ignored', 'Ignored'], ['duplicate', 'Duplicate']]
+const STATUS_OPTS = [['new', 'New'], ['saved', 'Saved'], ['applied', 'Applied'], ['skip', 'Skip'], ['ignored', 'Ignored']]
 const SORT_OPTS = [['score', 'Top score'], ['date', 'Newest first'], ['salary', 'Salary, high to low'], ['company', 'Company A–Z']]
 // "45 minutes", "1 hour", "2 hours 30 minutes" — the scrape interval in the never-scraped empty state
 const everyText = (min) => {
@@ -1463,7 +1463,8 @@ export default function V2JobFeed() {
                           // the same role, skipped elsewhere: shown again because this place may fit
                           d.same_role_skipped && <span key="skipped" style={{ whiteSpace: 'nowrap' }}>Skipped in{' '}
                             <Link onClick={() => setSearchParams(p => { p.set('job', d.same_role_skipped.id); return p })} title="The same role, which you skipped in another place" style={{ fontSize: 'inherit', lineHeight: 'inherit' }}>{d.same_role_skipped.location || 'another place'}</Link></span>,
-                          d.status === 'duplicate' && <span key="dup" title="A copy of a posting or role already in your feed; its own row lists this one under Also listed">Duplicate</span>,
+                          // a copy links back to its original (backend posting_links.py: link | city | repost)
+                          d.copy_of && <span key="copy" style={{ whiteSpace: 'nowrap' }}><Link onClick={() => setSearchParams((p) => { p.set('job', d.copy_of.id); return p })} title="Open the original posting" style={{ fontSize: 'inherit', lineHeight: 'inherit' }}>{d.copy_kind === 'city' ? `Same role in ${d.copy_of.location || 'another city'}` : d.copy_kind === 'repost' ? 'Reposted: see the earlier posting' : 'Copy of a posting in your feed'} ↗</Link></span>,
                         ].filter(Boolean).flatMap((el, i) => i ? [<span key={`sep${i}`} style={{ color: 'var(--line)' }}>|</span>, el] : [el])}
                       </div>
                     ) : <Helper style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[d.company, fmtSalary(d.salary_min, d.salary_max), d.location, visaText, srcLabel(d.source, apifyBoards), timeAgo(d.discovered_at)].filter(Boolean).join(' · ')}</Helper>}
