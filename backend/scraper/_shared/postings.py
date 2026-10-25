@@ -21,6 +21,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 logger = logging.getLogger("jobnavigator.postings")
 
+# Raised whenever a reader changes what key a link gets; on start, stored jobs are keyed
+# again when the install's version is older (seed.migrate_posting_keys).
+READER_VERSION = 2
+
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
 
@@ -48,12 +52,24 @@ def _segments(path: str) -> list:
 
 # ── per-system readers: (parsed, host, segments, query) -> key | None ─────────
 
+# Company career pages that put the Greenhouse job id in the path (the Greenhouse API's
+# absolute_url for these boards is the same page with ?gh_jid=).
+_GREENHOUSE_SITES = {
+    "brex.com": re.compile(r"^/careers/(\d{7,})/?$"),
+    "stripe.com": re.compile(r"^/(?:careers|jobs)/listing/[^/]+/(\d{6,})"),
+}
+
+
 def _greenhouse(parsed, host, seg, qs):
     # A greenhouse job id is global, so the board slug is not part of the key: the
     # embed, the hosted board and a company page with ?gh_jid= all name one posting.
     gh = _first(qs, "gh_jid")
     if gh and gh.isdigit():
         return f"greenhouse:{gh}"
+    site = _GREENHOUSE_SITES.get(host)
+    m = site.search(parsed.path or "") if site else None
+    if m:
+        return f"greenhouse:{m.group(1)}"
     if _is(host, "greenhouse.io"):
         token = _first(qs, "token")
         if "job_app" in seg and token and token.isdigit():
@@ -85,10 +101,21 @@ def _ashby(parsed, host, seg, qs):
 _WORKDAY_REQ = re.compile(r"_([A-Za-z0-9][A-Za-z0-9-]*\d[A-Za-z0-9-]*)$")
 
 
+# Company career sites that show a Workday requisition under its own number:
+# host -> (tenant, path pattern).
+_WORKDAY_SITES = {
+    "careers.bankofamerica.com": ("ghr", re.compile(r"/job-detail/(\d{6,})(?:/|$)")),
+}
+
+
 def _workday(parsed, host, seg, qs):
     # .../<site>/job/<location>/<Title>_<REQ>: one requisition is listed once per
     # location, each with its own path, so the key is tenant + requisition.
     # <tenant>.wdN.myworkdayjobs.com/..., or wdN.myworkdaysite.com/recruiting/<tenant>/<site>/...
+    if host in _WORKDAY_SITES:
+        tenant, pattern = _WORKDAY_SITES[host]
+        m = pattern.search(parsed.path or "")
+        return f"workday:{tenant}:{m.group(1)}" if m else None
     if "job" not in seg:
         return None
     if _is(host, "myworkdayjobs.com"):
@@ -103,9 +130,19 @@ def _workday(parsed, host, seg, qs):
     return f"workday:{tenant}:{m.group(1).upper()}"
 
 
+# Company career sites that show an iCIMS job under its own number: host -> (portal, path pattern).
+_ICIMS_SITES = {
+    "careers.docusign.com": ("uscareers-docusign", re.compile(r"/jobs/(\d+)(?:/|$)")),
+}
+
+
 def _icims(parsed, host, seg, qs):
     if _is(host, "icims.com") and len(seg) >= 2 and seg[0] == "jobs" and seg[1].isdigit():
         return f"icims:{host.split('.')[0]}:{seg[1]}"
+    if host in _ICIMS_SITES:
+        portal, pattern = _ICIMS_SITES[host]
+        m = pattern.search(parsed.path or "")
+        return f"icims:{portal}:{m.group(1)}" if m else None
     return None
 
 
@@ -209,10 +246,14 @@ def _career_platforms(parsed, host, seg, qs):
     # Gem: jobs.gem.com/<company>/<id>
     if host == "jobs.gem.com" and len(seg) >= 2:
         return f"gem:{seg[1]}"
-    # A job id in the query (IBM's JobDetail?jobId=, UBS's …&jobId=)
-    jid = _first(qs, "jobid")
-    if jid and jid.isdigit() and ("JobDetail" in path or "JobDetails" in (parsed.query or "")):
-        return f"site:{host}:{jid}"
+    # A job id in the query: Avature's JobDetail?jobId= is the same posting as its
+    # /JobDetail/<slug>/<id> path; UBS's …&jobId= on its own site. Only the leading digits
+    # count (a board re-encodes its own tracking into it: jobId=1130%3Fsource%3Djobright).
+    m = re.match(r"\d+", _first(qs, "jobid") or "")
+    if m and "JobDetail" in seg:
+        return f"avature:{host}:{m.group(0)}"
+    if m and "JobDetails" in (parsed.query or ""):
+        return f"site:{host}:{m.group(0)}"
     return None
 
 
@@ -221,7 +262,6 @@ _SITE_PATHS = {
     "careers.servicenow.com": re.compile(r"^/jobs/(\d{6,})"),
     "uber.com": re.compile(r"/careers/list/(\d+)"),
     "coinbase.com": re.compile(r"/careers/positions/(\d+)"),
-    "careers.docusign.com": re.compile(r"/jobs/(\d+)"),
     "joinbytedance.com": re.compile(r"^/search/(\d{10,})"),
 }
 
@@ -268,9 +308,11 @@ def _big_boards(parsed, host, seg, qs):
         if i + 1 < len(seg) and seg[i + 1].isdigit():
             return f"amazon:{seg[i + 1]}"
     if host == "jobs.apple.com" and "details" in seg:
+        # <role>-<location code>: Apple lists one role once per location (200684524-0836
+        # in Cupertino, 200684524-2459 in New York), so the role number is the posting.
         i = seg.index("details")
         if i + 1 < len(seg):
-            m = re.match(r"(\d+(?:-\d+)?)", seg[i + 1])
+            m = re.match(r"(\d+)(?:-\d+)?", seg[i + 1])
             if m:
                 return f"apple:{m.group(1)}"
     if host == "google.com" and "results" in seg:

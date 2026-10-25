@@ -1429,12 +1429,12 @@ export default function V2JobFeed() {
                           d.location && <span key="loc" style={{ maxWidth: 270, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.location}</span>,
                           visaText && <span key="visa" title={visaTitle} style={{ color: visaCol }}>{visaText}</span>,
                           // where else this posting was found; each copy opens its own listing
-                          // a copy from this job's own source is the same posting under another link
-                          // (another location, another spelling)
+                          // a copy from this job's own source is the same posting or role under another
+                          // link: named by its city when that differs, else "another link"
                           d.also_on?.length > 0 && <span key="also" style={{ whiteSpace: 'nowrap' }}>Also listed:{' '}
-                            {d.also_on.map((a, i) => <React.Fragment key={a.url}>{i ? ', ' : ''}<Link href={a.url} target="_blank" title={a.url} style={{ fontSize: 'inherit', lineHeight: 'inherit' }}>{a.source === d.source ? 'another link' : srcLabel(a.source, apifyBoards)}</Link></React.Fragment>)}
+                            {d.also_on.map((a, i) => <React.Fragment key={a.url}>{i ? '; ' : ''}<Link href={a.url} target="_blank" title={a.url} style={{ fontSize: 'inherit', lineHeight: 'inherit' }}>{a.source !== d.source ? srcLabel(a.source, apifyBoards) : (a.location && a.location !== d.location ? a.location : 'another link')}</Link></React.Fragment>)}
                           </span>,
-                          d.status === 'duplicate' && <span key="dup" title="A copy of a posting already in your feed; its own row lists this one under Also on">Duplicate</span>,
+                          d.status === 'duplicate' && <span key="dup" title="A copy of a posting or role already in your feed; its own row lists this one under Also listed">Duplicate</span>,
                         ].filter(Boolean).flatMap((el, i) => i ? [<span key={`sep${i}`} style={{ color: 'var(--line)' }}>|</span>, el] : [el])}
                       </div>
                     ) : <Helper style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[d.company, fmtSalary(d.salary_min, d.salary_max), d.location, visaText, srcLabel(d.source, apifyBoards), timeAgo(d.discovered_at)].filter(Boolean).join(' · ')}</Helper>}

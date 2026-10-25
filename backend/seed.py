@@ -1426,69 +1426,58 @@ def migrate_cv_score_keys(db, batch: int = 500) -> dict:
     return changed
 
 
-# Marker of the one-time posting-key backfill below (install row, never served, not writable).
+# Marker of the posting-key backfill below: the reader version the stored keys were read with
+# (install row, never served, not writable). 3.1 wrote "1".
 POSTING_KEYS_MIGRATED_KEY = "posting_keys_migrated"
-# Who keeps a posting when several rows are one: the row the user acted on most.
-_STATUS_RANK = {"applied": 0, "saved": 1, "skip": 2, "new": 3}
 
 
 def migrate_posting_keys(db, batch: int = 1000) -> dict:
-    """Once per install (3.1): give every stored job its posting key, and hide the untouched
-    copies of one posting (scraper/_shared/posting_links.py).
+    """On start, when the stored posting keys were read by older readers (postings.READER_VERSION):
+    key every stored job again and bring its duplicates in line (scraper/_shared/posting_links.py).
 
-    Every job gets `posting_key` from its link, and `apply_url` when its link wraps the
-    employer's posting (a click tracker); no request is made. Then, per account, the visible
-    rows that share a key are one posting: the row the user acted on most (applied, saved,
-    skipped, new; the oldest on a tie) keeps it, and every other row still at status "new"
-    becomes a duplicate of it. A row the user acted on is never changed. Only same-key rows
-    are linked here; the company + title rule applies to jobs found from now on.
-    Returns {"keyed": n, "linked": n}."""
+    Every job gets `posting_key` from its links, and `apply_url` when its link wraps the employer's
+    posting (a click tracker); no request is made. A key a row took over from its duplicate (an
+    employer key on a board listing) is kept when its own link names no employer posting. Then each
+    account is relinked (posting_links.relink_account): duplicates linked by company and title alone,
+    without a shared key or the same text, go back to the feed, and untouched rows that share a key or
+    are one role become duplicates. Rows the user acted on are never changed.
+    Returns {"rekeyed": n, "unlinked": n, "linked": n}."""
     from backend.models.db import Account, Job
-    from backend.scraper._shared.posting_links import DUPLICATE, NOT_TARGETS, employer_link, key_of
-    if install_row(db, POSTING_KEYS_MIGRATED_KEY) is not None:
+    from backend.scraper._shared.posting_links import employer_link, key_of, relink_account
+    from backend.scraper._shared.postings import READER_VERSION, is_employer_key
+    row = install_row(db, POSTING_KEYS_MIGRATED_KEY)
+    done = int(row.value) if row is not None and str(row.value or "").isdigit() else 0
+    if done >= READER_VERSION:
         return {}
-    keyed = linked = 0
-    ids = [jid for (jid,) in db.query(Job.id).filter(Job.posting_key.is_(None)).all()]
+    rekeyed = 0
+    ids = [jid for (jid,) in db.query(Job.id).all()]
     jobs = (job for i in range(0, len(ids), batch)
             for job in _chunk_then_commit(db, Job, ids[i:i + batch]))
     for job in jobs:
         key = key_of(job)
-        if key:
+        taken_over = is_employer_key(job.posting_key) and not is_employer_key(key)
+        if key != job.posting_key and not taken_over:
             job.posting_key = key
-            keyed += 1
+            rekeyed += 1
         if not job.apply_url:
             link = employer_link(job.url)
             if link and link != job.url:
                 job.apply_url = link
     db.commit()
+    unlinked = linked = 0
     for (account_id,) in db.query(Account.id).all():
-        rows = (db.query(Job.id, Job.posting_key, Job.status, Job.discovered_at)
-                .filter(Job.account_id == account_id, Job.posting_key.isnot(None),
-                        Job.duplicate_of.is_(None),
-                        Job.status.is_(None) | Job.status.notin_(NOT_TARGETS)).all())
-        groups: dict = {}
-        for row in rows:
-            groups.setdefault(row.posting_key, []).append(row)
-        moves = []
-        for group in groups.values():
-            if len(group) < 2:
-                continue
-            group.sort(key=lambda r: (_STATUS_RANK.get(r.status or "new", 3),
-                                      r.discovered_at.timestamp() if r.discovered_at else 0))
-            keeper = group[0]
-            moves += [(r.id, keeper.id) for r in group[1:] if (r.status or "new") == "new"]
-        for i in range(0, len(moves), batch):
-            part = dict(moves[i:i + batch])
-            for job in db.query(Job).filter(Job.id.in_(list(part))).all():
-                job.status = DUPLICATE
-                job.duplicate_of = part[job.id]
-            db.commit()
-        linked += len(moves)
-    db.add(Setting(key=POSTING_KEYS_MIGRATED_KEY, value="1",
-                   description="Internal: stored jobs got posting keys and their copies were linked once (3.1)"))
+        out = relink_account(db, account_id)
+        unlinked += out["unlinked"]
+        linked += out["linked"]
+    if row is None:
+        db.add(Setting(key=POSTING_KEYS_MIGRATED_KEY, value=str(READER_VERSION),
+                       description="Internal: the posting-key reader version stored jobs were keyed and linked with"))
+    else:
+        row.value = str(READER_VERSION)
     db.commit()
-    logger.info(f"Posting keys: {keyed} jobs keyed, {linked} untouched copies linked to their posting")
-    return {"keyed": keyed, "linked": linked}
+    logger.info(f"Posting keys (readers v{READER_VERSION}): {rekeyed} jobs keyed again, "
+                f"{unlinked} duplicates without proof back in the feed, {linked} untouched copies linked")
+    return {"rekeyed": rekeyed, "unlinked": unlinked, "linked": linked}
 
 
 SEED_SEARCHES = [

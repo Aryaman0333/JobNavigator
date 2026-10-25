@@ -62,7 +62,11 @@ from backend.scraper._shared.postings import (
      "avature:careers.bain.com:107751"),
     (["https://kearney.taleo.net/careersection/01/jobdetail.ftl?job=006EY&tz=UTC-05%3A00"], "taleo:kearney:006EY"),
     (["https://jobs.gem.com/felix/am9icG9zdDoA1LwRA6RTyCK7nUKGeZr3"], "gem:am9icG9zdDoA1LwRA6RTyCK7nUKGeZr3"),
-    (["https://careers.ibm.com/careers/JobDetail?jobId=104594&source=WEB_Search_APAC"], "site:careers.ibm.com:104594"),
+    # Avature's query form is the same posting as its path form; a board's tracking re-encoded into the id is dropped
+    (["https://careers.ibm.com/careers/JobDetail?jobId=104594&source=WEB_Search_APAC"], "avature:careers.ibm.com:104594"),
+    (["https://jobs.slalom.com/en_US/careersmarketplace/JobDetail?jobId=3866%3Fsource%3Djobright&src=jobright",
+      "https://jobs.slalom.com/en_US/careersmarketplace/JobDetail/Senior-Architect-Solution-Ownership-Chicago/3866"],
+     "avature:jobs.slalom.com:3866"),
     # first-party career sites
     (["https://careers.servicenow.com/jobs/744000104794717/principal-outbound-product-manager-app-engine/"],
      "site:careers.servicenow.com:744000104794717"),
@@ -77,7 +81,16 @@ from backend.scraper._shared.postings import (
     (["https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=ab12-CD&ccId=1&jobId=532614&lang=en_US"],
      "adp:ab12-cd:532614"),
     (["https://www.coinbase.com/careers/positions/6855533"], "site:coinbase.com:6855533"),
-    (["https://careers.docusign.com/careers-home/jobs/29368"], "site:careers.docusign.com:29368"),
+    # career sites that show an ATS posting under its ATS number
+    (["https://careers.docusign.com/careers-home/jobs/30296", "https://careers.docusign.com/jobs/30296?lang=en-us",
+      "https://uscareers-docusign.icims.com/jobs/30296/growth-product-manager/job?hub=9"], "icims:uscareers-docusign:30296"),
+    (["https://careers.bankofamerica.com/en-us/job-detail/26031584/product-manager-tech-delivery-genai-new-york",
+      "https://ghr.wd1.myworkdayjobs.com/lateral-us/job/New-York/Product-Manager---Tech-Delivery---GenAI_26031584"],
+     "workday:ghr:26031584"),
+    (["https://www.brex.com/careers/8436527002?department=Product", "https://www.brex.com/careers/8436527002?gh_jid=8436527002"],
+     "greenhouse:8436527002"),
+    (["https://stripe.com/careers/listing/abuse-investigator/8172487", "https://stripe.com/jobs/search?gh_jid=8172487"],
+     "greenhouse:8172487"),
     (["https://joinbytedance.com/search/7463293367725787399"], "site:joinbytedance.com:7463293367725787399"),
     (["https://jobs.dayforcehcm.com/en-US/ranger/CANDIDATEPORTAL/jobs/1729"], "dayforce:ranger:1729"),
     (["https://recruiting.ultipro.com/NAT1014NGC/JobBoard/82e10fb7-67e7-49e3-ae40-66f508925bc6/OpportunityDetail?opportunityId=78ec111f-7a33-4b3e-a000-111122223333"],
@@ -85,7 +98,9 @@ from backend.scraper._shared.postings import (
     # first-party career sites
     (["https://www.amazon.jobs/de/jobs/3185436/senior-program-manager",
       "https://www.amazon.jobs/en/jobs/3185436/senior-program-manager"], "amazon:3185436"),
-    (["https://jobs.apple.com/en-us/details/200558938-0157/software-engineer?team=SFTWR"], "apple:200558938-0157"),
+    # one Apple role per city: <role>-<location code>
+    (["https://jobs.apple.com/en-us/details/200558938-0157/software-engineer?team=SFTWR",
+      "https://jobs.apple.com/en-us/details/200558938-2459/software-engineer"], "apple:200558938"),
     (["https://www.google.com/about/careers/applications/jobs/results/100017909572477638-product-policy-lead"],
      "google:100017909572477638"),
     (["https://apply.careers.microsoft.com/careers/job/1970393556619498?domain=microsoft.com&hl=en"],
@@ -107,6 +122,9 @@ def test_different_postings_keep_different_keys():
         posting_key("https://job-boards.greenhouse.io/twitch/jobs/8686812002")
     assert posting_key("https://adobe.wd5.myworkdayjobs.com/x/job/San-Jose/Senior-Product-Manager_R171155") != \
         posting_key("https://adobe.wd5.myworkdayjobs.com/x/job/San-Jose/Senior-Product-Manager_R167610")
+    # two Apple roles in one city
+    assert posting_key("https://jobs.apple.com/en-us/details/200677442-0670/x") != \
+        posting_key("https://jobs.apple.com/en-us/details/200677429-0670/x")
     # same requisition number at two Workday tenants is two postings
     assert posting_key("https://a.wd1.myworkdayjobs.com/s/job/X/T_R100") != \
         posting_key("https://b.wd1.myworkdayjobs.com/s/job/X/T_R100")
@@ -116,6 +134,8 @@ def test_different_postings_keep_different_keys():
     None, "", "not a url", "mailto:jobs@example.com",
     "https://cursor.com/careers/account-associate",            # unknown system: no guess
     "https://stripe.com/careers/compatibility",
+    "https://www.brex.com/careers",
+    "https://careers.bankofamerica.com/en-us/job-search",
     "https://job-boards.greenhouse.io/twitch",                  # a board, not a job
     "https://adobe.wd5.myworkdayjobs.com/external_experienced", # a site, not a job
     "https://www.linkedin.com/jobs/search/?keywords=pm",

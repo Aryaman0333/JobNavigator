@@ -1238,16 +1238,16 @@ def _normalize_report(report, best_cv):
 
 
 def _also_on(db, job_ids) -> dict:
-    """{job id: [{"source", "url"}, ...]}: where else each posting was found (its duplicates,
-    scraper/_shared/posting_links.py), one entry per source and link, oldest first."""
+    """{job id: [{"source", "url", "location"}, ...]}: where else each posting was found (its
+    duplicates, scraper/_shared/posting_links.py), one entry per source and link, oldest first."""
     if not job_ids:
         return {}
-    rows = (db.query(Job.duplicate_of, Job.source, Job.url)
+    rows = (db.query(Job.duplicate_of, Job.source, Job.url, Job.location)
             .filter(Job.duplicate_of.in_(job_ids))
             .order_by(Job.discovered_at.asc()).all())
     out: dict = {}
-    for original, source, url in rows:
-        entry = {"source": source, "url": url}
+    for original, source, url, location in rows:
+        entry = {"source": source, "url": url, "location": location}
         if entry not in out.setdefault(original, []):
             out[original].append(entry)
     return out
