@@ -105,3 +105,23 @@ def test_job_link_takes_a_stand_in_without_apply_url():
     from backend.scraper._shared.link_kinds import job_link
     assert job_link(SimpleNamespace(url="https://acme.com/jobs/9")) == "https://acme.com/jobs/9"
     assert job_link(None) is None
+
+
+def test_searches_report_their_direct_rate(test_db, api_client):
+    from backend.tests.test_posting_links import _job
+    from backend.models.db import Search, Setting
+    test_db.add(Setting(key="dashboard_api_key", value=""))
+    s = Search(name="PM", search_mode="levels_fyi", sources=[])
+    quiet = Search(name="Quiet", search_mode="levels_fyi", sources=[])
+    test_db.add_all([s, quiet])
+    test_db.commit()
+    for url, status in (("https://job-boards.greenhouse.io/a/jobs/1000001", "new"),
+                        ("https://jobs.lever.co/a/1cafb489-9cae-4417-b272-832617484de0", "skip"),
+                        ("https://www.linkedin.com/jobs/view/4461186967", "new"),
+                        ("https://www.linkedin.com/jobs/view/4461186968", "ignored")):
+        j = _job(test_db, url, company="Acme", title=url[-7:], status=status)
+        j.search_id = s.id
+    test_db.commit()
+    rows = {r["name"]: r for r in api_client.get("/api/searches").json()}
+    assert rows["PM"]["direct_rate"] == {"direct": 2, "total": 3}
+    assert rows["Quiet"]["direct_rate"] is None

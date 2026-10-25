@@ -101,6 +101,12 @@ const noteFor = (mode) => {
   return null
 }
 
+// share of the search's jobs (last 90 days) with a direct link to the employer; said from five jobs on
+const directRate = (s) => {
+  const r = s.direct_rate
+  return r && r.total >= 5 ? ` · ${Math.round((100 * r.direct) / r.total)}% direct links` : ''
+}
+
 // one-line summary of what this search does; `boards` names the Apify boards
 const summaryOf = (s, boards = []) => {
   const last = s.last_run_at ? ` · last run ${ago(s.last_run_at)}` : ''
@@ -770,7 +776,7 @@ export default function Searches() {
           const testBlocked = !!testingId && testingId !== s.id
           const mutedWarn = mutedWarnOf(s)
           const cfgErr = configError(s)
-          const summary = spin ? 'running now. Results appear in the Job Feed as they are found.' : (cfgErr || warn || mutedWarn || summaryOf(s, apifyBoards))
+          const summary = spin ? 'running now. Results appear in the Job Feed as they are found.' : (cfgErr || warn || mutedWarn || summaryOf(s, apifyBoards) + directRate(s))
           const summaryFg = spin ? 'var(--accent)' : (cfgErr || warn) ? 'var(--warn)' : 'var(--muted)'
           return (
             /* Same card hover as Résumés/Cover Letters, suppressed while open; a warned

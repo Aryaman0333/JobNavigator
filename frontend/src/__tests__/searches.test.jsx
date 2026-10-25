@@ -205,3 +205,17 @@ describe('TrulyRemoteWork · v2 Searches', () => {
     expect(screen.getAllByText('body check needs the description')).toHaveLength(1)
   })
 })
+
+describe('Direct-link rate · Searches', () => {
+  beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear() })
+
+  it('names the share of a search’s jobs with a direct link, from five jobs on', async () => {
+    mockApi([
+      { ...SEARCH, id: 'a', name: 'Many', direct_rate: { direct: 6, total: 9 } },
+      { ...SEARCH, id: 'b', name: 'Few', search_term: 'few', direct_rate: { direct: 1, total: 3 } },
+    ])
+    renderScreen()
+    expect(await screen.findByText(/67% direct links/)).toBeTruthy()
+    expect(screen.queryByText(/33% direct links/)).toBeNull()
+  })
+})
