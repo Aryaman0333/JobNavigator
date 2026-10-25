@@ -663,6 +663,13 @@ def run_migrations(db):
         "ALTER TABLE searches ADD COLUMN IF NOT EXISTS require_salary BOOLEAN DEFAULT FALSE",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS scoring_report JSONB",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cv_score_names JSON",   # 3.1: score keys are résumé ids
+        # 3.1: the posting a job is, whatever link spelled it (scraper/_shared/posting_links.py)
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS apply_url VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posting_key VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES jobs(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_acct_posting_key ON jobs (account_id, posting_key)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_duplicate_of ON jobs (duplicate_of)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_acct_content_hash ON jobs (account_id, content_hash)",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_summary",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_strengths",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_gaps",
@@ -1419,6 +1426,71 @@ def migrate_cv_score_keys(db, batch: int = 500) -> dict:
     return changed
 
 
+# Marker of the one-time posting-key backfill below (install row, never served, not writable).
+POSTING_KEYS_MIGRATED_KEY = "posting_keys_migrated"
+# Who keeps a posting when several rows are one: the row the user acted on most.
+_STATUS_RANK = {"applied": 0, "saved": 1, "skip": 2, "new": 3}
+
+
+def migrate_posting_keys(db, batch: int = 1000) -> dict:
+    """Once per install (3.1): give every stored job its posting key, and hide the untouched
+    copies of one posting (scraper/_shared/posting_links.py).
+
+    Every job gets `posting_key` from its link, and `apply_url` when its link wraps the
+    employer's posting (a click tracker); no request is made. Then, per account, the visible
+    rows that share a key are one posting: the row the user acted on most (applied, saved,
+    skipped, new; the oldest on a tie) keeps it, and every other row still at status "new"
+    becomes a duplicate of it. A row the user acted on is never changed. Only same-key rows
+    are linked here; the company + title rule applies to jobs found from now on.
+    Returns {"keyed": n, "linked": n}."""
+    from backend.models.db import Account, Job
+    from backend.scraper._shared.posting_links import DUPLICATE, NOT_TARGETS, employer_link, key_of
+    if install_row(db, POSTING_KEYS_MIGRATED_KEY) is not None:
+        return {}
+    keyed = linked = 0
+    ids = [jid for (jid,) in db.query(Job.id).filter(Job.posting_key.is_(None)).all()]
+    jobs = (job for i in range(0, len(ids), batch)
+            for job in _chunk_then_commit(db, Job, ids[i:i + batch]))
+    for job in jobs:
+        key = key_of(job)
+        if key:
+            job.posting_key = key
+            keyed += 1
+        if not job.apply_url:
+            link = employer_link(job.url)
+            if link and link != job.url:
+                job.apply_url = link
+    db.commit()
+    for (account_id,) in db.query(Account.id).all():
+        rows = (db.query(Job.id, Job.posting_key, Job.status, Job.discovered_at)
+                .filter(Job.account_id == account_id, Job.posting_key.isnot(None),
+                        Job.duplicate_of.is_(None),
+                        Job.status.is_(None) | Job.status.notin_(NOT_TARGETS)).all())
+        groups: dict = {}
+        for row in rows:
+            groups.setdefault(row.posting_key, []).append(row)
+        moves = []
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda r: (_STATUS_RANK.get(r.status or "new", 3),
+                                      r.discovered_at.timestamp() if r.discovered_at else 0))
+            keeper = group[0]
+            moves += [(r.id, keeper.id) for r in group[1:] if (r.status or "new") == "new"]
+        for i in range(0, len(moves), batch):
+            part = dict(moves[i:i + batch])
+            for job in db.query(Job).filter(Job.id.in_(list(part))).all():
+                job.status = DUPLICATE
+                job.duplicate_of = part[job.id]
+            db.commit()
+        linked += len(moves)
+    db.add(Setting(key=POSTING_KEYS_MIGRATED_KEY, value="1",
+                   description="Internal: stored jobs got posting keys and their copies were linked once (3.1)"))
+    db.commit()
+    logger.info(f"Posting keys: {keyed} jobs keyed, {linked} untouched copies linked to their posting")
+    return {"keyed": keyed, "linked": linked}
+
+
 SEED_SEARCHES = [
     {
         "name": "Extension LI",
@@ -1769,6 +1841,7 @@ def run_seeds():
             clear_seeded_local_urls(db)
             migrate_llm_provider_keys(db)
             migrate_cv_score_keys(db)
+            migrate_posting_keys(db)
             migrate_cv_terminology(db)
             migrate_h1b_to_visa_cache(db)
     finally:

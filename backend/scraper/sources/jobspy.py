@@ -13,6 +13,8 @@ from backend.countries import DEFAULT_COUNTRY, compose_location
 from backend.models.db import SessionLocal, Search, Job, get_existing_external_ids
 from backend.accounts.settings import get_setting
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
+from backend.scraper._shared.posting_links import counts_as_new, employer_link
+from backend.scraper._shared.postings import is_short_link, resolve_short_link
 
 logger = logging.getLogger("jobnavigator.scraper.sources.jobspy")
 
@@ -198,6 +200,30 @@ def _structured_arrangement(row, site: str):
     if site in _TAGGED_REMOTE_BOARDS and str(row.get("is_remote")) == "True":
         return True
     return None
+
+
+def _employer_link(row, url: str, loop):
+    """The employer's own posting for a JobSpy row (`job_url_direct`: Indeed, ZipRecruiter,
+    Naukri and BDJobs fill it when the job is not hosted on the board), or None.
+
+    A short link (grnh.se) is followed first, on the run's event loop; a link that names
+    no known employer system is kept only when it leaves the board's own site.
+    """
+    from urllib.parse import urlparse
+    direct = _clean(row.get("job_url_direct"))
+    if not direct or not direct.startswith(("http://", "https://")):
+        return None
+    if is_short_link(direct):
+        try:
+            direct = loop.run_until_complete(resolve_short_link(direct))
+        except Exception as e:
+            logger.debug(f"Short link {direct} not resolved: {e}")
+    link = employer_link(direct)
+    if link:
+        return link
+    board = (urlparse(url).hostname or "").removeprefix("www.")
+    host = (urlparse(direct).hostname or "").removeprefix("www.")
+    return direct if host and host != board and not host.endswith("." + board) else None
 
 
 def get_setting_value(db: Session, key: str, default: str = "") -> str:
@@ -401,6 +427,7 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
                     continue
 
                 content_hash = make_content_hash(company, title)
+                apply_url = _employer_link(row, url, h1b_loop)
 
                 site = str(row.get("site", "")).lower()
                 source_map = {
@@ -417,6 +444,7 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
                     company=company,
                     title=title,
                     url=url,
+                    apply_url=apply_url,
                     source=source,
                     search_id=search.id,
                     description=_clean(row.get("description")),
@@ -470,8 +498,9 @@ def _run_sync(search, proxy_url: str = None, shared=None) -> dict:
                     with db.begin_nested():
                         db.add(job)
                         db.flush()
-                    new_jobs += 1
-                    breakdown.setdefault(site or "unknown", {"seen": 0, "new": 0})["new"] += 1
+                    if counts_as_new(job):
+                        new_jobs += 1
+                        breakdown.setdefault(site or "unknown", {"seen": 0, "new": 0})["new"] += 1
                     existing_ids.add(ext_id)
                 except IntegrityError:
                     logger.debug(f"Duplicate external_id for '{title}' at {company}, skipping")
