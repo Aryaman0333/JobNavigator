@@ -70,7 +70,7 @@ async def test_the_job_joins_the_employer_posting_it_names(test_db):
     job = _li(test_db)
     await _run(FakeLinkedIn({"4461186967": {"apply_url": GH, "apply_type": "OffsiteApply"}}))
     test_db.refresh(job)
-    assert job.status == "duplicate" and job.duplicate_of == posting.id
+    assert job.status == "ignored" and job.duplicate_of == posting.id
 
 
 @pytest.mark.asyncio
@@ -243,7 +243,7 @@ async def test_a_stored_grnh_se_link_is_followed(test_db):
     test_db.refresh(short)
     assert n == 1
     assert short.apply_url == GH and short.posting_key == "greenhouse:4012345"
-    assert short.status == "duplicate" and short.duplicate_of == posting.id
+    assert short.status == "ignored" and short.duplicate_of == posting.id
 
 
 @pytest.mark.asyncio

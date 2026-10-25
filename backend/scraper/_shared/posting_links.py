@@ -14,7 +14,11 @@ link, and before it is written it is compared with the account's jobs:
 3. When the newcomer is the employer's posting and an untouched (status "new") listing-only
    copy of it arrived first (rule 2's proof), that copy is the duplicate from now on.
 
-A duplicate is kept, not dropped: status "duplicate", `duplicate_of` pointing at the
+A copy is kept, not dropped (Task 10): `duplicate_of` points at the original and `copy_kind`
+says which of three kinds it is: `link` (the same posting under another link, same city), `city`
+(the same posting or role in another city) or `repost` (the same role under a new id, same city).
+Each kind goes to Ignored (default) or stays New, per the `dedup_copy_<kind>` settings. Before,
+a copy had the status "duplicate", `duplicate_of` pointing at the
 posting, so its link stays known (no re-import), the feed hides it, and the original
 lists it under "Also listed". Rows the user acted on (saved, applied, skipped) are never
 turned into duplicates. Filtered rows ("ignored") are neither linked nor link targets.
@@ -70,7 +74,28 @@ def employer_link(url) -> str | None:
 
 
 def _visible(Job):
-    return (Job.status.is_(None)) | (Job.status.notin_(NOT_TARGETS))
+    """Rows that can be an original: not filtered, not a copy (a copy left in the feed is still one)."""
+    return ((Job.status.is_(None)) | (Job.status.notin_(NOT_TARGETS))) & Job.duplicate_of.is_(None)
+
+
+COPY_KINDS = ("link", "city", "repost")
+
+
+def copy_kind(job, original) -> str:
+    """city when the copy names a place the original does not; else link when they share a posting
+    key (the same posting), else repost (the same role under a new id)."""
+    if new_place(job, original):
+        return "city"
+    return "link" if _all_keys(job) & _all_keys(original) else "repost"
+
+
+def copy_status(session, kind) -> str:
+    """Where a copy of this kind goes: "new" when its setting says so, else "ignored"."""
+    if session is None:
+        return "ignored"
+    from backend.accounts.settings import get_setting
+    value = str(get_setting(session, f"dedup_copy_{kind}") or "ignored").strip().lower()
+    return "new" if value == "new" else "ignored"
 
 
 def _ensure_id(job):
@@ -79,9 +104,12 @@ def _ensure_id(job):
     return job.id
 
 
-def mark_duplicate(job, original) -> None:
-    """`job` is `original` again: hide it under the original, and give the original the employer link it lacked."""
-    job.status = DUPLICATE
+def mark_duplicate(job, original, session=None) -> None:
+    """`job` is `original` again: link it to the original as a copy of its kind (Ignored or New per
+    the setting), and give the original the employer link it lacked."""
+    kind = copy_kind(job, original)
+    job.copy_kind = kind
+    job.status = copy_status(session, kind)
     job.duplicate_of = _ensure_id(original)
     if job.posting_key and is_employer_key(job.posting_key) and not is_employer_key(original.posting_key):
         original.posting_key = job.posting_key
@@ -206,7 +234,8 @@ def find_original(session, job, batch: Batch):
     keys = [k for k in dict.fromkeys([key] + keys_of(job)) if k]
     if keys:
         hits = [batch.keys.get((acct, k)) for k in keys]
-        hits = [h for h in hits if h is not None and h is not job and h.status not in NOT_TARGETS]
+        hits = [h for h in hits if h is not None and h is not job and h.status not in NOT_TARGETS
+                and h.duplicate_of is None]
         q = (session.query(Job)
              .filter(Job.account_id == acct, Job.posting_key.in_(keys), _visible(Job)))
         if job.id is not None:
@@ -220,7 +249,7 @@ def find_original(session, job, batch: Batch):
     employer = is_employer_key(key)
     candidates = _same_title(session, job, batch, _visible)
     candidates += [o for o in batch.titles.get((acct, job.content_hash), [])
-                   if o is not job and o.status not in NOT_TARGETS]
+                   if o is not job and o.status not in NOT_TARGETS and o.duplicate_of is None]
     if employer:
         candidates = [o for o in candidates if not (_listing_only(o) and (o.status or "new") == "new")]
     proven = _proven(job, candidates)
@@ -244,7 +273,7 @@ def relink(session, job) -> bool:
         if elsewhere is not None and job.same_role_as is None:
             job.same_role_as = _ensure_id(elsewhere)
         return False
-    mark_duplicate(job, original)
+    mark_duplicate(job, original, session)
     (session.query(Job).filter(Job.account_id == job.account_id, Job.duplicate_of == job.id)
      .update({Job.duplicate_of: original.id}, synchronize_session=False))
     return True
@@ -293,12 +322,12 @@ def link_new_jobs(session, flush_context=None, instances=None) -> None:
             try:
                 original, elsewhere = find_original(session, job, batch)
                 if original is not None:
-                    mark_duplicate(job, original)
+                    mark_duplicate(job, original, session)
                     continue
                 if elsewhere is not None:
                     job.same_role_as = _ensure_id(elsewhere)
                 for copy in listing_copies(session, job, batch):
-                    mark_duplicate(copy, job)
+                    mark_duplicate(copy, job, session)
             except Exception as e:  # linking must never stop a job from being stored
                 logger.warning(f"Posting link skipped for {job.title!r} at {job.company!r}: {e}")
                 continue
@@ -364,8 +393,8 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
 
     templates = _CompanyTexts(db, account_id)
     unlinked = 0
-    dups = (db.query(Job).filter(Job.account_id == account_id, Job.status == DUPLICATE,
-                                 Job.duplicate_of.isnot(None)).all())
+    dups = (db.query(Job).filter(Job.account_id == account_id, Job.duplicate_of.isnot(None),
+                                 Job.status.in_((DUPLICATE, "ignored", "new"))).all())
     want = list({d.duplicate_of for d in dups})
     originals = {}
     for i in range(0, len(want), batch):
@@ -375,12 +404,14 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
         if o is None:
             continue
         if skipped_elsewhere(d, o):
-            d.status, d.duplicate_of, d.same_role_as = "new", None, o.id
+            d.status, d.duplicate_of, d.copy_kind, d.same_role_as = "new", None, None, o.id
             unlinked += 1
             continue
         if _all_keys(d) & _all_keys(o) or _same_role_stored(d, o, templates):
+            if d.status == DUPLICATE or not d.copy_kind:   # a 3.2-dev duplicate: classify it
+                mark_duplicate(d, o, db)
             continue
-        d.status, d.duplicate_of = "new", None
+        d.status, d.duplicate_of, d.copy_kind = "new", None, None
         unlinked += 1
     db.commit()
 
@@ -427,8 +458,9 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
     items = list(moves.items())
     for i in range(0, len(items), batch):
         part = dict(items[i:i + batch])
+        keepers = {o.id: o for o in db.query(Job).filter(Job.id.in_(list(set(part.values())))).all()}
         for job in db.query(Job).filter(Job.id.in_(list(part))).all():
-            job.status, job.duplicate_of = DUPLICATE, part[job.id]
+            mark_duplicate(job, keepers[part[job.id]], db)
         db.commit()
     already = {r.id for r in rows if r.same_role_as}
     noted = [(i, o) for i, o in notes.items() if i not in already]
@@ -439,7 +471,7 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
         db.commit()
     # A duplicate whose original became a duplicate points at the posting that stays visible.
     for _ in range(5):
-        chained = (db.query(Job).filter(Job.account_id == account_id, Job.status == DUPLICATE,
+        chained = (db.query(Job).filter(Job.account_id == account_id,
                                         Job.duplicate_of.in_(list(moves))).all()) if moves else []
         if not chained:
             break
@@ -456,5 +488,5 @@ def install_posting_links() -> None:
 
 
 def counts_as_new(job) -> bool:
-    """For a source's "+N new": a job stored as a duplicate is not new to the feed."""
-    return getattr(job, "status", None) != DUPLICATE
+    """For a source's "+N new": a copy sent to Ignored is not new to the feed (one left New is)."""
+    return getattr(job, "status", None) not in ("ignored", DUPLICATE)

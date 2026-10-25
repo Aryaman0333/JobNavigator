@@ -48,7 +48,7 @@ def pending_ids(db, limit: int) -> list:
     rows = (db.query(Job.posting_key)
             .filter(Job.posting_key.like("linkedin:%"),
                     or_(Job.link_kind == BOARD, Job.link_kind.is_(None)),
-                    Job.status.notin_(("ignored", "duplicate")))
+                    Job.status.notin_(("ignored", "duplicate")), Job.duplicate_of.is_(None))
             .order_by(Job.discovered_at.desc()).limit(limit * 5).all())
     ids = list(dict.fromkeys(k.split(":", 1)[1] for (k,) in rows))
     # an id whose cached answer cannot change its rows (gone, another board) holds no slot

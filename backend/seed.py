@@ -47,6 +47,9 @@ DEFAULT_SETTINGS = {
     # Billed per result by Apify; `_api_key` suffix keeps it redacted on GET /settings.
     "apify_api_key": ("", "Apify API token for the Apify search mode"),
     "reject_cron": ("0 4 * * *", "Auto-reject cron (min hour day month dow). Empty = disabled"),
+    "dedup_copy_link": ("ignored", "A copy of a posting under another link in the same city: ignored or new"),
+    "dedup_copy_city": ("ignored", "A copy of a posting or role in another city: ignored or new"),
+    "dedup_copy_repost": ("ignored", "The same role reposted under a new id in the same city: ignored or new"),
     "linkedin_lookup_cron": ("20 * * * *", "LinkedIn link lookup cron: LinkedIn listings get the employer's link through the mock account. Empty = disabled"),
     "linkedin_lookup_per_run": ("20", "LinkedIn link lookup: most LinkedIn jobs asked about per run (one every 15 s)"),
     "backup_cron": ("0 3 * * *", "Backup cron schedule (min hour day month dow). Empty = disabled"),
@@ -662,6 +665,7 @@ def run_migrations(db):
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES jobs(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_jobs_acct_posting_key ON jobs (account_id, posting_key)",
         "CREATE INDEX IF NOT EXISTS ix_jobs_duplicate_of ON jobs (duplicate_of)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS copy_kind VARCHAR(10)",
         # 3.2: is the posting still open (still_open.py)
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS open_state VARCHAR(10)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS open_reason VARCHAR",

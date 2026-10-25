@@ -351,6 +351,8 @@ class Job(AccountScoped, Base):
                           nullable=True, index=True)
     # direct | board | easy_apply (scraper/_shared/link_kinds.py)
     link_kind = Column(String(12), nullable=True)   # indexed with account_id (seed.run_migrations)
+    # 3.2: a copy's kind (posting_links.py): link | city | repost; NULL for an original
+    copy_kind = Column(String(10), nullable=True)
     # 3.2: is the posting still open (scraper/_shared/still_open.py): open | closed | unknown,
     # why, and when; checked where it matters, kept a day.
     open_state = Column(String(10), nullable=True)

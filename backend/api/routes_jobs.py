@@ -727,7 +727,7 @@ def _known_posting(db, external_id: str, content_hash: str, url: str | None = No
     if row is None and key:
         row = (db.query(Job).filter(Job.posting_key == key, not_ignored)
                .order_by(Job.discovered_at.asc()).first())
-    if row is not None and row.status == "duplicate" and row.duplicate_of:
+    if row is not None and row.duplicate_of:
         row = db.query(Job).filter(Job.id == row.duplicate_of).first() or row
     return row
 
