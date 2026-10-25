@@ -1344,6 +1344,7 @@ export default function V2JobFeed() {
                               the list row's own rhythm, so it stays with the call site */}
                           {/* `v2-rowink` lets a SELECTED row's --row-selected-ink reach the text (theme.css); it marks
                               reading content only — the status badge keeps its own ground/ink, and doesn't match in the default theme. */}
+                          {closedTag(j) && <Dot tone="bad" title={closedTag(j).title} />}
                           <Heading strong size={16} className="v2-rowink" title={j.title} style={{ flex: 1, minWidth: 0, lineHeight: 1.15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textDecoration: isIgnored ? 'line-through' : 'none', textDecorationColor: 'var(--muted)' }}>{j.title}</Heading>
                           {/* the ✦ mark: the same 18px box either way, so a tailor starting
                               swaps the glyph for a spinner without moving the title. Busy is
@@ -1374,7 +1375,6 @@ export default function V2JobFeed() {
                           {/* the verdict is the segment that gives way: it shrinks (flex-shrink 2, ahead of the salary) to an
                               ellipsis and then to nothing, so the age at the end always stays whole */}
                           {visa && j.h1b_verdict !== 'unknown' && <><span style={{ flex: '0 2 auto', minWidth: 0, letterSpacing: '.04em', color: visa.c, overflow: 'hidden', textOverflow: 'ellipsis' }} title={visa.label}>{visa.label}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
-                          {closedTag(j) && <><Dot tone="bad" title={closedTag(j).title} /><span style={{ flex: '0 0 auto', color: 'var(--dot-bad)' }} title={closedTag(j).title}>Closed</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
                           <span style={{ flex: '0 0 auto', color: 'var(--muted)' }} title={timeAgo(j.discovered_at)}>{timeAgo(j.discovered_at).replace(/ ago$/, '')}</span>
                         </div>
                       </div>

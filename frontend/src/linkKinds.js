@@ -20,7 +20,7 @@ export const linkTag = (job) => {
 
 // { text, title } when the last check found the posting closed, else null (open, unknown, unchecked).
 export const closedTag = (job) => (job?.open_state === 'closed'
-  ? { text: 'Closed', title: `Looks closed: ${job.open_reason || 'the posting is gone'} · checked ${ago(job.open_checked_at)} · click to check again` }
+  ? { text: 'Closed posting', title: `Looks closed: ${job.open_reason || 'the posting is gone'} · checked ${ago(job.open_checked_at)} · click to check again` }
   : null)
 
 // The employer's link when the job has one (`link`), else its own link.
