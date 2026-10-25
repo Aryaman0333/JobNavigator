@@ -25,6 +25,13 @@ logger = logging.getLogger("jobnavigator.linkedin_lookup")
 PAUSE = 15.0
 STOP_AFTER_NO_DATA = 3
 
+# The status of LinkedIn's "who am I" call: 200 signed in, 401 signed out.
+_ME_JS = """async () => {
+  const csrf = (document.cookie.match(/JSESSIONID="?([^;"]+)/) || [])[1] || '';
+  return (await fetch('https://www.linkedin.com/voyager/api/me',
+                      {credentials: 'include', headers: {'csrf-token': csrf}})).status;
+}"""
+
 
 def mock_account_in_use(db) -> bool:
     """The extension session is the mock account's (refresh_linkedin_session._creds' rule)."""
@@ -117,6 +124,10 @@ async def _fetcher(fetch):
         await context.clear_cookies()
         await context.add_cookies(cookies)
         await page.goto("https://www.linkedin.com/jobs/", wait_until="domcontentloaded", timeout=30000)
+        # A signed-out session answers every job with nothing: find out before asking about one.
+        if await page.evaluate(_ME_JS) != 200:
+            yield None, "the LinkedIn mock session is signed out: sign it in again in Settings › LinkedIn"
+            return
 
         async def fetch_one(lid):
             return await le._voyager_fetch(page, lid)

@@ -241,3 +241,45 @@ async def test_the_lookup_run_also_follows_short_links(test_db):
         return GH if "grnh.se" in url else url
     out = await _run(FakeLinkedIn({}), resolve=resolve)
     assert out["short_links"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeypatch):
+    """LinkedIn signed the mock session out (/voyager/api/me answers 401): no job is asked about."""
+    _mock_on(test_db)
+    job = _li(test_db)
+    from backend.scraper.sources import linkedin_extension as le
+    from backend.scraper.sources import linkedin_personal as lp
+    monkeypatch.setattr(le, "_load_session_cookies", lambda: [{"name": "li_at", "value": "x"}])
+    asked = []
+
+    class Page:
+        async def goto(self, *a, **k):
+            pass
+
+        async def evaluate(self, js, *args):
+            asked.append(args)
+            return 401
+
+    class Ctx:
+        async def clear_cookies(self):
+            pass
+
+        async def add_cookies(self, c):
+            pass
+
+    class Closable:
+        async def close(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    async def fake_browser():
+        return Closable(), Closable(), Ctx(), Page()
+    monkeypatch.setattr(lp, "_get_linkedin_browser", fake_browser)
+    monkeypatch.setattr(le, "_voyager_fetch", lambda *a: (_ for _ in ()).throw(AssertionError("no job request")))
+    out = await ll.run_lookup(per_run=20, pause=0)
+    test_db.refresh(job)
+    assert out["stopped"] == "the LinkedIn mock session is signed out: sign it in again in Settings › LinkedIn"
+    assert len(asked) == 1 and job.link_kind == "board"
