@@ -657,9 +657,9 @@ export default function Settings() {
       // where each kind of copy of a posting goes (backend posting_links.py); every copy stays
       // listed on its original under Also listed
       ['copies', '', 'Copies of a posting', '', [
-        SEL('Same posting, another link', 'The same posting found again under another link, in the same city.', 'dedup_copy_link', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
-        SEL('Same role, another city', 'The same posting or role listed in another city.', 'dedup_copy_city', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
-        SEL('Same role, new posting', 'The same role posted again under a new id in the same city: another opening or a repost.', 'dedup_copy_repost', [['ignored', 'Ignored — listed under Also listed'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same posting, another link', 'The same posting found again under another link, in the same city.', 'dedup_copy_link', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same role, another city', 'The same posting or role listed in another city: the same job number, or a word-for-word identical description.', 'dedup_copy_city', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same role, new posting', 'The same role posted again under a new id in the same city, with a word-for-word identical description (ids, pay and dates aside): another opening or a repost.', 'dedup_copy_repost', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
       ]],
       ['notifications', 'Integrations', 'Notifications', '', [
         SW('Telegram', 'New high-scoring jobs and the daily digest are sent to your chat. The digest schedule is under Scheduler.', 'Off — no push notifications.', 'telegram_enabled'),
