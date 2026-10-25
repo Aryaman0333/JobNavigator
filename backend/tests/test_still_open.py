@@ -158,3 +158,23 @@ def test_the_api_checks_a_job(test_db, api_client, monkeypatch):
     listed = api_client.get(f"/api/jobs/{job.id}").json()
     assert listed["open_state"] == "closed" and listed["open_reason"] == "Greenhouse: the posting is gone"
     assert job.status == "new", "a check never changes the job's status"
+
+
+@pytest.mark.asyncio
+async def test_a_company_site_keyed_by_workday_numbers_is_checked_by_its_page():
+    """Bank of America's site shows Workday numbers (workday:ghr:<n>) but is not Workday: its
+    page is checked, not a Workday API address built from it."""
+    url = "https://careers.bankofamerica.com/en-us/job-detail/26036109/data-support-manager"
+    (state, _), calls = await check(url, {url: (200, url, "<h1>Data Support Manager</h1>")})
+    assert state == "open" and calls == [url]
+
+
+@pytest.mark.asyncio
+async def test_a_phrase_inside_a_script_is_not_the_page_saying_it():
+    """Dayforce ships its UI strings ("This job is no longer accepting applications.") in a script
+    on every page, open or closed; only the visible text counts."""
+    url = "https://jobs.dayforcehcm.com/kiddeglobal/CANDIDATEPORTAL/jobs/3670"
+    page = ('<script id="__NEXT_DATA__">{"applyJobUnavailable":"This job is no longer accepting applications."}</script>'
+            '<style>.x{content:"position has been filled"}</style><h1>Product Manager</h1>')
+    (state, _), _ = await check(url, {url: (200, url, page)})
+    assert state == "open"

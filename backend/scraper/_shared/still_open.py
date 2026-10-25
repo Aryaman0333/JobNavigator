@@ -31,6 +31,9 @@ CLOSED_PHRASES = (
 )
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
 _TAG = re.compile(r"<[^>]+>")
+# Scripts, styles and templates hold a site's UI strings (Dayforce ships "This job is no longer
+# accepting applications" on every page): only the visible text counts.
+_HIDDEN = re.compile(r"<(script|style|template|noscript)\b[^>]*>.*?</\1\s*>", re.S | re.I)
 
 
 async def _fetch(url):
@@ -57,11 +60,18 @@ def _greenhouse_api(url):
 
 
 def _lever_api(url):
+    if not (urlparse(url).hostname or "").endswith("lever.co"):
+        return None
     seg = [s for s in urlparse(url).path.split("/") if s]
     return f"https://api.lever.co/v0/postings/{seg[0]}/{seg[1]}" if len(seg) >= 2 else None
 
 
 def _workday_api(url):
+    # only a Workday link: a company site that shows Workday numbers (Bank of America, Visa) is
+    # keyed workday:<tenant>:<n> but is checked by its own page
+    host = urlparse(url).hostname or ""
+    if not (host.endswith("myworkdayjobs.com") or host.endswith("myworkdaysite.com")):
+        return None
     from backend.scraper.ats.workday import _LOCALE_PATH_RE, _parse_workday_url
     try:
         origin, tenant, site, _ = _parse_workday_url(url)
@@ -129,7 +139,7 @@ async def check_link(url, fetch=None):
     if key and final and posting_key(final) != key and urlparse(final).path != urlparse(url).path:
         p = urlparse(final)
         return CLOSED, f"redirected to {(p.hostname or '').removeprefix('www.')}{p.path}"
-    page = " ".join(_TAG.sub(" ", text or "").lower().split())
+    page = " ".join(_TAG.sub(" ", _HIDDEN.sub(" ", text or "")).lower().split())
     for phrase in CLOSED_PHRASES:
         if phrase in page:
             return CLOSED, f"the page says “{phrase}”"
