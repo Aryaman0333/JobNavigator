@@ -652,15 +652,14 @@ export function memberGroup(id, idx, ownerName, unlocked) {
   return `Shared · ${ownerName || 'owner'}`
 }
 
-// The scope tag beside a section title. `multi` false (one account on the install): nothing is
-// shared or separate per account, so no tag.
-export function scopeTag(id, { idx, member, ownerName, multi }) {
-  if (multi === false) return null
+// The scope tag beside a section title.
+export function scopeTag(id, { idx, member, ownerName }) {
   if (id === 'appearance') return { label: 'Per device', tone: 'neutral' }
   const sec = idx?.byId?.[id]
   if (!sec) return null
   if (sec.scope === 'owner_only') return { label: 'Owner only', tone: 'good' }
-  if (sec.scope === 'own_always') return member ? { label: 'Yours', tone: 'accent' } : { label: 'Per account', tone: 'neutral' }
+  // a member's own section says so; the owner needs no badge there (no toggle, nothing shared)
+  if (sec.scope === 'own_always') return member ? { label: 'Yours', tone: 'accent' } : null
   if (!member) return null   // the owner gets the Inherit / Own control instead
   return sec.mode === 'own' ? { label: 'Yours', tone: 'accent' } : { label: `Inherited from ${ownerName || 'the owner'}`, tone: 'neutral' }
 }

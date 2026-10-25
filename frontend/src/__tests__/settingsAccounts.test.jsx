@@ -220,11 +220,10 @@ describe('role helpers', () => {
     expect(scopeTag('advanced', { idx, member: true })).toEqual({ label: 'Owner only', tone: 'good' })
     expect(scopeTag('models', { idx, member: true, ownerName: 'Viktor' }).label).toBe('Inherited from Viktor')
     expect(scopeTag('exclude', { idx, member: true }).label).toBe('Yours')
-    expect(scopeTag('notifications', { idx, member: false }).label).toBe('Per account')
+    expect(scopeTag('notifications', { idx, member: false })).toBe(null)   // no Per account badge for the owner
+    expect(scopeTag('notifications', { idx, member: true }).label).toBe('Yours')
     expect(scopeTag('models', { idx, member: false })).toBe(null)    // the owner gets the toggle
-    // one account on the install: nothing is shared, so no section needs a scope tag
-    expect(scopeTag('notifications', { idx, member: false, multi: false })).toBe(null)
-    expect(scopeTag('advanced', { idx, member: false, multi: false })).toBe(null)
+    expect(scopeTag('advanced', { idx, member: false }).label).toBe('Owner only')
   })
 })
 
