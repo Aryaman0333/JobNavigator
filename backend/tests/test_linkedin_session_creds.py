@@ -134,3 +134,10 @@ def test_sign_in_starts_the_named_sessions_sign_in(test_db, api_client, jars, mo
             break
         time.sleep(0.05)
     assert sorted(started) == ["main", "mock"]
+
+
+def test_a_fresh_session_reads_signed_in_today(test_db, api_client, jars):
+    _set(test_db, dashboard_api_key="")
+    open(rls.jar(rls.MOCK), "w").write("[]")
+    body = api_client.get("/api/linkedin/session?which=mock").json()
+    assert body["status"] == "ok" and body["summary"] == "Signed in today."

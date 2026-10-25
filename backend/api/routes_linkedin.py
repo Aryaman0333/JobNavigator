@@ -65,9 +65,10 @@ def session_status(which: Which = "mock"):
     if not exists:
         status, summary = "missing", "No session yet — Sign in."
     elif age_days is not None and age_days >= _STALE_AFTER_DAYS:
-        status, summary = "stale", f"Last refreshed {int(age_days)}d ago — likely expired."
+        status, summary = "stale", f"Signed in {int(age_days)}d ago — likely expired."
     else:
-        status, summary = "ok", f"Refreshed {int(age_days)}d ago."
+        days = int(age_days)
+        status, summary = "ok", ("Signed in today." if days == 0 else f"Signed in {days}d ago.")
     if shared:
         summary = "The owner's session · " + summary
 
