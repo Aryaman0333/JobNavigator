@@ -209,3 +209,35 @@ def test_the_scheduler_runs_the_lookup_on_its_cron(test_db, monkeypatch, cron, s
 def test_the_voyager_call_reports_how_the_job_is_applied_to():
     from backend.scraper.sources.linkedin_extension import _VOYAGER_JOB_JS
     assert "apply_type" in _VOYAGER_JOB_JS and "job_state" in _VOYAGER_JOB_JS
+
+
+@pytest.mark.asyncio
+async def test_a_stored_grnh_se_link_is_followed(test_db):
+    posting = _job(test_db, GH, company="Acme", title="Product Manager", source="direct")
+    short = _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
+
+    async def resolve(url):
+        return GH if "grnh.se" in url else url
+    n = await ll.resolve_stored_short_links(limit=50, resolve=resolve)
+    test_db.refresh(short)
+    assert n == 1
+    assert short.apply_url == GH and short.posting_key == "greenhouse:4012345"
+    assert short.status == "duplicate" and short.duplicate_of == posting.id
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_short_link_is_left_alone(test_db):
+    short = _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
+    n = await ll.resolve_stored_short_links(limit=50, resolve=_no_resolve)
+    test_db.refresh(short)
+    assert n == 0 and short.apply_url is None and short.posting_key is None
+
+
+@pytest.mark.asyncio
+async def test_the_lookup_run_also_follows_short_links(test_db):
+    _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
+
+    async def resolve(url):
+        return GH if "grnh.se" in url else url
+    out = await _run(FakeLinkedIn({}), resolve=resolve)
+    assert out["short_links"] == 1

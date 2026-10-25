@@ -442,7 +442,8 @@ async def run_linkedin_lookup():
         async with tracked_run("linkedin_lookup", "scheduler") as run:
             out = await run_lookup(per_run=per_run)
             run.summary = (f"{out['looked_up']} looked up - {out['employer']} employer links - "
-                           f"{out['easy_apply']} Easy Apply - {out['cached']} from earlier answers"
+                           f"{out['easy_apply']} Easy Apply - {out['cached']} from earlier answers - "
+                           f"{out['short_links']} short links followed"
                            + (f" - stopped: {out['stopped']}" if out["stopped"] else ""))
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")

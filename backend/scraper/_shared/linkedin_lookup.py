@@ -134,8 +134,53 @@ async def _fetcher(fetch):
                 pass
 
 
+async def resolve_stored_short_links(limit: int = 50, resolve=None) -> int:
+    """Stored jobs whose link is a short link (grnh.se, prng.co, appcast) and that have no employer
+    link yet: follow it; a landing page that names an employer posting becomes `apply_url`, and
+    the job is re-keyed, classified and relinked. A link that does not resolve waits for the next
+    run. Returns the jobs that got their employer link."""
+    from sqlalchemy import or_
+    from backend.accounts.context import unscoped
+    from backend.models.db import Job, SessionLocal
+    from backend.scraper._shared.posting_links import employer_link, key_of, relink
+    from backend.scraper._shared.postings import SHORT_LINK_HOSTS, is_short_link, resolve_short_link
+    resolve = resolve or resolve_short_link
+    done = 0
+    # unscoped: install-level pass over every account's rows; relink names each row's account.
+    with unscoped():
+        db = SessionLocal()
+        try:
+            rows = (db.query(Job)
+                    .filter(Job.apply_url.is_(None), Job.status != "ignored",
+                            or_(*[Job.url.like(f"%{h}/%") for h in SHORT_LINK_HOSTS]))
+                    .order_by(Job.discovered_at.desc()).limit(limit).all())
+            for job in rows:
+                if not is_short_link(job.url):
+                    continue
+                link = employer_link(await resolve(job.url))
+                if not link:
+                    continue
+                job.apply_url = link
+                job.posting_key = key_of(job)
+                classify(job)
+                db.flush()
+                relink(db, job)
+                db.commit()
+                done += 1
+        finally:
+            db.close()
+    return done
+
+
 async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=None) -> dict:
-    """One lookup run over every account's pending LinkedIn rows (install-level)."""
+    """One lookup run: every account's pending LinkedIn rows, then stored short links (install-level)."""
+    out = await _linkedin_pass(per_run, fetch, pause, resolve)
+    out["short_links"] = await resolve_stored_short_links(limit=50, resolve=resolve)
+    logger.info(f"LinkedIn lookup: {out}")
+    return out
+
+
+async def _linkedin_pass(per_run: int, fetch, pause: float, resolve) -> dict:
     from backend.accounts.context import unscoped
     from backend.models.db import LinkedinLookup, SessionLocal
     from backend.scraper._shared.postings import resolve_short_link
@@ -189,5 +234,4 @@ async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=Non
                     out[result] += 1
         finally:
             db.close()
-    logger.info(f"LinkedIn lookup: {out}")
     return out
