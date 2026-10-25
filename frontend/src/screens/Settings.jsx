@@ -10,7 +10,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import {
   AccountsTable, AddAccountModal, YourAccount, accountsChanged, errorText,
-  LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, memberGroup, rowLocked, scopeTag,
+  LockCard, PolicyToggle, ScopeTag, UnlockPill, hhmm, indexSections, rowLocked, scopeTag,
 } from './SettingsAccounts'
 import '../theme.css'
 import { loadDemo } from '../demoHooks'
@@ -810,21 +810,9 @@ export default function Settings() {
   const q = query.trim().toLowerCase()
   const matches =(sec) => !q || sec[2].toLowerCase().includes(q) ||
     sec[4].some((r) => `${r.label} ${r.help || ''}`.toLowerCase().includes(q))
-  // MT-14 · a member's nav regroups into You · AI · yours · Yours · Shared · <owner> 🔒
-  // (contiguous groups, the page's own order inside each); everyone else keeps the page.
-  const MEMBER_GROUPS = ['You', 'AI · yours', 'Yours']
-  const ordered = useMemo(() => {
-    if (!member) return sections
-    const tagged = sections.map((s) => ({ s, g: memberGroup(s[0], sidx, ownerName, unlocked) }))
-    const rank = (g) => { const i = MEMBER_GROUPS.indexOf(g); return i < 0 ? MEMBER_GROUPS.length : i }
-    const out = []
-    let last = null
-    tagged.map((t, i) => ({ ...t, i })).sort((a, b) => rank(a.g) - rank(b.g) || a.i - b.i).forEach(({ s, g }) => {
-      out.push([s[0], g !== last ? g : '', ...s.slice(2)])
-      last = g
-    })
-    return out
-  }, [sections, member, sidx, ownerName, unlocked])  // eslint-disable-line react-hooks/exhaustive-deps
+  // Everyone sees the page's own order; each section's tag says whose it is (Yours, Inherited from
+  // <owner>, Owner only) and locked ones are dimmed (MT-14's member regrouping is gone).
+  const ordered = sections
   // T7-01: at the top (nothing jumped to yet) the first section of the page is the current one
   const cur = (active && ordered.some((s) => s[0] === active)) ? active : ordered[0]?.[0]
   const lockCtx = { member, unlocked, meta, idx: sidx }

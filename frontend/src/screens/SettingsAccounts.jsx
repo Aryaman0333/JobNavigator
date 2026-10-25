@@ -640,18 +640,6 @@ export function rowLocked(r, { member, unlocked, meta, idx }) {
   return !memberCanEdit(rowKey(r), meta, idx)
 }
 
-// The member's nav group for a section (`You`, `AI · yours`, `Yours`, `Shared · <owner>`).
-// No 🔒 glyph: the headless Chromium (and some Linux desktops) have no emoji font, it drew a
-// box; the locked sections read dimmed in the nav instead.
-export function memberGroup(id, idx, ownerName, unlocked) {
-  if (id === 'account') return 'You'
-  if (AI_SECTIONS.includes(id)) return 'AI · yours'
-  if (id === 'appearance') return 'Yours'
-  const sec = idx?.byId?.[id]
-  if (sec && OWNS.includes(sec.mode)) return 'Yours'
-  return `Shared · ${ownerName || 'owner'}`
-}
-
 // The scope tag beside a section title.
 export function scopeTag(id, { idx, member, ownerName }) {
   if (id === 'appearance') return { label: 'Per device', tone: 'neutral' }

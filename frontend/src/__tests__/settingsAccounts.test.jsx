@@ -18,7 +18,7 @@ vi.mock('../api', () => {
 import api from '../api'
 import {
   countsLine, errorText, PinDialog, AddAccountModal, RemoveAccountModal, ColorPicker, COPY_ITEMS,
-  indexSections, rowKey, memberCanEdit, rowLocked, memberGroup, scopeTag, LockCard, UnlockPill,
+  indexSections, rowKey, memberCanEdit, rowLocked, scopeTag, LockCard, UnlockPill,
   AccountsTable, EditAccountModal, PolicyToggle,
 } from '../screens/SettingsAccounts'
 
@@ -206,14 +206,6 @@ describe('role helpers', () => {
     expect(rowLocked({ kind: 'button', ownerOnly: true }, ctx)).toBe(true)
     expect(rowLocked({ key: 'proxy_url' }, { ...ctx, unlocked: true })).toBe(false)
     expect(rowLocked({ key: 'proxy_url' }, { ...ctx, member: false })).toBe(false)
-  })
-  it('member nav groups', () => {
-    expect(memberGroup('account', idx, 'Viktor')).toBe('You')
-    expect(memberGroup('models', idx, 'Viktor')).toBe('AI · yours')
-    expect(memberGroup('exclude', idx, 'Viktor')).toBe('Yours')
-    expect(memberGroup('scheduler', idx, 'Viktor')).toBe('Yours')      // flipped to own
-    expect(memberGroup('advanced', idx, 'Viktor')).toBe('Shared · Viktor')
-    expect(memberGroup('advanced', idx, 'Viktor', true)).toBe('Shared · Viktor')
   })
   it('scope tags', () => {
     expect(scopeTag('appearance', { idx, member: false })).toEqual({ label: 'Per device', tone: 'neutral' })
