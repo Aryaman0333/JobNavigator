@@ -13,6 +13,7 @@ from backend.analyzer.work_arrangement import apply_arrangement_to_job
 from backend.analyzer.location import apply_location_to_job
 from backend.job_monitor import launch_background, JobAlreadyRunningError
 # LinkedIn extension enrichment — see sources/linkedin_extension.py
+from backend.scraper._shared.link_kinds import job_link
 from backend.scraper.sources.linkedin_extension import (
     enrich as _scrape_linkedin_ids,  # noqa: F401
     _linkedin_import_progress,
@@ -1069,9 +1070,9 @@ async def update_job(job_id: str, updates: dict, background_tasks: BackgroundTas
     created_company_id = None
 
     if updates.get("status") == "applied":
-        if job.url and not job.has_cached_page:
+        if job_link(job) and not job.has_cached_page:
             from backend.api.routes_applications import _cache_job_page
-            background_tasks.add_task(_cache_job_page, str(job.id), job.url)
+            background_tasks.add_task(_cache_job_page, str(job.id), job_link(job))
 
         from backend.models.db import Application
         from datetime import datetime, timezone
@@ -1116,7 +1117,7 @@ def cache_applied_jobs(background_tasks: BackgroundTasks, db: Session = Depends(
 
     for job in jobs:
         from backend.api.routes_applications import _cache_job_page
-        background_tasks.add_task(_cache_job_page, str(job.id), job.url)
+        background_tasks.add_task(_cache_job_page, str(job.id), job_link(job))
 
     return {"queued": len(jobs)}
 
@@ -1171,11 +1172,11 @@ async def frame_check(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not job.url:
+    if not job_link(job):
         return {"embeddable": False}
     from backend.scraper._shared.url_safety import safe_get, UnsafeURLError
     try:
-        resp = await safe_get(job.url, timeout=12, headers={
+        resp = await safe_get(job_link(job), timeout=12, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         })
         xfo = (resp.headers.get("x-frame-options") or "").strip()
@@ -1208,13 +1209,13 @@ async def get_live_page(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not job.url:
+    if not job_link(job):
         raise HTTPException(status_code=404, detail="No posting URL captured for this job")
 
     from backend.scraper._shared.url_safety import safe_get, UnsafeURLError
     from backend.api.routes_applications import _extract_clean_content
     try:
-        resp = await safe_get(job.url, timeout=20, headers={
+        resp = await safe_get(job_link(job), timeout=20, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
@@ -1314,6 +1315,7 @@ def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = 
         # Other sources that found this posting; empty for a duplicate itself.
         "also_on": also_on or [],
         "link_kind": j.link_kind,
+        "link": job_link(j),   # the employer's link when there is one: what Open opens
         "same_role_skipped": same_role_skipped,
         "source": j.source,
         "search_id": str(j.search_id) if j.search_id else None,

@@ -55,3 +55,13 @@ def classify(job) -> None:
     if kind == BOARD and job.link_kind == EASY_APPLY:
         return
     job.link_kind = kind
+
+
+def job_link(job):
+    """The link to open, fetch or cache for a job: the employer's (`apply_url`, which only ever
+    holds an employer link: posting_links.employer_link and the LinkedIn lookup) when there is
+    one, else the job's own. `url` itself is never rewritten; it stays the import and dedup identity."""
+    if job is None:
+        return None
+    # a description fetch passes a stand-in (SimpleNamespace) that carries only `url`
+    return getattr(job, "apply_url", None) or getattr(job, "url", None)

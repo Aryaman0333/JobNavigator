@@ -477,7 +477,7 @@ export default function V2JobFeed() {
     pinnedRef.current = null                 // picking from the list releases a ?job= pin
     deadPinRef.current = false
     setSel(idx); lastIdx.current = idx
-    setDetail(j); setReportTab(0); setViewCached(__DEMO__); setCachedHtml(null); setFrameOk(frameGuess(j.url)); setFrameDeadId(null)
+    setDetail(j); setReportTab(0); setViewCached(__DEMO__); setCachedHtml(null); setFrameOk(frameGuess(openLink(j))); setFrameDeadId(null)
     api.get(`/jobs/${j.id}`).then(({ data }) => setDetail((c) => (c && c.id === data.id ? data : c))).catch(() => { /* silent: a background refresh of an already-rendered panel — the row data stays */ })
   }, [frameGuess])
   const focusAt = useCallback((idx) => {
@@ -785,7 +785,7 @@ export default function V2JobFeed() {
         case 's': if (job) { const nextStatus = job.saved ? 'new' : 'saved'; saveJob(job); if (!leavesView(nextStatus)) focusAt(Math.min(idx + 1, list.length - 1)) } break
         case 'x': if (job) { skipJob(job); if (!leavesView('skip')) focusAt(Math.min(idx + 1, list.length - 1)) } break
         case 'a': if (job) applyJob(job); break
-        case 'e': case 'o': if (job?.url) window.open(job.url, '_blank', 'noopener,noreferrer'); break
+        case 'e': case 'o': if (openLink(job)) window.open(openLink(job), '_blank', 'noopener,noreferrer'); break
         case 'r': if (job) openRescore(job); break
         case 't': if (job) setPicker({ mode: 'tailor', jobs: [job] }); break   // the ⋯ menus hint t
         case 'c': if (job) navigate(`/cover-letters?job=${job.id}`); break   // and c
@@ -812,8 +812,8 @@ export default function V2JobFeed() {
   // Extension off: probe whether the posting will embed (X-Frame-Options / CSP frame-ancestors).
   // Always try the live iframe first — only a confident block routes to the extension message; the probe runs once per host and is cached.
   useEffect(() => {
-    if (!detail || !detail.url || viewCached || extActive) return
-    const host = hostOf(detail.url)
+    if (!detail || !openLink(detail) || viewCached || extActive) return
+    const host = hostOf(openLink(detail))
     if (!host || frameCache.current[host] !== undefined) return
     const id = detail.id
     api.get(`/jobs/${id}/frame-check`).then(({ data }) => {
@@ -831,7 +831,7 @@ export default function V2JobFeed() {
   // a load that never arrived) makes it null, and the pane renders the cached or fallback branch.
   const cachedAvail = __DEMO__ ? !!detail : !!(detail && detail.status === 'applied' && detail.has_cached_page)
   const frameJobId = detail?.id || null
-  const frameSrc = (detail?.url && !(viewCached && cachedAvail) && (extActive || frameOk !== false) && frameDeadId !== detail.id) ? detail.url : null
+  const frameSrc = (openLink(detail) && !(viewCached && cachedAvail) && (extActive || frameOk !== false) && frameDeadId !== detail.id) ? openLink(detail) : null
   // Cover goes up when a frame mounts/src changes, down on load/error or the safety timeout (closed-over id
   // guards a stale timer). Layout effect so the cover paints with the frame's first frame, not one paint late.
   useLayoutEffect(() => {
@@ -1379,7 +1379,7 @@ export default function V2JobFeed() {
                         <>
                           <div onClick={() => setRowMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 59 }} />
                           <Menu ariaLabel="Job actions" style={{ position: 'fixed', left: rowMenu.left, top: rowMenu.top, bottom: rowMenu.bottom, zIndex: 60, width: 228 }}>
-                            {[['Mark applied', 'a', () => applyJob(j)], ['Tailor résumé', 't', () => setPicker({ mode: 'tailor', jobs: [j] })], ['Rescore', 'r', () => openRescore(j)], [__DEMO__ ? 'Open posting ↗ · original may have expired' : 'Open posting ↗', 'e', () => j.url && window.open(j.url, '_blank', 'noopener,noreferrer')]].map(([label, key, act]) => (
+                            {[['Mark applied', 'a', () => applyJob(j)], ['Tailor résumé', 't', () => setPicker({ mode: 'tailor', jobs: [j] })], ['Rescore', 'r', () => openRescore(j)], [__DEMO__ ? 'Open posting ↗ · original may have expired' : 'Open posting ↗', 'e', () => openLink(j) && window.open(openLink(j), '_blank', 'noopener,noreferrer')]].map(([label, key, act]) => (
                               <MenuItem key={label} hint={key} hintMono onClick={() => { setRowMenu(null); act() }}
                                 style={label === 'Tailor résumé' ? { fontWeight: 600 } : undefined}>{label}</MenuItem>
                             ))}
@@ -1458,9 +1458,8 @@ export default function V2JobFeed() {
                         (⌘/middle-click still opens the posting) with the secondary
                         button's own paint; the override is the height, which tracks
                         the collapsing detail header (36/30) like the ✦ button beside it. */}
-                    {d.url && <Button variant="secondary" size="sm" href={d.url} target="_blank" style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
-                    {/* the employer's own posting, when the job came from a board (Indeed, a tracked link) */}
-                    {d.apply_url && d.apply_url !== d.url && <Button variant="secondary" size="sm" href={d.apply_url} target="_blank" title={d.apply_url} style={{ height: headOpen ? 36 : 30 }}>Company site ↗</Button>}
+                    {/* the employer's own posting when there is one (linkKinds.js openLink), else the job's link */}
+                    {openLink(d) && <Button variant="secondary" size="sm" href={openLink(d)} target="_blank" title={openLink(d)} style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
                     {/* Routed through Button (not hand-drawn) so it reads --btn-shadow/--btn-weight/--btn-primary-bg/-ink
                         and the hover/pressed rules; the style override only restores height/padding/line-height, which track the collapsing header. */}
                     {/* while a tailor runs the button says so and does nothing: `disabled`
@@ -1770,7 +1769,7 @@ export default function V2JobFeed() {
                           </div>
                         )}
                       </div>
-                    ) : d.url ? (
+                    ) : openLink(d) ? (
                       /* frame-blocked — canonical design panel */
                       <div style={{ flex: '1 0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '44px 30px', minHeight: 0 }}>
                         <div style={{ maxWidth: '44ch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 11, textAlign: 'center' }}>
@@ -1782,7 +1781,7 @@ export default function V2JobFeed() {
                             {/* round 9: `Button href` renders the real anchor this
                                 needed, on the primary button's own paint (which is
                                 the --accent / --accent-ink pair it drew by hand) */}
-                            <Button size="sm" href={d.url} target="_blank" style={{ height: 34 }}>Open in new tab ↗{__DEMO__ ? ' · original may have expired' : ''}</Button>
+                            <Button size="sm" href={openLink(d)} target="_blank" style={{ height: 34 }}>Open in new tab ↗{__DEMO__ ? ' · original may have expired' : ''}</Button>
                             {/* ui: keep — h34 to match the native anchor it sits beside (which stays inline) */}
                             {dCached && <Button variant="secondary" size="sm" hover="v2-act" onClick={() => setViewCached(true)} style={{ height: 34 }}>View cached snapshot</Button>}
                           </div>

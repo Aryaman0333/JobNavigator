@@ -79,3 +79,29 @@ def test_facets_count_link_kinds(test_db, api_client):
     body = api_client.get("/api/jobs/facets?status=new&link_kind=direct").json()
     counts = {x["name"]: x["count"] for x in body["link_kinds"]}
     assert counts == {"direct": 1, "board": 1, "easy_apply": 1}, "the own filter is lifted"
+
+
+def test_job_link_prefers_the_employer_link():
+    from backend.scraper._shared.link_kinds import job_link
+    gh = "https://boards.greenhouse.io/acme/jobs/4012345"
+    assert job_link(Job(url="https://www.indeed.com/viewjob?jk=0362e90102d8ac2c", apply_url=gh)) == gh
+    assert job_link(Job(url="https://www.indeed.com/viewjob?jk=0362e90102d8ac2c")) == \
+        "https://www.indeed.com/viewjob?jk=0362e90102d8ac2c"
+
+
+def test_the_api_gives_the_link_to_open(test_db, api_client):
+    from backend.tests.test_posting_links import _job
+    from backend.models.db import Setting
+    test_db.add(Setting(key="dashboard_api_key", value=""))
+    gh = "https://boards.greenhouse.io/acme/jobs/4012345"
+    job = _job(test_db, "https://www.indeed.com/viewjob?jk=0362e90102d8ac2c", apply_url=gh, source="jobspy_indeed")
+    body = api_client.get(f"/api/jobs/{job.id}").json()
+    assert body["link"] == gh and body["url"] == "https://www.indeed.com/viewjob?jk=0362e90102d8ac2c"
+
+
+def test_job_link_takes_a_stand_in_without_apply_url():
+    """Description fetches pass a SimpleNamespace(id, description, url, cached_page_text)."""
+    from types import SimpleNamespace
+    from backend.scraper._shared.link_kinds import job_link
+    assert job_link(SimpleNamespace(url="https://acme.com/jobs/9")) == "https://acme.com/jobs/9"
+    assert job_link(None) is None

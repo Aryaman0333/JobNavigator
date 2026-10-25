@@ -27,6 +27,7 @@ from backend.api.routes_autofill import router as autofill_router
 from backend.api.routes_llm import router as llm_router
 from backend.api.routes_accounts import router as accounts_router
 from backend.api.routes_gmail import router as gmail_router
+from backend.scraper._shared.link_kinds import job_link
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jobnavigator")
@@ -1013,7 +1014,7 @@ async def trigger_backfill_descriptions():
             count = 0
             for job in jobs:
                 try:
-                    desc = await _fetch_job_description(job.url)
+                    desc = await _fetch_job_description(job_link(job))
                     if desc and len(desc) > 50:
                         job.description = desc
                         apply_salary_to_job(job)
