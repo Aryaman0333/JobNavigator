@@ -233,3 +233,22 @@ async def test_a_bot_wall_served_with_404_is_unknown():
     wall = "<html><title>Just a moment...</title><div id='cf-challenge'>Checking your browser</div></html>"
     (state, _), _ = await check(url, {url: (404, url, wall)})
     assert state == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_workday_permission_denied_is_a_removed_job():
+    """Workday answers a removed posting with 403 {"errorCode": "S22", "message": "permission denied"}
+    (Cisco's Seattle copy, closed by hand-check); its open Phoenix copy answers 200."""
+    url = "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/Seattle-Washington-US/Solutions-Development-Architect_2025218-1"
+    api = "https://cisco.wd5.myworkdayjobs.com/wday/cxs/cisco/Cisco_Careers/job/Seattle-Washington-US/Solutions-Development-Architect_2025218-1"
+    body = '{"errorCode":"S22","errorCaseId":"x","httpStatus":403,"message":"permission denied","messageParams":{}}'
+    (state, reason), calls = await check(url, {api: (403, api, body)})
+    assert state == "closed" and "Workday" in reason and calls == [api]
+
+
+@pytest.mark.asyncio
+async def test_workday_never_falls_back_to_its_page():
+    """A Workday page is an app shell that always loads: when the API cannot answer, the state is unknown."""
+    url = "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/Seattle-Washington-US/X_2025218-1"
+    (state, _), calls = await check(url, {})
+    assert state == "unknown" and len(calls) == 1

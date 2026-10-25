@@ -95,6 +95,10 @@ async def _by_api(api, name, fetch):
     status, _final, text = got
     if status in (404, 410):
         return CLOSED, f"{name}: the posting is gone"
+    # Workday answers a removed posting with its own JSON error: 403 {"errorCode": "S22",
+    # "message": "permission denied"} (an open one answers 200)
+    if name == "Workday" and status in (403, 404) and '"errorCode"' in (text or ""):
+        return CLOSED, "Workday: the posting is gone"
     if status == 200:
         if name == "Workday":
             try:
@@ -120,6 +124,8 @@ async def check_link(url, fetch=None):
             answer = await _by_api(endpoint, kind.capitalize() if kind != "workday" else "Workday", fetch)
             if answer:
                 return answer
+            if kind == "workday":   # its page is an app shell that always loads: it proves nothing
+                return UNKNOWN, "Workday did not answer"
     if kind == "linkedin":
         page = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{key.split(':', 1)[1]}"
         got = await fetch(page)
