@@ -1475,7 +1475,7 @@ export default function V2JobFeed() {
                         button's own paint; the override is the height, which tracks
                         the collapsing detail header (36/30) like the ✦ button beside it. */}
                     {/* the employer's own posting when there is one (linkKinds.js openLink), else the job's link */}
-                    {closedTag(d) && <span title={closedTag(d).title} onClick={() => setRecheck((n) => n + 1)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--dot-bad)', cursor: 'pointer' }}><Dot tone="bad" />Closed</span>}
+                    {closedTag(d) && <span title={closedTag(d).title} onClick={() => setRecheck((n) => n + 1)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--dot-bad)', cursor: 'pointer' }}><Dot tone="bad" />{closedTag(d).text}</span>}
                     {linkTag(d) && <Tag title={linkTag(d).title}>{linkTag(d).text}</Tag>}
                     {openLink(d) && <Button variant="secondary" size="sm" href={openLink(d)} target="_blank" title={openLink(d)} style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
                     {/* Routed through Button (not hand-drawn) so it reads --btn-shadow/--btn-weight/--btn-primary-bg/-ink
