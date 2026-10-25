@@ -737,6 +737,9 @@ export default function Settings() {
         ...(isOn('linkedin_use_mock_account', !!val('linkedin_mock_email')) ? [
           B('Mock account email', 'The extension browses specific jobs with this mock account.', 'linkedin_mock_email', { w: '260px' }),
           B('Mock account password', 'Stored locally only.', 'linkedin_mock_password', { secret: true, w: '260px' }),
+          B('Employer link lookup · cron', 'LinkedIn jobs from any source get the employer’s apply link through the mock account. Empty = off.', 'linkedin_lookup_cron',
+            { mono: true, cron: true, w: '135px', info: 'Each LinkedIn job is asked about once, one every 15 seconds, and the answer is kept for every account. Easy Apply jobs are marked as such. A run stops when LinkedIn stops answering.' }),
+          B('Lookups per run', 'Most LinkedIn jobs asked about per run.', 'linkedin_lookup_per_run', { mono: true, int: true, w: '80px' }),
         ] : []),
       ]],
       ['advanced', 'System', 'Advanced', '', [

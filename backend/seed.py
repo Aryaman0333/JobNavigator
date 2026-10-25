@@ -48,6 +48,8 @@ DEFAULT_SETTINGS = {
     # Billed per result by Apify; `_api_key` suffix keeps it redacted on GET /settings.
     "apify_api_key": ("", "Apify API token for the Apify search mode"),
     "reject_cron": ("0 4 * * *", "Auto-reject cron (min hour day month dow). Empty = disabled"),
+    "linkedin_lookup_cron": ("20 * * * *", "LinkedIn link lookup cron: LinkedIn listings get the employer's link through the mock account. Empty = disabled"),
+    "linkedin_lookup_per_run": ("20", "LinkedIn link lookup: most LinkedIn jobs asked about per run (one every 15 s)"),
     "backup_cron": ("0 3 * * *", "Backup cron schedule (min hour day month dow). Empty = disabled"),
     "scoring_rubric": ("Score each resume using these criteria (each 0-20, sum to 0-100):\n1. SKILLS MATCH (weight: 20): How many required technical skills/tools does the candidate have?\n2. EXPERIENCE LEVEL (weight: 20): Does seniority/years match? (entry-level resume for senior role = low)\n3. DOMAIN FIT (weight: 20): Has the candidate worked in the same industry/domain?\n4. ROLE ALIGNMENT (weight: 20): Does the candidate's career trajectory match this role type?\n5. REQUIREMENTS MET (weight: 20): Does the candidate meet stated requirements (education, certs, clearance)?\n\nUse the FULL 0-100 range. 90+ = perfect match. 50-70 = decent with gaps. Below 30 = poor match.\nAvoid clustering scores — differentiate meaningfully between resumes and jobs.", "Editable resume scoring rubric"),
     "scoring_output_light": ('Return ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME"\n}', "Light scoring output schema"),

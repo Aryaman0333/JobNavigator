@@ -97,6 +97,9 @@ _VOYAGER_JOB_JS = """async (jid) => {
     for (const v of Object.values(d.applyMethod || {})) {
         if (v && v.companyApplyUrl) { apply = v.companyApplyUrl; break; }
     }
+    // "OffsiteApply" (the employer's site) or "...OnsiteApply" (Easy Apply), from the key's tail
+    const applyKey = Object.keys(d.applyMethod || {})[0] || '';
+    const applyType = applyKey.split('.').pop();
     // workplaceTypes is a URN list ("urn:li:fs_workplaceType:2"); workRemoteAllowed
     // is a plain bool. Both are read defensively: this decoration is not
     // documented, so a build that omits them just yields nulls.
@@ -108,6 +111,8 @@ _VOYAGER_JOB_JS = """async (jid) => {
             location: d.formattedLocation || '',
             description: (d.description && d.description.text) || '',
             apply_url: apply || '',
+            apply_type: applyType,
+            job_state: d.jobState || '',
             workplace_type: wpt,
             work_remote_allowed: (typeof d.workRemoteAllowed === 'boolean')
                 ? d.workRemoteAllowed : null};

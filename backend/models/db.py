@@ -268,6 +268,19 @@ class VisaCache(Base):
     __table_args__ = (UniqueConstraint("name_key", "country", name="uq_visa_cache_name_country"),)
 
 
+class LinkedinLookup(Base):
+    """One answer per LinkedIn job, install-wide (the same for every account): the employer's
+    apply link LinkedIn shows a logged-in user, or that the job is Easy Apply or gone.
+    Written by scraper/_shared/linkedin_lookup.py; a job is never asked about twice."""
+    __tablename__ = "linkedin_lookups"
+
+    linkedin_id = Column(String, primary_key=True)
+    apply_url = Column(String, nullable=True)
+    result = Column(String(12), nullable=False)        # employer | easy_apply | gone
+    job_state = Column(String(20), nullable=True)      # LinkedIn's jobState (LISTED, CLOSED, ...)
+    checked_at = Column(DateTime(timezone=True), default=utcnow)
+
+
 # ── Jobs ─────────────────────────────────────────────────────────────────────
 class Job(AccountScoped, Base):
     __tablename__ = "jobs"

@@ -114,6 +114,9 @@ _SECTIONS = [
     ("linkedin", "LinkedIn", POLICY, OWN, ["linkedin"], [
         "linkedin_email", "linkedin_password", "linkedin_mock_email", "linkedin_mock_password",
         "linkedin_use_mock_account"]),
+    # The lookup runs once for the install, through the owner's mock-account session.
+    ("linkedin_lookup", "LinkedIn link lookup", OWNER_ONLY, INHERIT, ["linkedin"], [
+        "linkedin_lookup_cron", "linkedin_lookup_per_run"]),
     ("advanced", "Advanced", OWNER_ONLY, INHERIT, ["advanced"], ["proxy_url", "dashboard_api_key"]),
     # Not a section of the Settings screen. MT-19: the token is connected from a row in Email
     # classification (GET /api/gmail/connect); gmail_token_status = the "expired" marker after

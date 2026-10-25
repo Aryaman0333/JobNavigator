@@ -231,6 +231,25 @@ def find_original(session, job, batch: Batch):
     return None, (elsewhere or [None])[0]
 
 
+def relink(session, job) -> bool:
+    """A stored job whose links just changed (the LinkedIn lookup, a followed short link): link it
+    by rules 1 and 2 as if it had just arrived. Only an untouched row moves; its own duplicates
+    follow it to the new original. True when it became a duplicate."""
+    from backend.models.db import Job
+
+    if (job.status or "new") != "new" or job.duplicate_of is not None or job.account_id is None:
+        return False
+    original, elsewhere = find_original(session, job, Batch())
+    if original is None:
+        if elsewhere is not None and job.same_role_as is None:
+            job.same_role_as = _ensure_id(elsewhere)
+        return False
+    mark_duplicate(job, original)
+    (session.query(Job).filter(Job.account_id == job.account_id, Job.duplicate_of == job.id)
+     .update({Job.duplicate_of: original.id}, synchronize_session=False))
+    return True
+
+
 def listing_copies(session, job, batch: Batch) -> list:
     """Rule 3: untouched listing-only copies of an employer posting that just arrived."""
     from backend.models.db import Job
