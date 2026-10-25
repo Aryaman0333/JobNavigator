@@ -1326,7 +1326,20 @@ async def telegram_test():
         )
 
 
-_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup"})   # their triggers: require_owner
+_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup", "linkedin_lookup"})   # install-level / require_owner
+
+# The schedules list shows these names; every id scheduler.py registers needs one
+# (test_schedule_names.py).
+SCHEDULE_NAMES = {
+    "scrape_all": "Scrape all searches & companies",
+    "email_check": "Check Gmail for replies",
+    "daily_digest": "Send daily Telegram digest",
+    "h1b_refresh": "Refresh H-1B / LCA data",
+    "db_backup": "Back up database (pg_dump)",
+    "job_cleanup": "Clean up stale skipped jobs",
+    "auto_reject": "Auto-reject stale applications",
+    "linkedin_lookup": "Find employer links for LinkedIn jobs",
+}
 
 
 @app.get("/api/scheduler/jobs", tags=["scheduler"], summary="List scheduled jobs")
@@ -1344,17 +1357,6 @@ def get_scheduler_jobs():
         "db_backup": ("/db/backup", "db_backup"),
         "job_cleanup": ("/db/cleanup", "job_cleanup"),
         "auto_reject": ("/auto-reject/run", "auto_reject"),
-    }
-
-    # Human-friendly display names for the core scheduler jobs.
-    display_names = {
-        "scrape_all": "Scrape all searches & companies",
-        "email_check": "Check Gmail for replies",
-        "daily_digest": "Send daily Telegram digest",
-        "h1b_refresh": "Refresh H-1B / LCA data",
-        "db_backup": "Back up database (pg_dump)",
-        "job_cleanup": "Clean up stale skipped jobs",
-        "auto_reject": "Auto-reject stale applications",
     }
 
     jobs = scheduler.get_jobs()
@@ -1379,7 +1381,7 @@ def get_scheduler_jobs():
 
         result.append({
             "id": job.id,
-            "name": display_names.get(job.id, job.name or job.id),
+            "name": SCHEDULE_NAMES.get(job.id, job.name or job.id),
             "schedule": schedule,
             "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
             "pending": job.pending,
