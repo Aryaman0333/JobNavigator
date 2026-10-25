@@ -178,3 +178,58 @@ async def test_a_phrase_inside_a_script_is_not_the_page_saying_it():
             '<style>.x{content:"position has been filled"}</style><h1>Product Manager</h1>')
     (state, _), _ = await check(url, {url: (200, url, page)})
     assert state == "open"
+
+
+# ── second review ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_myworkdaysite_link_is_checked_by_its_page():
+    """Review #1: wd1.myworkdaysite.com/recruiting/<tenant>/<site>/job/... is not parsed for the job API."""
+    url = "https://wd1.myworkdaysite.com/en-US/recruiting/snapchat/snap/job/Los-Angeles/Senior_R0045568"
+    (state, _), calls = await check(url, {url: (200, url, "<h1>Senior</h1>")})
+    assert state == "open" and calls == [url]
+
+
+@pytest.mark.asyncio
+async def test_eu_greenhouse_and_lever_use_their_eu_apis():
+    """Review #2."""
+    gh = "https://job-boards.eu.greenhouse.io/acme/jobs/4012345"
+    gh_api = "https://boards-api.eu.greenhouse.io/v1/boards/acme/jobs/4012345"
+    (state, _), calls = await check(gh, {gh_api: (200, gh_api, "{}")})
+    assert state == "open" and calls == [gh_api]
+    lv = "https://jobs.eu.lever.co/acme/1cafb489-9cae-4417-b272-832617484de0"
+    lv_api = "https://api.eu.lever.co/v0/postings/acme/1cafb489-9cae-4417-b272-832617484de0"
+    (state, _), calls = await check(lv, {lv_api: (404, lv_api, "")})
+    assert state == "closed" and calls == [lv_api]
+
+
+@pytest.mark.asyncio
+async def test_no_database_transaction_is_held_while_a_site_answers(test_db, monkeypatch):
+    """Review #4: the check releases its connection before the outside fetch."""
+    job = _job(test_db, "https://job-boards.greenhouse.io/acme/jobs/4012345", company="Acme", title="PM")
+    seen = []
+
+    async def fake_check(url, fetch=None):
+        seen.append(test_db.in_transaction())
+        return "open", ""
+    monkeypatch.setattr(so, "check_link", fake_check)
+    out = await so.ensure_checked(test_db, job)
+    assert seen == [False] and out["open_state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_that_keeps_the_job_id_is_open():
+    """Review #6: ?gh_jid=123 -> /jobs/123-title loses the key but not the posting."""
+    url = "https://www.acme.com/careers?gh_jid=4012345"
+    final = "https://www.acme.com/jobs/4012345-product-manager"
+    (state, _), _ = await check(url, {url: (200, final, "<h1>PM</h1>")})
+    assert state == "open"
+
+
+@pytest.mark.asyncio
+async def test_a_bot_wall_served_with_404_is_unknown():
+    """Review #7."""
+    url = "https://www.amazon.jobs/en/jobs/10566262/sr-pm"
+    wall = "<html><title>Just a moment...</title><div id='cf-challenge'>Checking your browser</div></html>"
+    (state, _), _ = await check(url, {url: (404, url, wall)})
+    assert state == "unknown"

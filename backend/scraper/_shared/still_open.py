@@ -56,21 +56,26 @@ def _greenhouse_api(url):
         board = (parse_qs(p.query).get("for") or [None])[0]
         if not board and "jobs" in seg and seg.index("jobs") > 0:
             board = seg[seg.index("jobs") - 1]
-    return f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}" if board and job_id else None
+    api = "boards-api.eu.greenhouse.io" if ".eu.greenhouse.io" in (p.hostname or "") else "boards-api.greenhouse.io"
+    return f"https://{api}/v1/boards/{board}/jobs/{job_id}" if board and job_id else None
 
 
 def _lever_api(url):
-    if not (urlparse(url).hostname or "").endswith("lever.co"):
+    host = urlparse(url).hostname or ""
+    if not host.endswith("lever.co"):
         return None
+    api = "api.eu.lever.co" if host.endswith(".eu.lever.co") else "api.lever.co"
     seg = [s for s in urlparse(url).path.split("/") if s]
-    return f"https://api.lever.co/v0/postings/{seg[0]}/{seg[1]}" if len(seg) >= 2 else None
+    return f"https://{api}/v0/postings/{seg[0]}/{seg[1]}" if len(seg) >= 2 else None
 
 
 def _workday_api(url):
     # only a Workday link: a company site that shows Workday numbers (Bank of America, Visa) is
     # keyed workday:<tenant>:<n> but is checked by its own page
     host = urlparse(url).hostname or ""
-    if not (host.endswith("myworkdayjobs.com") or host.endswith("myworkdaysite.com")):
+    # (wdN.myworkdaysite.com/recruiting/<tenant>/<site>/... is checked by its page: the job API
+    # address would be built from the wrong parts)
+    if not host.endswith("myworkdayjobs.com"):
         return None
     from backend.scraper.ats.workday import _LOCALE_PATH_RE, _parse_workday_url
     try:
@@ -130,13 +135,15 @@ async def check_link(url, fetch=None):
         return UNKNOWN, "the page could not be reached"
     status, final, text = got
     from backend.scraper._shared.bot_wall import is_bot_wall
+    if is_bot_wall(text):   # before the status: a bot check can be served with a 404
+        return UNKNOWN, "the site shows a bot check"
     if status in (404, 410):
         return CLOSED, f"the page returns {status}"
-    if is_bot_wall(text):
-        return UNKNOWN, "the site shows a bot check"
     if status >= 400:
         return UNKNOWN, f"the page returns {status}"
-    if key and final and posting_key(final) != key and urlparse(final).path != urlparse(url).path:
+    posting_id = key.rsplit(":", 1)[-1] if key else ""
+    if (key and final and posting_key(final) != key and urlparse(final).path != urlparse(url).path
+            and posting_id.lower() not in final.lower()):
         p = urlparse(final)
         return CLOSED, f"redirected to {(p.hostname or '').removeprefix('www.')}{p.path}"
     page = " ".join(_TAG.sub(" ", _HIDDEN.sub(" ", text or "")).lower().split())
@@ -166,7 +173,9 @@ async def ensure_checked(db, job, force: bool = False) -> dict:
         if cached is not None and cached.result == "gone":
             state, reason = CLOSED, "LinkedIn: the listing is gone"
     if state is None:
-        state, reason = await check_link(job_link(job))
+        link = job_link(job)
+        db.commit()   # end the transaction: no pooled connection waits on an outside site
+        state, reason = await check_link(link)
     job.open_state, job.open_reason, job.open_checked_at = state, reason or None, datetime.now(timezone.utc)
     db.commit()
     return _as_dict(job)

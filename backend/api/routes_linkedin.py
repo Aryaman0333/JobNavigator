@@ -82,7 +82,8 @@ def session_status(which: Which = "mock"):
         "detail": state.get("detail", ""),
         "shared": shared,
         "which": which,
-        "signed_in_as": (rls.signed_in_as(which) or {}).get("email"),
+        # the owner's address stays the owner's: a member on 'inherit' sees only that it is signed in
+        "signed_in_as": None if shared else (rls.signed_in_as(which) or {}).get("email"),
     }
 
 

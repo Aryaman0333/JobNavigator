@@ -434,11 +434,14 @@ def test_removal_forgets_pin_file_codes_states_progress_and_counters(test_db, ac
     monkeypatch.setattr(C, "LI_ACCOUNTS_ROOT", str(tmp_path / "li"))
     pin = tmp_path / f"li_pin_{b}.txt"
     pin.write_text("123456")
+    main_pin = tmp_path / f"li_pin_{b}.txt.main"
+    main_pin.write_text("111111")
     owner_pin = tmp_path / "li_pin.txt"
     owner_pin.write_text("654321")
     code_a = tg.create_link_code(a)["code"]
     tg.create_link_code(b)
-    rls._MEMBER_STATES[b] = {"phase": "awaiting_pin", "detail": ""}
+    rls._MEMBER_STATES[(b, "mock")] = {"phase": "awaiting_pin", "detail": ""}
+    rls._MEMBER_STATES[(b, "main")] = {"phase": "running", "detail": ""}
     with use_account(b):
         _linkedin_import_progress["status"] = "running"
     with use_account(a):
@@ -447,9 +450,9 @@ def test_removal_forgets_pin_file_codes_states_progress_and_counters(test_db, ac
     A._touched[str(b)] = 1.0
     try:
         delete_account_rows(test_db, b)
-        assert not pin.exists() and owner_pin.exists()
+        assert not pin.exists() and not main_pin.exists() and owner_pin.exists()
         assert [e[0] for e in tg._link_codes.values()] == [a] and code_a in tg._link_codes
-        assert b not in rls._MEMBER_STATES
+        assert not [k for k in rls._MEMBER_STATES if k[0] == b], "both sessions' states are dropped"
         assert str(b) not in _linkedin_import_progress._by_account
         with use_account(a):
             assert _linkedin_import_progress["status"] == "done"

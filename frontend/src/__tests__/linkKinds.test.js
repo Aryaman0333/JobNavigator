@@ -32,6 +32,6 @@ describe('still open', () => {
     expect(closedTag(null)).toBeNull()
     const t = closedTag({ open_state: 'closed', open_reason: 'the page returns 404', open_checked_at: new Date().toISOString() })
     expect(t.text).toBe('Closed')
-    expect(t.title).toMatch(/^Looks closed: the page returns 404 · checked /)
+    expect(t.title).toMatch(/^Looks closed: the page returns 404 · checked .* · click to check again$/)
   })
 })

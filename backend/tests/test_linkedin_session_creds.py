@@ -141,3 +141,23 @@ def test_a_fresh_session_reads_signed_in_today(test_db, api_client, jars):
     open(rls.jar(rls.MOCK), "w").write("[]")
     body = api_client.get("/api/linkedin/session?which=mock").json()
     assert body["status"] == "ok" and body["summary"] == "Signed in today."
+
+
+
+def test_without_a_mock_account_the_old_session_becomes_the_main_one(test_db, jars):
+    """Review #5: an install that ran the extension session on the personal account (no mock email)
+    keeps it: the old jar is copied to the main jar the import now reads."""
+    from backend.scraper.sources.linkedin_extension import _session_path
+    open(rls.jar(rls.MOCK), "w").write('[{"name": "li_at", "value": "personal"}]')
+    assert _session_path() == rls.jar(rls.MAIN)
+    assert open(rls.jar(rls.MAIN)).read() == '[{"name": "li_at", "value": "personal"}]'
+
+
+def test_a_member_on_inherit_does_not_see_the_owners_email(test_db, api_client, jars, monkeypatch):
+    """Review #9: signed_in_as is hidden when the session shown is the owner's."""
+    from backend.api import routes_linkedin as rl
+    _set(test_db, dashboard_api_key="")
+    rls.record_sign_in(rls.MOCK, "owner-mock@x.io")
+    monkeypatch.setattr(rl, "_shared_from_owner", lambda: True)
+    body = api_client.get("/api/linkedin/session?which=mock").json()
+    assert body["shared"] is True and body["signed_in_as"] is None
