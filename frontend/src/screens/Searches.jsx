@@ -415,8 +415,8 @@ function ConfigForm({ d, set }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <Label>Import rules</Label>
           <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, minHeight: 31 }}>
-            <Check checked={d.exclude_active_companies} label="Skip active companies"
-              title="Their Company scrapes already bring these postings"
+            <Check checked={d.exclude_active_companies} label="Skip my active companies"
+              title="Leaves out jobs from companies you scrape (active in Companies, aliases included): their own careers page already brings those in"
               onChange={(v) => set({ exclude_active_companies: v })} />
             {m === 'jobright' && <Check checked={d.require_salary} label="Require salary" title="Drop results without a listed salary"
               onChange={(v) => set({ require_salary: v })} />}
