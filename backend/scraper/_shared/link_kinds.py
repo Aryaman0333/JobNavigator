@@ -1,0 +1,57 @@
+"""Whether a job's link reaches the employer's own site.
+
+Every job gets a `link_kind`:
+
+- `direct`: its link (or the employer link beside it, `apply_url`) names an employer posting, is a
+  company's own site, or is a short link that lands on one (grnh.se, prng.co, appcast).
+- `board`: only a job board or aggregator listing is known (LinkedIn, Indeed, Glassdoor,
+  ZipRecruiter, WhatJobs, Telegram, ...). Dedup can't safely tell two board listings of one job apart,
+  and you apply through the board.
+- `easy_apply`: a board listing known to have no employer link at all (LinkedIn Easy Apply, found by
+  the LinkedIn lookup). Kept when the links alone would say `board`.
+
+A host not in `BOARD_HOSTS` counts as the company's own site: a board found in the data that is
+missing from the list is added to it.
+"""
+from urllib.parse import urlparse
+
+from backend.scraper._shared.postings import _host, _is, is_employer_key, is_short_link, posting_key, unwrap
+
+DIRECT = "direct"
+BOARD = "board"
+EASY_APPLY = "easy_apply"
+
+BOARD_HOSTS = (
+    "linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "levels.fyi", "jobright.ai",
+    "caribbeanjobs.com", "trulyremotework.com", "whatjobs.com", "t.me", "hackajob.com", "haystack.cv",
+    "swooped.co", "jobsyn.org", "dice.com", "monster.com", "simplyhired.com", "builtin.com",
+    "wellfound.com", "remocate.app", "teletype.in",
+)
+
+
+def _on_board(url: str) -> bool:
+    try:
+        host = _host(urlparse(unwrap(url)))
+    except Exception:
+        return True
+    return not host or any(_is(host, b) for b in BOARD_HOSTS)
+
+
+def link_kind(url, apply_url) -> str:
+    """`direct` or `board` for a job's links (see the module docstring)."""
+    for link in (apply_url, url):
+        if link and is_employer_key(posting_key(link)):
+            return DIRECT
+    if not url:
+        return BOARD
+    if is_short_link(url):
+        return DIRECT
+    return BOARD if _on_board(url) else DIRECT
+
+
+def classify(job) -> None:
+    """Set `job.link_kind` from its links; an Easy Apply row stays Easy Apply while its links say board."""
+    kind = link_kind(job.url, job.apply_url)
+    if kind == BOARD and job.link_kind == EASY_APPLY:
+        return
+    job.link_kind = kind

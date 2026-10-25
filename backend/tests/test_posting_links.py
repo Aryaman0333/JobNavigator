@@ -181,6 +181,7 @@ def test_the_original_gets_the_employer_link_it_lacked(test_db):
     assert listing.status == "saved"
     assert listing.apply_url == "https://jobs.lever.co/acme/1cafb489-9cae-4417-b272-832617484de0"
     assert listing.posting_key == "lever:1cafb489-9cae-4417-b272-832617484de0"
+    assert listing.link_kind == "direct", "the original that takes its copy's employer link turns direct"
 
 
 def test_filtered_rows_are_neither_linked_nor_targets(test_db):
@@ -406,3 +407,31 @@ def test_backfill_shows_a_copy_hidden_under_a_role_skipped_elsewhere(test_db, ap
     assert ny.status == "new" and ny.duplicate_of is None and ny.same_role_as == skipped.id
     body = api_client.get(f"/api/jobs/{ny.id}").json()
     assert body["same_role_skipped"] == {"id": str(skipped.id), "location": "Seattle, WA"}
+
+
+def test_new_jobs_get_their_link_kind(test_db):
+    posting = _job(test_db, "https://job-boards.greenhouse.io/acme/jobs/4012345", company="Acme", title="PM")
+    listing = _job(test_db, "https://www.linkedin.com/jobs/view/4461186967", company="Acme", title="Other")
+    ignored = _job(test_db, "https://www.linkedin.com/jobs/view/4461186968", company="Acme", title="X",
+                   status="ignored")
+    assert posting.link_kind == "direct" and listing.link_kind == "board" and ignored.link_kind == "board"
+
+
+def test_backfill_keeps_easy_apply(test_db):
+    from backend.accounts.context import unscoped
+    from backend.models.db import Setting
+    from backend.seed import POSTING_KEYS_MIGRATED_KEY, migrate_posting_keys
+    easy, indeed = _stored(test_db,
+        (("https://www.linkedin.com/jobs/view/4461186967",), dict(company="Acme", title="PM")),
+        (("https://www.indeed.com/viewjob?jk=0362e90102d8ac2c",),
+         dict(company="Acme", title="PM2", apply_url="https://boards.greenhouse.io/acme/jobs/4012345")))
+    easy.link_kind, indeed.link_kind = "easy_apply", None
+    test_db.query(Setting).filter(Setting.key == POSTING_KEYS_MIGRATED_KEY).delete()
+    test_db.add(Setting(key=POSTING_KEYS_MIGRATED_KEY, value="3"))
+    test_db.commit()
+    with unscoped():
+        migrate_posting_keys(test_db)
+    test_db.refresh(easy)
+    test_db.refresh(indeed)
+    assert easy.link_kind == "easy_apply"
+    assert indeed.link_kind == "direct"

@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
+from backend.scraper._shared.link_kinds import classify
 from backend.scraper._shared.postings import is_employer_key, posting_key, unwrap
 from backend.scraper._shared.same_role import is_template, same_text
 
@@ -88,6 +89,7 @@ def mark_duplicate(job, original) -> None:
         link = employer_link(job.apply_url) or employer_link(job.url)
         if link and link != original.url:
             original.apply_url = link
+    classify(original)
 
 
 def _since(when=None):
@@ -261,6 +263,7 @@ def link_new_jobs(session, flush_context=None, instances=None) -> None:
                 link = employer_link(job.url)
                 if link and link != job.url:
                     job.apply_url = link
+            classify(job)
             batch.seen(job)
         for job in new:
             # a row created saved or applied (the extension's save) is the user's own: never hidden
