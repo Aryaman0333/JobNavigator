@@ -351,6 +351,11 @@ class Job(AccountScoped, Base):
                           nullable=True, index=True)
     # direct | board | easy_apply (scraper/_shared/link_kinds.py)
     link_kind = Column(String(12), nullable=True)   # indexed with account_id (seed.run_migrations)
+    # 3.2: is the posting still open (scraper/_shared/still_open.py): open | closed | unknown,
+    # why, and when; checked where it matters, kept a day.
+    open_state = Column(String(10), nullable=True)
+    open_reason = Column(String, nullable=True)
+    open_checked_at = Column(DateTime(timezone=True), nullable=True)
     # 3.2: the same role, which the user skipped in another place; this copy stays in the feed.
     same_role_as = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     # deferred: avg 16 KB / 7 KB per row — list queries were hydrating both just to

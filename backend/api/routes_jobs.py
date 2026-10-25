@@ -1166,6 +1166,17 @@ def get_cached_page(job_id: str, db: Session = Depends(get_db)):
     return HTMLResponse(content=_reader_html(job.cached_page_html, f"Cached on {cached_at}"), headers=_READER_CSP)
 
 
+@router.post("/{job_id}/open-check")
+async def open_check(job_id: str, force: bool = False, db: Session = Depends(get_db)):
+    """Is the posting still open (scraper/_shared/still_open.py)? Answered from the last check
+    when it is under a day old, unless `force`. Never changes the job or an application."""
+    from backend.scraper._shared.still_open import ensure_checked
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return await ensure_checked(db, job, force=force)
+
+
 @router.get("/{job_id}/frame-check")
 async def frame_check(job_id: str, db: Session = Depends(get_db)):
     """Report whether the posting can be embedded in an iframe without the extension; blocks only on a confident framing signal (X-Frame-Options or a CSP frame-ancestors directive) on a successful fetch, and treats a fetch error as embeddable so the feed still tries the live preview."""
@@ -1315,6 +1326,9 @@ def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = 
         # Other sources that found this posting; empty for a duplicate itself.
         "also_on": also_on or [],
         "link_kind": j.link_kind,
+        "open_state": j.open_state,
+        "open_reason": j.open_reason,
+        "open_checked_at": j.open_checked_at.isoformat() if j.open_checked_at else None,
         "link": job_link(j),   # the employer's link when there is one: what Open opens
         "same_role_skipped": same_role_skipped,
         "source": j.source,

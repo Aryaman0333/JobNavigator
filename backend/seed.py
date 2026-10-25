@@ -662,6 +662,10 @@ def run_migrations(db):
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES jobs(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_jobs_acct_posting_key ON jobs (account_id, posting_key)",
         "CREATE INDEX IF NOT EXISTS ix_jobs_duplicate_of ON jobs (duplicate_of)",
+        # 3.2: is the posting still open (still_open.py)
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS open_state VARCHAR(10)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS open_reason VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS open_checked_at TIMESTAMPTZ",
         # 3.2: whether the job's link reaches the employer's site (link_kinds.py)
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS link_kind VARCHAR(12)",
         "CREATE INDEX IF NOT EXISTS ix_jobs_acct_link_kind ON jobs (account_id, link_kind)",
