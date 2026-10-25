@@ -19,18 +19,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from backend.scraper._shared.link_kinds import BOARD, DIRECT, EASY_APPLY, classify, link_kind
+from backend.scraper._shared.postings import is_short_link, unwrap
 
 logger = logging.getLogger("jobnavigator.linkedin_lookup")
 
 PAUSE = 15.0
 STOP_AFTER_NO_DATA = 3
 
-# The status of LinkedIn's "who am I" call: 200 signed in, 401 signed out.
-_ME_JS = """async () => {
-  const csrf = (document.cookie.match(/JSESSIONID="?([^;"]+)/) || [])[1] || '';
-  return (await fetch('https://www.linkedin.com/voyager/api/me',
-                      {credentials: 'include', headers: {'csrf-token': csrf}})).status;
-}"""
 
 
 def mock_account_in_use(db) -> bool:
@@ -51,7 +46,11 @@ def pending_ids(db, limit: int) -> list:
                     Job.status.notin_(("ignored", "duplicate")))
             .order_by(Job.discovered_at.desc()).limit(limit * 5).all())
     ids = list(dict.fromkeys(k.split(":", 1)[1] for (k,) in rows))
-    return ids[:limit]
+    # an id whose cached answer cannot change its rows (gone, another board) holds no slot
+    from backend.models.db import LinkedinLookup
+    final = {i for (i,) in db.query(LinkedinLookup.linkedin_id)
+             .filter(LinkedinLookup.linkedin_id.in_(ids), LinkedinLookup.result.in_(("gone", BOARD))).all()} if ids else set()
+    return [i for i in ids if i not in final][:limit]
 
 
 def apply_result(db, linkedin_id: str, apply_url, result: str) -> int:
@@ -84,6 +83,11 @@ def _verdict(d):
     """(result, link) from one Voyager answer; None = no answer (counts toward the stop);
     ("unknown", None) = an answer that says nothing definite (not cached)."""
     if d is None:
+        return None
+    status = d.get("status", 200)
+    if status in (404, 410):          # the listing was deleted
+        return "gone", None
+    if status != 200:                 # throttled, blocked, signed out: no answer
         return None
     if d.get("apply_url"):
         return "employer", d["apply_url"]
@@ -123,14 +127,21 @@ async def _fetcher(fetch):
         # only the mock session: the helper may have loaded the personal scraper's cookies
         await context.clear_cookies()
         await context.add_cookies(cookies)
-        await page.goto("https://www.linkedin.com/jobs/", wait_until="domcontentloaded", timeout=30000)
-        # A signed-out session answers every job with nothing: find out before asking about one.
-        if await page.evaluate(_ME_JS) != 200:
+        # The feed: a signed-out session is redirected to the login page, so the sign-in check
+        # (linkedin_personal._is_logged_in: /voyager/api/me, which can refuse a live session, or
+        # the feed reached with li_at) answers before any job is asked about.
+        await page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=30000)
+        from backend.scraper.sources.linkedin_personal import _is_logged_in
+        if not await _is_logged_in(page, context):
             yield None, "the LinkedIn mock session is signed out: sign it in again in Settings › LinkedIn"
             return
 
         async def fetch_one(lid):
-            return await le._voyager_fetch(page, lid)
+            # the raw answer, with its HTTP status (a 404 is an answer: the job was deleted)
+            try:
+                return await page.evaluate(le._VOYAGER_JOB_JS, lid)
+            except Exception:
+                return None
         yield fetch_one, None
     finally:
         if browser is not None:
@@ -163,6 +174,7 @@ async def resolve_stored_short_links(limit: int = 50, resolve=None) -> int:
         try:
             rows = (db.query(Job)
                     .filter(Job.apply_url.is_(None), Job.status != "ignored",
+                            or_(Job.link_kind != BOARD, Job.link_kind.is_(None)),
                             or_(*[Job.url.like(f"%{h}/%") for h in SHORT_LINK_HOSTS]))
                     .order_by(Job.discovered_at.desc()).limit(limit).all())
             for job in rows:
@@ -235,7 +247,9 @@ async def _linkedin_pass(per_run: int, fetch, pause: float, resolve) -> dict:
                     if result == "unknown":
                         continue
                     if result == "employer":
-                        link = await resolve(link)
+                        link = unwrap(await resolve(link))
+                        if is_short_link(link):     # did not resolve: an error, not an answer
+                            continue
                         if link_kind(link, None) != DIRECT:
                             result = "board"
                     db.merge(LinkedinLookup(linkedin_id=lid, apply_url=link, result=result,

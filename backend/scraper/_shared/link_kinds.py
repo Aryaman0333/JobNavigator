@@ -26,6 +26,7 @@ BOARD_HOSTS = (
     "caribbeanjobs.com", "trulyremotework.com", "whatjobs.com", "t.me", "hackajob.com", "haystack.cv",
     "swooped.co", "jobsyn.org", "dice.com", "monster.com", "simplyhired.com", "builtin.com",
     "wellfound.com", "remocate.app", "teletype.in",
+    "lnkd.in",   # LinkedIn's short link lands on LinkedIn
 )
 
 
@@ -42,11 +43,12 @@ def link_kind(url, apply_url) -> str:
     for link in (apply_url, url):
         if link and is_employer_key(posting_key(link)):
             return DIRECT
-    if not url:
-        return BOARD
-    if is_short_link(url):
+    # `apply_url` only ever holds the employer's link: a company site without a known system counts
+    if apply_url and not _on_board(apply_url):
         return DIRECT
-    return BOARD if _on_board(url) else DIRECT
+    if not url or _on_board(url):
+        return BOARD
+    return DIRECT   # a company's own site, or a short link (grnh.se, prng.co, appcast) that lands on one
 
 
 def classify(job) -> None:

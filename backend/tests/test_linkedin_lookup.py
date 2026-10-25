@@ -243,23 +243,25 @@ async def test_the_lookup_run_also_follows_short_links(test_db):
     assert out["short_links"] == 1
 
 
-@pytest.mark.asyncio
-async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeypatch):
-    """LinkedIn signed the mock session out (/voyager/api/me answers 401): no job is asked about."""
-    _mock_on(test_db)
-    job = _li(test_db)
+def _fake_browser(monkeypatch, landed: str, me: int, li_at: bool = True):
+    """The lookup's browser, faked: where opening the feed lands, what /voyager/api/me answers,
+    and whether the jar holds `li_at`. Returns the list of Voyager job requests made."""
     from backend.scraper.sources import linkedin_extension as le
     from backend.scraper.sources import linkedin_personal as lp
     monkeypatch.setattr(le, "_load_session_cookies", lambda: [{"name": "li_at", "value": "x"}])
     asked = []
 
     class Page:
-        async def goto(self, *a, **k):
-            pass
+        url = ""
+
+        async def goto(self, url, **k):
+            self.url = landed
 
         async def evaluate(self, js, *args):
-            asked.append(args)
-            return 401
+            if args:                      # a Voyager job request (the job id is the argument)
+                asked.append(args[0])
+                return {"status": 200, "apply_url": GH, "apply_type": "OffsiteApply"}
+            return me                     # /voyager/api/me
 
     class Ctx:
         async def clear_cookies(self):
@@ -267,6 +269,9 @@ async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeyp
 
         async def add_cookies(self, c):
             pass
+
+        async def cookies(self):
+            return [{"name": "li_at", "value": "x"}] if li_at else []
 
     class Closable:
         async def close(self):
@@ -277,9 +282,86 @@ async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeyp
 
     async def fake_browser():
         return Closable(), Closable(), Ctx(), Page()
+
     monkeypatch.setattr(lp, "_get_linkedin_browser", fake_browser)
-    monkeypatch.setattr(le, "_voyager_fetch", lambda *a: (_ for _ in ()).throw(AssertionError("no job request")))
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_an_expired_mock_session_stops_before_any_request(test_db, monkeypatch):
+    """LinkedIn signed the mock session out: the feed redirects to the login page."""
+    _mock_on(test_db)
+    job = _li(test_db)
+    asked = _fake_browser(monkeypatch, "https://www.linkedin.com/uas/login?session_redirect=x", 401)
     out = await ll.run_lookup(per_run=20, pause=0)
     test_db.refresh(job)
     assert out["stopped"] == "the LinkedIn mock session is signed out: sign it in again in Settings › LinkedIn"
-    assert len(asked) == 1 and job.link_kind == "board"
+    assert asked == [] and job.link_kind == "board"
+
+
+@pytest.mark.asyncio
+async def test_a_live_session_whose_me_call_refuses_still_runs(test_db, monkeypatch):
+    """/voyager/api/me can answer 401 for a live session; the feed reached with li_at counts
+    as signed in (linkedin_personal._is_logged_in)."""
+    _mock_on(test_db)
+    job = _li(test_db)
+    asked = _fake_browser(monkeypatch, "https://www.linkedin.com/feed/", 401)
+    out = await ll.run_lookup(per_run=20, pause=0, resolve=_no_resolve)
+    test_db.refresh(job)
+    assert out["stopped"] is None and asked == ["4461186967"]
+    assert job.link_kind == "direct"
+
+
+# ── final review fixes ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_an_unresolved_short_employer_link_is_not_cached(test_db):
+    """Review #1: a short link that does not resolve is an error, not an answer."""
+    job = _li(test_db)
+    await _run(FakeLinkedIn({"4461186967": {"apply_url": "https://grnh.se/abc", "apply_type": "OffsiteApply"}}),
+               resolve=_no_resolve)
+    test_db.refresh(job)
+    assert test_db.get(LinkedinLookup, "4461186967") is None
+    assert job.apply_url is None and job.link_kind == "board"
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_job_is_gone_and_does_not_stop_the_run(test_db):
+    """Review #2: LinkedIn answers 404 for a deleted listing; that is an answer, not throttling."""
+    for i in range(4):
+        _li(test_db, lid=f"446118696{i}", title=f"PM {i}")
+    answers = {f"446118696{i}": {"status": 404} for i in range(3)}
+    answers["4461186963"] = {"status": 200, "apply_url": GH, "apply_type": "OffsiteApply"}
+    fake = FakeLinkedIn(answers)
+    out = await _run(fake)
+    assert out["stopped"] is None and out["gone"] == 3 and out["employer"] == 1
+    assert test_db.get(LinkedinLookup, "4461186960").result == "gone"
+
+
+@pytest.mark.asyncio
+async def test_throttling_still_stops_the_run(test_db):
+    for i in range(4):
+        _li(test_db, lid=f"446118696{i}", title=f"PM {i}")
+    fake = FakeLinkedIn({f"446118696{i}": {"status": 429} for i in range(4)})
+    out = await _run(fake)
+    assert len(fake.calls) == 3 and out["stopped"] == "no data from LinkedIn 3 times in a row"
+
+
+@pytest.mark.asyncio
+async def test_an_employer_site_without_a_known_system_is_direct(test_db):
+    """Review #3: the lookup's link to a company's own site (no known ATS) makes the row direct,
+    so it leaves the pending set and the tag agrees with Open."""
+    job = _li(test_db)
+    await _run(FakeLinkedIn({"4461186967": {"apply_url": "https://cursor.com/careers/gtm", "apply_type": "OffsiteApply"}}))
+    test_db.refresh(job)
+    assert job.apply_url == "https://cursor.com/careers/gtm" and job.link_kind == "direct"
+    assert ll.pending_ids(test_db, 50) == []
+
+
+def test_ids_with_a_final_answer_leave_the_pending_set(test_db):
+    """Review #3: a cached gone/board answer cannot change the row; it must not hold a slot."""
+    _li(test_db, lid="4461186960", title="A")
+    _li(test_db, lid="4461186961", title="B")
+    test_db.add(LinkedinLookup(linkedin_id="4461186960", result="gone"))
+    test_db.commit()
+    assert ll.pending_ids(test_db, 50) == ["4461186961"]

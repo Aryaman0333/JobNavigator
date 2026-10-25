@@ -25,7 +25,8 @@ logger = logging.getLogger("jobnavigator.postings")
 # (posting_links.py); on start, stored jobs are keyed and linked again when the install's
 # version is older (seed.migrate_posting_keys). 3: a role skipped in one place shows elsewhere.
 # 4: link kinds, readers for more systems (direct-links plan).
-READER_VERSION = 4
+# 5: lnkd.in is a board link; an employer link on an unknown company site counts as direct.
+READER_VERSION = 5
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 

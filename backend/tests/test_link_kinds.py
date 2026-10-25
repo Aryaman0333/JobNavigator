@@ -125,3 +125,12 @@ def test_searches_report_their_direct_rate(test_db, api_client):
     rows = {r["name"]: r for r in api_client.get("/api/searches").json()}
     assert rows["PM"]["direct_rate"] == {"direct": 2, "total": 3}
     assert rows["Quiet"]["direct_rate"] is None
+
+
+def test_a_linkedin_short_link_is_a_board_link():
+    """Review #4: lnkd.in lands on LinkedIn."""
+    assert link_kind("https://lnkd.in/abc", None) == "board"
+
+
+def test_an_employer_link_beside_a_board_listing_is_direct_even_without_a_known_system():
+    assert link_kind("https://www.linkedin.com/jobs/view/4461186967", "https://cursor.com/careers/gtm") == "direct"
