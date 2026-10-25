@@ -95,8 +95,8 @@ async def session_refresh(which: Which = "mock"):
     if state.get("phase") in ("running", "awaiting_pin"):
         return {"run_id": None, "status": state["phase"]}
     try:
-        run_id = launch_background("linkedin_session_refresh", rls.run_refresh, which,
-                                   trigger="manual", scope_key=f"linkedin-{which}")
+        run_id = launch_background("linkedin_session_refresh", rls.run_refresh,
+                                   trigger="manual", scope_key=f"linkedin-{which}", func_args=(which,))
     except JobAlreadyRunningError:
         return {"run_id": None, "status": "running"}
     return {"run_id": run_id, "status": "running"}

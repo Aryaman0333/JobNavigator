@@ -113,3 +113,24 @@ def test_the_api_reports_each_session(test_db, api_client, jars):
     assert mock["which"] == "mock" and mock["exists"] is True and mock["signed_in_as"] == "mock@x.io"
     assert main["which"] == "main" and main["exists"] is False
     assert api_client.get("/api/linkedin/session?which=other").status_code == 422
+
+
+def test_sign_in_starts_the_named_sessions_sign_in(test_db, api_client, jars, monkeypatch):
+    """The Sign in button: POST /linkedin/session/refresh?which= starts run_refresh(which)."""
+    _set(test_db, dashboard_api_key="")
+    started = []
+
+    async def fake_refresh(which="mock"):
+        started.append(which)
+        return 0
+    monkeypatch.setattr(rls, "run_refresh", fake_refresh)
+    for which in ("main", "mock"):
+        rls.state(which).update(phase="idle", detail="")
+        r = api_client.post(f"/api/linkedin/session/refresh?which={which}")
+        assert r.status_code == 202, r.text
+    import time
+    for _ in range(50):
+        if len(started) == 2:
+            break
+        time.sleep(0.05)
+    assert sorted(started) == ["main", "mock"]
