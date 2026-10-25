@@ -4,6 +4,7 @@ import api from '../api'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../hooks'
+import { LINK_KINDS, linkTag, openLink } from '../linkKinds'
 import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow, ZOOM_MAX, ZOOM_MIN, ZoomFloater } from '../ui'
 import { ANALYZE, NO_BASES_HINT, SCORE_RESUME, TAILOR, activityText, noScoreSource,feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
 import { PICK_KEY, clickMods, clickSelection } from './rowSelect'
@@ -107,7 +108,7 @@ const everyText = (min) => {
   if (!h) return part(r, 'minute')
   return r ? `${part(h, 'hour')} ${part(r, 'minute')}` : part(h, 'hour')
 }
-const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '', max_salary: '' }
+const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], link_kind: [], min_score: '', min_salary: '', max_salary: '' }
 
 // small dropdown shell (trigger pill + panel + backdrop). Flips to right-align
 // when the panel would overflow the viewport's right edge.
@@ -252,6 +253,7 @@ export default function V2JobFeed() {
   const [sourceList, setSourceList] = useState([])
   const [sourceCounts, setSourceCounts] = useState({}); const [verdictCounts, setVerdictCounts] = useState({})
   const [verdictList, setVerdictList] = useState([])
+  const [linkKindCounts, setLinkKindCounts] = useState({})   // {direct|board|easy_apply: n}, own filter lifted
   const [statusCounts, setStatusCounts] = useState({})   // {status: n} — counted with the Status filter itself lifted
   const [facetsOk, setFacetsOk] = useState(false)        // the facets answered at least once (T7-08)
   const [scrapeEvery, setScrapeEvery] = useState(null)   // scrape_interval_minutes, for the never-scraped empty state
@@ -323,6 +325,7 @@ export default function V2JobFeed() {
     if (filters.h1b_verdict.length) p.h1b_verdict = filters.h1b_verdict.join(',')
     if (filters.location.length) p.location = filters.location.join(',')
     if (filters.arrangement.length) p.arrangement = filters.arrangement.join(',')
+    if (filters.link_kind.length) p.link_kind = filters.link_kind.join(',')
     if (filters.min_score !== '') p.min_score = filters.min_score
     if (filters.min_salary) p.min_salary = Number(filters.min_salary) * 1000
     if (filters.max_salary) p.max_salary = Number(filters.max_salary) * 1000
@@ -348,6 +351,7 @@ export default function V2JobFeed() {
     setVerdictList(named(data.h1b_verdicts).map((x) => x.name))
     setVerdictCounts(Object.fromEntries(named(data.h1b_verdicts).map((x) => [x.name, x.count])))
     setStatusCounts(Object.fromEntries(named(data.statuses).map((x) => [x.name, x.count])))
+    setLinkKindCounts(Object.fromEntries(named(data.link_kinds).map((x) => [x.name, x.count])))
     setFacetsOk(true)
     setScoreBands(Object.fromEntries(named(data.score_bands).map((x) => [x.name, x.count])))
   }).catch(() => { /* silent: the filter menus; the list itself shows its own error state */ }), [])
@@ -1040,7 +1044,7 @@ export default function V2JobFeed() {
   const dCached = cachedAvail   // hoisted above the frame effects, which need it too
   // T7-08: no job in any status under the other (default, empty) filters = never scraped into
   const neverScraped = facetsOk && !dSearch && !searchId
-    && ['company', 'source', 'h1b_verdict', 'location', 'arrangement'].every((k) => !(filters[k] || []).length)
+    && ['company', 'source', 'h1b_verdict', 'location', 'arrangement', 'link_kind'].every((k) => !(filters[k] || []).length)
     && filters.min_score === '' && !filters.min_salary && !filters.max_salary
     && Object.values(statusCounts).reduce((a, n) => a + (Number(n) || 0), 0) === 0
 
@@ -1135,6 +1139,10 @@ export default function V2JobFeed() {
         </Drop>
         <Drop label={`H-1B${filters.h1b_verdict.length ? ` · ${filters.h1b_verdict.length}` : ''}`} active={filters.h1b_verdict.length > 0} onClear={() => setF({ h1b_verdict: [] })} open={menu === 'h1b'} onToggle={() => setMenu(menu === 'h1b' ? null : 'h1b')} width={196}>
           {['likely', 'possible', 'unlikely', 'unknown'].filter((v) => facetVerdicts.includes(v)).map((v) => <Check key={v} on={filters.h1b_verdict.includes(v)} label={H1B[v].label.replace('H-1B ', '')} count={facetVerdictCounts[v]} onClick={() => togF('h1b_verdict', v)} />)}
+        </Drop>
+        {/* whether the job reaches the employer's own site (linkKinds.js) */}
+        <Drop label={`Link${filters.link_kind.length ? ` · ${filters.link_kind.length}` : ''}`} active={filters.link_kind.length > 0} onClear={() => setF({ link_kind: [] })} open={menu === 'link'} onToggle={() => setMenu(menu === 'link' ? null : 'link')} width={196}>
+          {LINK_KINDS.map((k) => <Check key={k.key} on={filters.link_kind.includes(k.key)} label={k.label} count={linkKindCounts[k.key] ?? 0} onClick={() => togF('link_kind', k.key)} />)}
         </Drop>
         <Drop inset label={filters.min_score !== '' ? `Score ≥ ${filters.min_score}` : 'Score ≥'} active={filters.min_score !== ''} onClear={() => setF({ min_score: '' })} open={menu === 'score'} onToggle={() => setMenu(menu === 'score' ? null : 'score')} width={234}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
@@ -1254,7 +1262,7 @@ export default function V2JobFeed() {
               // ui: keep — the "Try again" link runs inline inside a 13px sentence; Link's 11.5/500 would break the run
               : loadError ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>Couldn't load jobs · <span onClick={fetchJobs} style={{ color: 'var(--accent)', cursor: 'pointer' }}>Try again</span></div>
               : jobs.length === 0 ? (
-                  (!filters.status.length && !filters.company.length && !filters.source.length && !filters.h1b_verdict.length && filters.min_score === '' && !filters.min_salary && !dSearch && !searchId)
+                  (!filters.status.length && !filters.company.length && !filters.source.length && !filters.h1b_verdict.length && !filters.link_kind.length && filters.min_score === '' && !filters.min_salary && !dSearch && !searchId)
                     ? <div style={{ padding: '48px 40px', textAlign: 'center', color: 'var(--muted)', fontSize: 13, lineHeight: '20px' }}>   {/* first-run / nothing open */}
                         <Heading style={{ display: 'block', marginBottom: 6 }}>No open roles yet</Heading>
                         Jobs come from <a href="/searches" onClick={(e) => { e.preventDefault(); navigate('/searches') }}>Searches</a> and <a href="/companies" onClick={(e) => { e.preventDefault(); navigate('/companies') }}>Companies</a>. Activate one, or change the Status filter to include skipped and applied jobs.
@@ -1349,6 +1357,7 @@ export default function V2JobFeed() {
                           {/* the verdict is the segment that gives way: it shrinks (flex-shrink 2, ahead of the salary) to an
                               ellipsis and then to nothing, so the age at the end always stays whole */}
                           {visa && j.h1b_verdict !== 'unknown' && <><span style={{ flex: '0 2 auto', minWidth: 0, letterSpacing: '.04em', color: visa.c, overflow: 'hidden', textOverflow: 'ellipsis' }} title={visa.label}>{visa.label}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
+                          {linkTag(j) && <><span style={{ flex: '0 1 auto', minWidth: 0, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={linkTag(j).title}>{linkTag(j).text}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
                           <span style={{ flex: '0 0 auto', color: 'var(--muted)' }} title={timeAgo(j.discovered_at)}>{timeAgo(j.discovered_at).replace(/ ago$/, '')}</span>
                         </div>
                       </div>
@@ -1428,6 +1437,7 @@ export default function V2JobFeed() {
                         {[fmtSalary(d.salary_min, d.salary_max) && <span key="sal" style={{ maxWidth: 230, fontFamily: 'var(--numeral-face)', fontSize: 12.5, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fmtSalary(d.salary_min, d.salary_max)}</span>,
                           d.location && <span key="loc" style={{ maxWidth: 270, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.location}</span>,
                           visaText && <span key="visa" title={visaTitle} style={{ color: visaCol }}>{visaText}</span>,
+                          linkTag(d) && <span key="link" title={linkTag(d).title}>{linkTag(d).text}</span>,
                           // where else this posting was found; each copy opens its own listing
                           // a copy from this job's own source is the same posting or role under another
                           // link: named by its city when that differs, else "another link"
