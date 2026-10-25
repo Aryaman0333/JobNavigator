@@ -1288,7 +1288,7 @@ function LinkedInRow({ which, li, setLi, flash }) {
           }} />
         </>
       )}
-      {phase !== 'awaiting_pin' && <ActionBtn label={li?.exists ? 'Sign in again' : 'Sign in'} state={busy ? 'running' : ''} onClick={start} />}
+      {phase !== 'awaiting_pin' && <ActionBtn label={li?.exists ? 'Refresh session' : 'Sign in'} state={busy ? 'running' : ''} onClick={start} />}
     </>
   )
 }
