@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import ClosedMark from '../ClosedMark'
 import { useParams, useNavigate } from 'react-router-dom'
 import api from '../api'
 import { useFlushBeforeSwitch } from '../accounts'
@@ -532,7 +533,7 @@ export default function ResumeEditor() {
             <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, lineHeight: '18px' }}>
               {!ctxReady ? NBSP : <>
               {jobData?.company
-                ? <>Tailored for <span style={{ color: 'var(--text)' }}>{jobData.company}{jobData.title ? ` — ${jobData.title}` : ''}</span></>
+                ? <>Tailored for <span style={{ color: 'var(--text)' }}>{jobData.company}{jobData.title ? ` — ${jobData.title}` : ''}</span><ClosedMark jobId={doc.job_id} /></>
                 : (jobless && freeformJd ? 'Tailored from a pasted description' : 'Tailored copy')}
               {doc.parent_id && (() => {
                 // A freeform copy has no "→" to split on, so the name heuristic returns the

@@ -4,8 +4,8 @@ import api from '../api'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../hooks'
-import { LINK_KINDS, linkTag, openLink } from '../linkKinds'
-import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow, ZOOM_MAX, ZOOM_MIN, ZoomFloater } from '../ui'
+import { LINK_KINDS, closedTag, linkKindParam, linkTag, openLink } from '../linkKinds'
+import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, Dot, FooterRow, GlyphBadge, HeaderRow, Heading, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow, Tag, ZOOM_MAX, ZOOM_MIN, ZoomFloater } from '../ui'
 import { ANALYZE, NO_BASES_HINT, SCORE_RESUME, TAILOR, activityText, noScoreSource,feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
 import { PICK_KEY, clickMods, clickSelection } from './rowSelect'
 import { useApifyBoards, apifySourceLabel } from '../apifyBoards'
@@ -325,7 +325,7 @@ export default function V2JobFeed() {
     if (filters.h1b_verdict.length) p.h1b_verdict = filters.h1b_verdict.join(',')
     if (filters.location.length) p.location = filters.location.join(',')
     if (filters.arrangement.length) p.arrangement = filters.arrangement.join(',')
-    if (filters.link_kind.length) p.link_kind = filters.link_kind.join(',')
+    if (filters.link_kind.length) p.link_kind = linkKindParam(filters.link_kind)
     if (filters.min_score !== '') p.min_score = filters.min_score
     if (filters.min_salary) p.min_salary = Number(filters.min_salary) * 1000
     if (filters.max_salary) p.max_salary = Number(filters.max_salary) * 1000
@@ -877,6 +877,19 @@ export default function V2JobFeed() {
     }).catch(() => { /* silent: the light default already applies */ })
   }, [])
 
+  // Is the posting still open: checked when a job is opened, the answer kept a day (still_open.py).
+  const detailId = detail?.id
+  useEffect(() => {
+    if (!detailId || __DEMO__) return undefined
+    let gone = false
+    api.post(`/jobs/${detailId}/open-check`).then(({ data }) => {
+      if (gone) return
+      setDetail((d) => (d && d.id === detailId ? { ...d, ...data } : d))
+      setJobs((js) => js.map((x) => (x.id === detailId ? { ...x, ...data } : x)))
+    }).catch(() => { /* silent: the Closed marker is a hint; nothing shows when the check fails */ })
+    return () => { gone = true }
+  }, [detailId])
+
   // ?job=<id> is the job permalink — open that job's detail. The param is kept in
   // the URL (and re-synced below) so the link survives a refresh or a copy-paste.
   useEffect(() => {
@@ -885,7 +898,7 @@ export default function V2JobFeed() {
     pinnedRef.current = jid
     api.get(`/jobs/${jid}`).then(({ data }) => {
       if (pinnedRef.current !== jid) return
-      setDetail(data); setReportTab(0); setViewCached(__DEMO__); setCachedHtml(null); setFrameOk(frameGuess(data.url)); setFrameDeadId(null)
+      setDetail(data); setReportTab(0); setViewCached(__DEMO__); setCachedHtml(null); setFrameOk(frameGuess(openLink(data))); setFrameDeadId(null)
     }).catch(() => {
       if (pinnedRef.current !== jid) return
       pinnedRef.current = null; deadPinRef.current = true   // don't fall through to an unrelated job
@@ -1142,7 +1155,7 @@ export default function V2JobFeed() {
         </Drop>
         {/* whether the job reaches the employer's own site (linkKinds.js) */}
         <Drop label={`Link${filters.link_kind.length ? ` · ${filters.link_kind.length}` : ''}`} active={filters.link_kind.length > 0} onClear={() => setF({ link_kind: [] })} open={menu === 'link'} onToggle={() => setMenu(menu === 'link' ? null : 'link')} width={196}>
-          {LINK_KINDS.map((k) => <Check key={k.key} on={filters.link_kind.includes(k.key)} label={k.label} count={linkKindCounts[k.key] ?? 0} onClick={() => togF('link_kind', k.key)} />)}
+          {LINK_KINDS.map((k) => <Check key={k.key} on={filters.link_kind.includes(k.key)} label={k.label} count={k.kinds.reduce((n, kind) => n + (linkKindCounts[kind] ?? 0), 0)} onClick={() => togF('link_kind', k.key)} />)}
         </Drop>
         <Drop inset label={filters.min_score !== '' ? `Score ≥ ${filters.min_score}` : 'Score ≥'} active={filters.min_score !== ''} onClear={() => setF({ min_score: '' })} open={menu === 'score'} onToggle={() => setMenu(menu === 'score' ? null : 'score')} width={234}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
@@ -1357,7 +1370,7 @@ export default function V2JobFeed() {
                           {/* the verdict is the segment that gives way: it shrinks (flex-shrink 2, ahead of the salary) to an
                               ellipsis and then to nothing, so the age at the end always stays whole */}
                           {visa && j.h1b_verdict !== 'unknown' && <><span style={{ flex: '0 2 auto', minWidth: 0, letterSpacing: '.04em', color: visa.c, overflow: 'hidden', textOverflow: 'ellipsis' }} title={visa.label}>{visa.label}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
-                          {linkTag(j) && <><span style={{ flex: '0 1 auto', minWidth: 0, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={linkTag(j).title}>{linkTag(j).text}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
+                          {closedTag(j) && <><Dot tone="bad" title={closedTag(j).title} /><span style={{ flex: '0 0 auto', color: 'var(--dot-bad)' }} title={closedTag(j).title}>Closed</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
                           <span style={{ flex: '0 0 auto', color: 'var(--muted)' }} title={timeAgo(j.discovered_at)}>{timeAgo(j.discovered_at).replace(/ ago$/, '')}</span>
                         </div>
                       </div>
@@ -1437,7 +1450,6 @@ export default function V2JobFeed() {
                         {[fmtSalary(d.salary_min, d.salary_max) && <span key="sal" style={{ maxWidth: 230, fontFamily: 'var(--numeral-face)', fontSize: 12.5, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fmtSalary(d.salary_min, d.salary_max)}</span>,
                           d.location && <span key="loc" style={{ maxWidth: 270, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.location}</span>,
                           visaText && <span key="visa" title={visaTitle} style={{ color: visaCol }}>{visaText}</span>,
-                          linkTag(d) && <span key="link" title={linkTag(d).title}>{linkTag(d).text}</span>,
                           // where else this posting was found; each copy opens its own listing
                           // a copy from this job's own source is the same posting or role under another
                           // link: named by its city when that differs, else "another link"
@@ -1459,6 +1471,8 @@ export default function V2JobFeed() {
                         button's own paint; the override is the height, which tracks
                         the collapsing detail header (36/30) like the ✦ button beside it. */}
                     {/* the employer's own posting when there is one (linkKinds.js openLink), else the job's link */}
+                    {closedTag(d) && <span title={closedTag(d).title} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--dot-bad)' }}><Dot tone="bad" />Closed</span>}
+                    {linkTag(d) && <Tag title={linkTag(d).title}>{linkTag(d).text}</Tag>}
                     {openLink(d) && <Button variant="secondary" size="sm" href={openLink(d)} target="_blank" title={openLink(d)} style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
                     {/* Routed through Button (not hand-drawn) so it reads --btn-shadow/--btn-weight/--btn-primary-bg/-ink
                         and the hover/pressed rules; the style override only restores height/padding/line-height, which track the collapsing header. */}

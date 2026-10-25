@@ -115,6 +115,8 @@ def test_searches_report_their_direct_rate(test_db, api_client):
     quiet = Search(name="Quiet", search_mode="levels_fyi", sources=[])
     test_db.add_all([s, quiet])
     test_db.commit()
+    easy = _job(test_db, "https://www.linkedin.com/jobs/view/4461186969", company="Acme", title="easy")
+    easy.link_kind, easy.search_id = "easy_apply", s.id   # Easy Apply counts as direct
     for url, status in (("https://job-boards.greenhouse.io/a/jobs/1000001", "new"),
                         ("https://jobs.lever.co/a/1cafb489-9cae-4417-b272-832617484de0", "skip"),
                         ("https://www.linkedin.com/jobs/view/4461186967", "new"),
@@ -123,7 +125,7 @@ def test_searches_report_their_direct_rate(test_db, api_client):
         j.search_id = s.id
     test_db.commit()
     rows = {r["name"]: r for r in api_client.get("/api/searches").json()}
-    assert rows["PM"]["direct_rate"] == {"direct": 2, "total": 3}
+    assert rows["PM"]["direct_rate"] == {"direct": 3, "total": 4}
     assert rows["Quiet"]["direct_rate"] is None
 
 
