@@ -252,3 +252,19 @@ async def test_workday_never_falls_back_to_its_page():
     url = "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/Seattle-Washington-US/X_2025218-1"
     (state, _), calls = await check(url, {})
     assert state == "unknown" and len(calls) == 1
+
+
+def test_the_feed_filters_and_counts_by_posting_state(test_db, api_client):
+    """Task 11: Posting filter — closed = checked closed; open = everything else."""
+    from backend.models.db import Setting
+    test_db.add(Setting(key="dashboard_api_key", value=""))
+    closed = _job(test_db, "https://job-boards.greenhouse.io/acme/jobs/4012345", company="Acme", title="A")
+    _job(test_db, "https://job-boards.greenhouse.io/acme/jobs/4012346", company="Acme", title="B")
+    _job(test_db, "https://job-boards.greenhouse.io/acme/jobs/4012347", company="Acme", title="C")
+    closed.open_state = "closed"
+    test_db.commit()
+    got = api_client.get("/api/jobs?status=new&open_state=closed").json()["jobs"]
+    assert [j["id"] for j in got] == [str(closed.id)]
+    assert len(api_client.get("/api/jobs?status=new&open_state=open").json()["jobs"]) == 2
+    counts = {x["name"]: x["count"] for x in api_client.get("/api/jobs/facets?status=new").json()["open_states"]}
+    assert counts == {"open": 2, "closed": 1}

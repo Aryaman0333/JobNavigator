@@ -108,7 +108,7 @@ const everyText = (min) => {
   if (!h) return part(r, 'minute')
   return r ? `${part(h, 'hour')} ${part(r, 'minute')}` : part(h, 'hour')
 }
-const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], link_kind: [], min_score: '', min_salary: '', max_salary: '' }
+const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], link_kind: [], open_state: [], min_score: '', min_salary: '', max_salary: '' }
 
 // small dropdown shell (trigger pill + panel + backdrop). Flips to right-align
 // when the panel would overflow the viewport's right edge.
@@ -253,6 +253,7 @@ export default function V2JobFeed() {
   const [sourceList, setSourceList] = useState([])
   const [sourceCounts, setSourceCounts] = useState({}); const [verdictCounts, setVerdictCounts] = useState({})
   const [verdictList, setVerdictList] = useState([])
+  const [openCounts, setOpenCounts] = useState({})        // {open, closed}: the Posting menu (still_open.py)
   const [linkKindCounts, setLinkKindCounts] = useState({})   // {direct|board|easy_apply: n}, own filter lifted
   const [statusCounts, setStatusCounts] = useState({})   // {status: n} — counted with the Status filter itself lifted
   const [facetsOk, setFacetsOk] = useState(false)        // the facets answered at least once (T7-08)
@@ -326,6 +327,7 @@ export default function V2JobFeed() {
     if (filters.location.length) p.location = filters.location.join(',')
     if (filters.arrangement.length) p.arrangement = filters.arrangement.join(',')
     if (filters.link_kind.length) p.link_kind = linkKindParam(filters.link_kind)
+    if (filters.open_state.length === 1) p.open_state = filters.open_state[0]   // both = no filter
     if (filters.min_score !== '') p.min_score = filters.min_score
     if (filters.min_salary) p.min_salary = Number(filters.min_salary) * 1000
     if (filters.max_salary) p.max_salary = Number(filters.max_salary) * 1000
@@ -352,6 +354,7 @@ export default function V2JobFeed() {
     setVerdictCounts(Object.fromEntries(named(data.h1b_verdicts).map((x) => [x.name, x.count])))
     setStatusCounts(Object.fromEntries(named(data.statuses).map((x) => [x.name, x.count])))
     setLinkKindCounts(Object.fromEntries(named(data.link_kinds).map((x) => [x.name, x.count])))
+    setOpenCounts(Object.fromEntries(named(data.open_states).map((x) => [x.name, x.count])))
     setFacetsOk(true)
     setScoreBands(Object.fromEntries(named(data.score_bands).map((x) => [x.name, x.count])))
   }).catch(() => { /* silent: the filter menus; the list itself shows its own error state */ }), [])
@@ -1061,7 +1064,7 @@ export default function V2JobFeed() {
   const dCached = cachedAvail   // hoisted above the frame effects, which need it too
   // T7-08: no job in any status under the other (default, empty) filters = never scraped into
   const neverScraped = facetsOk && !dSearch && !searchId
-    && ['company', 'source', 'h1b_verdict', 'location', 'arrangement', 'link_kind'].every((k) => !(filters[k] || []).length)
+    && ['company', 'source', 'h1b_verdict', 'location', 'arrangement', 'link_kind', 'open_state'].every((k) => !(filters[k] || []).length)
     && filters.min_score === '' && !filters.min_salary && !filters.max_salary
     && Object.values(statusCounts).reduce((a, n) => a + (Number(n) || 0), 0) === 0
 
@@ -1201,6 +1204,12 @@ export default function V2JobFeed() {
           }}>
           {STATUS_OPTS.map(([v, label]) => <Check key={v} on={filters.status.includes(v)} label={label} count={statusCounts[v] ?? 0} onClick={() => togF('status', v)} />)}
         </Drop>
+        {/* the last menu, once a check has found a closed posting (still_open.py) */}
+        {((openCounts.closed ?? 0) > 0 || filters.open_state.length > 0) && (
+          <Drop label={`Posting${filters.open_state.length ? ` · ${filters.open_state.length}` : ''}`} active={filters.open_state.length > 0} onClear={() => setF({ open_state: [] })} open={menu === 'posting'} onToggle={() => setMenu(menu === 'posting' ? null : 'posting')} width={170}>
+            {[['open', 'Open'], ['closed', 'Closed']].map(([v, label]) => <Check key={v} on={filters.open_state.includes(v)} label={label} count={openCounts[v] ?? 0} onClick={() => togF('open_state', v)} />)}
+          </Drop>
+        )}
         <div style={{ marginLeft: 'auto', flex: '0 0 auto' }}>
           <Drop width={172} open={menu === 'sort'} onToggle={() => setMenu(menu === 'sort' ? null : 'sort')}
             trigger={(t) => /* ui: keep — the Sort control is a text trigger (muted 12.5 + bold value + caret), not a Pill or a Link */ <div onClick={t} className="v2-hover-accent-text" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--muted)', cursor: 'pointer' }}>Sort<span style={{ color: 'var(--text-2)', fontWeight: 500 }}>{SORT_OPTS.find((o) => o[0] === sortBy)?.[1]}</span><span style={{ fontSize: 10 }}>▾</span></div>}>
