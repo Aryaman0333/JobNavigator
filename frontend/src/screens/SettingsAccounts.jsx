@@ -652,8 +652,10 @@ export function memberGroup(id, idx, ownerName, unlocked) {
   return `Shared · ${ownerName || 'owner'}`
 }
 
-// The scope tag beside a section title.
-export function scopeTag(id, { idx, member, ownerName }) {
+// The scope tag beside a section title. `multi` false (one account on the install): nothing is
+// shared or separate per account, so no tag.
+export function scopeTag(id, { idx, member, ownerName, multi }) {
+  if (multi === false) return null
   if (id === 'appearance') return { label: 'Per device', tone: 'neutral' }
   const sec = idx?.byId?.[id]
   if (!sec) return null

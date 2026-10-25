@@ -931,7 +931,7 @@ export default function Settings() {
                     }
                     // "Per device" only while the owner edits a member's policies
                     if (id === 'appearance' && !(isOwner && policyFor)) return null
-                    const tag = scopeTag(id, { idx: sidx, member, ownerName })
+                    const tag = scopeTag(id, { idx: sidx, member, ownerName, multi })
                     return tag ? <span data-scope-tag={tag.label} style={{ marginLeft: 'auto', display: 'flex' }}><ScopeTag tag={tag} /></span> : null
                   })()}
                 </div>

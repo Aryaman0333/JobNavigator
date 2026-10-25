@@ -222,6 +222,9 @@ describe('role helpers', () => {
     expect(scopeTag('exclude', { idx, member: true }).label).toBe('Yours')
     expect(scopeTag('notifications', { idx, member: false }).label).toBe('Per account')
     expect(scopeTag('models', { idx, member: false })).toBe(null)    // the owner gets the toggle
+    // one account on the install: nothing is shared, so no section needs a scope tag
+    expect(scopeTag('notifications', { idx, member: false, multi: false })).toBe(null)
+    expect(scopeTag('advanced', { idx, member: false, multi: false })).toBe(null)
   })
 })
 
