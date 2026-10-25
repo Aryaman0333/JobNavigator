@@ -106,6 +106,8 @@ _WORKDAY_REQ = re.compile(r"_([A-Za-z0-9][A-Za-z0-9-]*\d[A-Za-z0-9-]*)$")
 # host -> (tenant, path pattern).
 _WORKDAY_SITES = {
     "careers.bankofamerica.com": ("ghr", re.compile(r"/job-detail/(\d{6,})(?:/|$)")),
+    # /en/jobs/REF…W, or Workday's own path proxied on the site: /en-US/Visa/job/<place>/<Title>_REF…W
+    "corporate.visa.com": ("visa", re.compile(r"(?:/jobs/|_)(REF\d+W)(?:/|$)", re.I)),
 }
 
 
@@ -116,13 +118,14 @@ def _workday(parsed, host, seg, qs):
     if host in _WORKDAY_SITES:
         tenant, pattern = _WORKDAY_SITES[host]
         m = pattern.search(parsed.path or "")
-        return f"workday:{tenant}:{m.group(1)}" if m else None
+        return f"workday:{tenant}:{m.group(1).upper()}" if m else None
     if "job" not in seg:
         return None
     if _is(host, "myworkdayjobs.com"):
         tenant = host.split(".")[0]
-    elif _is(host, "myworkdaysite.com") and len(seg) >= 2 and seg[0] == "recruiting":
-        tenant = seg[1].lower()
+    elif _is(host, "myworkdaysite.com") and "recruiting" in seg[:2] and seg.index("recruiting") + 1 < len(seg):
+        # /recruiting/<tenant>/… or /<locale>/recruiting/<tenant>/…
+        tenant = seg[seg.index("recruiting") + 1].lower()
     else:
         return None
     m = _WORKDAY_REQ.search(seg[-1])
@@ -189,11 +192,14 @@ def _jobvite(parsed, host, seg, qs):
 
 
 def _dayforce(parsed, host, seg, qs):
-    # jobs.dayforcehcm.com/<lang>/<tenant>/CANDIDATEPORTAL/jobs/<id>
-    if _is(host, "dayforcehcm.com") and "jobs" in seg and len(seg) >= 3:
-        i = seg.index("jobs")
-        if i + 1 < len(seg) and seg[i + 1].isdigit():
-            return f"dayforce:{seg[1].lower()}:{seg[i + 1]}"
+    # jobs.dayforcehcm.com/[<lang>/]<tenant>/CANDIDATEPORTAL/jobs/<id>: the tenant is the
+    # segment before CANDIDATEPORTAL, with or without a language in front.
+    if not (_is(host, "dayforcehcm.com") and "jobs" in seg):
+        return None
+    lower = [x.lower() for x in seg]
+    i = seg.index("jobs")
+    if "candidateportal" in lower and lower.index("candidateportal") > 0 and i + 1 < len(seg) and seg[i + 1].isdigit():
+        return f"dayforce:{lower[lower.index('candidateportal') - 1]}:{seg[i + 1]}"
     return None
 
 
@@ -233,11 +239,11 @@ def _career_platforms(parsed, host, seg, qs):
     m = _SUCCESSFACTORS_PATH.search(path)
     if m and not _is(host, "myworkdayjobs.com"):
         return f"successfactors:{host}:{m.group(1)}"
-    # Avature: /careers/JobDetail/<slug>/<id>, /jobs/FolderDetail/<slug>/<id>
-    for marker in ("JobDetail", "FolderDetail"):
-        if marker in seg:
-            i = seg.index(marker)
-            tail = seg[i + 1:]
+    # Avature: /careers/JobDetail/<slug>/<id>, /jobs/FolderDetail/<slug>/<id>, any case
+    lower = [x.lower() for x in seg]
+    for marker in ("jobdetail", "folderdetail"):
+        if marker in lower:
+            tail = seg[lower.index(marker) + 1:]
             if tail and tail[-1].isdigit():
                 return f"avature:{host}:{tail[-1]}"
     # Oracle Taleo: …/jobdetail.ftl?job=<id>
@@ -250,11 +256,41 @@ def _career_platforms(parsed, host, seg, qs):
     # A job id in the query: Avature's JobDetail?jobId= is the same posting as its
     # /JobDetail/<slug>/<id> path; UBS's …&jobId= on its own site. Only the leading digits
     # count (a board re-encodes its own tracking into it: jobId=1130%3Fsource%3Djobright).
+    # Avature's query forms: JobDetail?jobId=, InviteToApply?jobId=, FolderDetail?folderId=.
     m = re.match(r"\d+", _first(qs, "jobid") or "")
-    if m and "JobDetail" in seg:
+    if m and ({"jobdetail", "invitetoapply"} & set(lower)):
         return f"avature:{host}:{m.group(0)}"
+    folder = re.match(r"\d+", _first(qs, "folderid") or "")
+    if folder and "folderdetail" in lower:
+        return f"avature:{host}:{folder.group(0)}"
     if m and "JobDetails" in (parsed.query or ""):
         return f"site:{host}:{m.group(0)}"
+    return None
+
+
+# Jibe (iCIMS's candidate site) on a company domain: host -> tenant.
+_JIBE_SITES = {"github.careers": "githubinc"}
+_ORACLE_CX_PATH = re.compile(r"/sites/CX[\w]*/jobs?/(?:preview/)?(\d+)(?:/|$)", re.I)
+
+
+def _hosted_ats(parsed, host, seg, qs):
+    """Applicant systems hosted under the employer's name: JazzHR, Jibe, ContactHR, and Oracle
+    Candidate Experience on a company domain."""
+    # JazzHR: <company>.applytojob.com/apply/<id>/<slug>
+    if _is(host, "applytojob.com") and len(seg) >= 2 and seg[0] == "apply":
+        return f"jazzhr:{seg[1]}"
+    # Jibe: <tenant>.jibeapply.com/jobs/<id>, or the company domain's /careers-home/jobs/<id>
+    if _is(host, "jibeapply.com") and len(seg) >= 2 and seg[0] == "jobs" and seg[1].isdigit():
+        return f"jibe:{host.split('.')[0]}:{seg[1]}"
+    if host in _JIBE_SITES and len(seg) >= 3 and seg[:2] == ["careers-home", "jobs"] and seg[2].isdigit():
+        return f"jibe:{_JIBE_SITES[host]}:{seg[2]}"
+    # ContactHR: <tenant>.contacthr.com/<id>
+    if _is(host, "contacthr.com") and len(seg) == 1 and seg[0].isdigit():
+        return f"contacthr:{host.split('.')[0]}:{seg[0]}"
+    # Oracle Candidate Experience on a company domain: /…/sites/CX_1/jobs/preview/<id>
+    m = _ORACLE_CX_PATH.search(parsed.path or "")
+    if m:
+        return f"oracle:{host}:{m.group(1)}"
     return None
 
 
@@ -264,10 +300,13 @@ _SITE_PATHS = {
     "uber.com": re.compile(r"/careers/list/(\d+)"),
     "coinbase.com": re.compile(r"/careers/positions/(\d+)"),
     "joinbytedance.com": re.compile(r"^/search/(\d{10,})"),
+    "revolut.com": re.compile(r"^/careers/position/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"),
+    "capgemini.com": re.compile(r"^/jobs/(\d+)-"),
+    "ibegin.tcsapps.com": re.compile(r"^/candidate/jobs/(\w+)"),
 }
 
 
-_PHENOM_PATH = re.compile(r"^/(?:[a-z]{2}|global)/[a-z]{2}/job/([A-Za-z0-9-]{4,})(?:/|$)")
+_PHENOM_PATH = re.compile(r"^/(?:[a-z]{2}|global)/[a-z]{2}/job/([A-Za-z0-9_-]{4,})(?:/|$)")
 
 
 def _phenom(parsed, host, seg, qs):
@@ -290,7 +329,7 @@ def _first_party(parsed, host, seg, qs):
     return f"site:{host}:{m.group(1)}" if m else None
 
 
-_TALENTBREW_PATH = re.compile(r"^/job/[^/]+/[^/]+/(\d+)/(\d+)/?$")
+_TALENTBREW_PATH = re.compile(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?job/[^/]+/[^/]+/(\d+)/(\d+)/?$", re.I)
 
 
 def _talentbrew(parsed, host, seg, qs):
@@ -361,7 +400,7 @@ def _indeed(parsed, host, seg, qs):
 
 _READERS = (_greenhouse, _lever, _ashby, _workday, _icims, _oracle, _smartrecruiters, _rippling,
             _workable, _jobvite, _dayforce, _ultipro, _eightfold, _big_boards, _first_party,
-            _phenom, _adp, _linkedin, _indeed, _talentbrew, _career_platforms)
+            _phenom, _adp, _linkedin, _indeed, _talentbrew, _hosted_ats, _career_platforms)
 
 # Keys that name the listing on a job board rather than the employer's own posting.
 BOARD_KEY_PREFIXES = ("linkedin:", "indeed:")
