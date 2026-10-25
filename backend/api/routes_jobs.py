@@ -106,6 +106,7 @@ def list_jobs(
     remote: Optional[bool] = None,
     location: Optional[str] = None,
     arrangement: Optional[str] = None,
+    link_kind: Optional[str] = None,
     source: Optional[str] = None,
     saved: Optional[bool] = None,
     title_search: Optional[str] = None,
@@ -157,6 +158,9 @@ def list_jobs(
     if clause is not None:
         q = q.filter(clause)
     clause = _arrangement_clause(arrangement)
+    if clause is not None:
+        q = q.filter(clause)
+    clause = _link_kind_clause(link_kind)
     if clause is not None:
         q = q.filter(clause)
 
@@ -304,11 +308,20 @@ def _arrangement_clause(raw):
     return or_(*clauses) if clauses else None
 
 
+def _link_kind_clause(link_kind):
+    """`direct`, `board`, `easy_apply` (comma list) as a filter, or None (scraper/_shared/link_kinds.py)."""
+    vals = [v.strip() for v in (link_kind or "").split(",") if v.strip()]
+    return Job.link_kind.in_(vals) if vals else None
+
+
 def _apply_common_filters(q, status=None, company=None, source=None, h1b_verdict=None,
                           min_score=None, saved=None, title_search=None, remote=None,
                           min_salary=None, max_salary=None, search_id=None,
-                          location=None, arrangement=None):
+                          location=None, arrangement=None, link_kind=None):
     """Apply shared filter logic for job list and filter-list endpoints."""
+    clause = _link_kind_clause(link_kind)
+    if clause is not None:
+        q = q.filter(clause)
     if status:
         vals = [s.strip() for s in status.split(",") if s.strip()]
         q = q.filter(Job.status.in_(vals)) if len(vals) > 1 else q.filter(Job.status == vals[0])
@@ -381,6 +394,7 @@ def list_job_companies(
     remote: Optional[bool] = None,
     location: Optional[str] = None,
     arrangement: Optional[str] = None,
+    link_kind: Optional[str] = None,
     min_salary: Optional[int] = None,
     max_salary: Optional[int] = None,
     search_id: Optional[str] = None,
@@ -394,7 +408,7 @@ def list_job_companies(
         cq = db.query(Job.company, func.count(Job.id)).filter(Job.company.isnot(None), Job.company != "")
         cq = _apply_common_filters(cq, status=status, source=source, h1b_verdict=h1b_verdict,
                                    min_score=min_score, saved=saved, title_search=title_search,
-                                   remote=remote, location=location, arrangement=arrangement, min_salary=min_salary, max_salary=max_salary,
+                                   remote=remote, location=location, arrangement=arrangement, link_kind=link_kind, min_salary=min_salary, max_salary=max_salary,
                                    search_id=search_id).group_by(Job.company)
         lookup = build_company_lookup(db)
         agg = {}
@@ -406,7 +420,7 @@ def list_job_companies(
     q = db.query(Job.company).distinct().filter(Job.company.isnot(None), Job.company != "")
     q = _apply_common_filters(q, status=status, source=source, h1b_verdict=h1b_verdict,
                               min_score=min_score, saved=saved, title_search=title_search,
-                              remote=remote, location=location, arrangement=arrangement, min_salary=min_salary, max_salary=max_salary,
+                              remote=remote, location=location, arrangement=arrangement, link_kind=link_kind, min_salary=min_salary, max_salary=max_salary,
                               search_id=search_id)
     raw_names = [r[0] for r in q.all()]
     lookup = build_company_lookup(db)
@@ -429,6 +443,7 @@ def list_job_sources(
     remote: Optional[bool] = None,
     location: Optional[str] = None,
     arrangement: Optional[str] = None,
+    link_kind: Optional[str] = None,
     min_salary: Optional[int] = None,
     max_salary: Optional[int] = None,
     search_id: Optional[str] = None,
@@ -440,7 +455,7 @@ def list_job_sources(
     q = (db.query(Job.source, func.count(Job.id)) if counts else db.query(Job.source).distinct()).filter(Job.source.isnot(None), Job.source != "")
     q = _apply_common_filters(q, status=status, company=company, h1b_verdict=h1b_verdict,
                               min_score=min_score, saved=saved, title_search=title_search,
-                              remote=remote, location=location, arrangement=arrangement, min_salary=min_salary, max_salary=max_salary,
+                              remote=remote, location=location, arrangement=arrangement, link_kind=link_kind, min_salary=min_salary, max_salary=max_salary,
                               search_id=search_id)
     if counts:
         return [{"name": r[0], "count": r[1]} for r in q.group_by(Job.source).order_by(Job.source).all()]
@@ -460,6 +475,7 @@ def list_job_verdicts(
     remote: Optional[bool] = None,
     location: Optional[str] = None,
     arrangement: Optional[str] = None,
+    link_kind: Optional[str] = None,
     min_salary: Optional[int] = None,
     max_salary: Optional[int] = None,
     search_id: Optional[str] = None,
@@ -471,7 +487,7 @@ def list_job_verdicts(
     q = (db.query(Job.h1b_verdict, func.count(Job.id)) if counts else db.query(Job.h1b_verdict).distinct()).filter(Job.h1b_verdict.isnot(None), Job.h1b_verdict != "")
     q = _apply_common_filters(q, status=status, company=company, source=source,
                               min_score=min_score, saved=saved, title_search=title_search,
-                              remote=remote, location=location, arrangement=arrangement, min_salary=min_salary, max_salary=max_salary,
+                              remote=remote, location=location, arrangement=arrangement, link_kind=link_kind, min_salary=min_salary, max_salary=max_salary,
                               search_id=search_id)
     if counts:
         return [{"name": r[0], "count": r[1]} for r in q.group_by(Job.h1b_verdict).order_by(Job.h1b_verdict).all()]
@@ -498,6 +514,7 @@ def job_facets(
     remote: Optional[bool] = None,
     location: Optional[str] = None,
     arrangement: Optional[str] = None,
+    link_kind: Optional[str] = None,
     min_salary: Optional[int] = None,
     max_salary: Optional[int] = None,
     search_id: Optional[str] = None,
@@ -525,7 +542,7 @@ def job_facets(
     """
     expanded = _expand_company_filter(db, company)
     base = dict(status=status, company=expanded, source=source, h1b_verdict=h1b_verdict,
-                min_score=min_score, saved=saved, title_search=title_search, remote=remote, location=location, arrangement=arrangement,
+                min_score=min_score, saved=saved, title_search=title_search, remote=remote, location=location, arrangement=arrangement, link_kind=link_kind,
                 min_salary=min_salary, max_salary=max_salary, search_id=search_id)
 
     def _counts(col, drop):
@@ -684,6 +701,8 @@ def job_facets(
         "locations": locations,
         "arrangements": arrangements,
         "score_bands": score_bands,
+        "link_kinds": [{"name": n, "count": c}
+                       for n, c in _pad(_counts(Job.link_kind, "link_kind"), _picked(link_kind))],
     }
 
 
@@ -1294,6 +1313,7 @@ def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = 
         "duplicate_of": str(j.duplicate_of) if j.duplicate_of else None,
         # Other sources that found this posting; empty for a duplicate itself.
         "also_on": also_on or [],
+        "link_kind": j.link_kind,
         "same_role_skipped": same_role_skipped,
         "source": j.source,
         "search_id": str(j.search_id) if j.search_id else None,

@@ -52,3 +52,30 @@ def test_classify_keeps_easy_apply():
     job.apply_url = "https://boards.greenhouse.io/acme/jobs/4012345"
     classify(job)
     assert job.link_kind == "direct"
+
+
+def _three_kinds(db):
+    from backend.tests.test_posting_links import _job
+    from backend.models.db import Setting
+    db.add(Setting(key="dashboard_api_key", value=""))
+    direct = _job(db, "https://job-boards.greenhouse.io/acme/jobs/4012345", company="Acme", title="A")
+    board = _job(db, "https://www.linkedin.com/jobs/view/4461186967", company="Acme", title="B")
+    easy = _job(db, "https://www.linkedin.com/jobs/view/4461186968", company="Acme", title="C")
+    easy.link_kind = "easy_apply"
+    db.commit()
+    return direct, board, easy
+
+
+def test_the_feed_filters_by_link_kind(test_db, api_client):
+    direct, board, easy = _three_kinds(test_db)
+    one = api_client.get("/api/jobs?status=new&link_kind=direct").json()["jobs"]
+    assert [j["id"] for j in one] == [str(direct.id)] and one[0]["link_kind"] == "direct"
+    two = api_client.get("/api/jobs?status=new&link_kind=board,easy_apply").json()["jobs"]
+    assert {j["id"] for j in two} == {str(board.id), str(easy.id)}
+
+
+def test_facets_count_link_kinds(test_db, api_client):
+    _three_kinds(test_db)
+    body = api_client.get("/api/jobs/facets?status=new&link_kind=direct").json()
+    counts = {x["name"]: x["count"] for x in body["link_kinds"]}
+    assert counts == {"direct": 1, "board": 1, "easy_apply": 1}, "the own filter is lifted"
