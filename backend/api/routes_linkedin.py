@@ -63,7 +63,7 @@ def session_status(which: Which = "mock"):
         age_days = round((time.time() - mtime) / 86400, 1)
 
     if not exists:
-        status, summary = "missing", "No session yet — refresh to sign in."
+        status, summary = "missing", "No session yet — Sign in."
     elif age_days is not None and age_days >= _STALE_AFTER_DAYS:
         status, summary = "stale", f"Last refreshed {int(age_days)}d ago — likely expired."
     else:

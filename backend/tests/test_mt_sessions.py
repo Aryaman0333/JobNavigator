@@ -43,8 +43,19 @@ def roots(tmp_path, monkeypatch):
 
 async def test_owner_paths_are_todays_exact_paths():
     assert C.LI_EXTENSION_OWNER == "/root/.linkedin_api/li_cookies.json"
-    assert C.LI_PERSONAL_OWNER == "/tmp/linkedin_cookies.json"
+    # 3.2: the main session persists next to the mock one (/tmp was wiped on every rebuild)
+    assert C.LI_PERSONAL_OWNER == "/root/.linkedin_api/linkedin_cookies.json"
     assert C.LI_PIN_OWNER == "/tmp/li_pin.txt"
+
+
+async def test_the_owners_main_jar_moves_out_of_tmp(tmp_path, monkeypatch):
+    old, new = tmp_path / "tmp" / "linkedin_cookies.json", tmp_path / "li" / "linkedin_cookies.json"
+    old.parent.mkdir()
+    old.write_text('[{"name": "li_at"}]')
+    monkeypatch.setattr(C, "LI_PERSONAL_LEGACY", str(old))
+    monkeypatch.setattr(C, "LI_PERSONAL_OWNER", str(new))
+    assert C.linkedin_personal_cookies() == str(new)
+    assert new.read_text() == '[{"name": "li_at"}]' and not old.exists()
 
 
 async def test_owner_no_context_and_unscoped_resolve_to_the_owner_paths(test_db, accounts):
