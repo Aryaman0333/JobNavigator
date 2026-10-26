@@ -177,7 +177,7 @@ Install: `chrome://extensions` › Developer mode › Load unpacked › `extensi
 
 ## Telemetry
 
-If the owner allows it (asked once, changeable in Settings › Telemetry), JobNavigator sends anonymous scraper/AI health and usage data to my self-hosted Umami so I can see what needs fixing first, never job titles, search terms, résumé text or anything you type; set `JN_TELEMETRY=off` in `.env` to turn it off.
+If the owner allows it (asked once, changeable in Settings › Telemetry), JobNavigator sends anonymous scraper/AI health and usage data to a self-hosted Umami to improve the product and better understand what needs fixing first. Never your private information, job titles, search terms, résumé text or keys. Set `JN_TELEMETRY=off` in `.env` to turn it off.
 
 ## Tech Stack
 
