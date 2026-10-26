@@ -268,3 +268,19 @@ def test_the_feed_filters_and_counts_by_posting_state(test_db, api_client):
     assert len(api_client.get("/api/jobs?status=new&open_state=open").json()["jobs"]) == 2
     counts = {x["name"]: x["count"] for x in api_client.get("/api/jobs/facets?status=new").json()["open_states"]}
     assert counts == {"open": 2, "closed": 1}
+
+
+@pytest.mark.asyncio
+async def test_the_check_asks_like_a_browser(monkeypatch):
+    """Meta answers 400 to a request without Accept-Language and the Sec-Fetch headers."""
+    seen = {}
+
+    class Resp:
+        status_code, url, text = 404, "https://www.metacareers.com/jobs/position-not-available/", ""
+
+    async def safe_get(url, **kw):
+        seen.update(kw.get("headers") or {})
+        return Resp()
+    monkeypatch.setattr("backend.scraper._shared.url_safety.safe_get", safe_get)
+    assert await so.check_link("https://www.metacareers.com/v2/jobs/1051197994374282/") == (so.CLOSED, "the page returns 404")
+    assert seen.get("Accept-Language") and seen.get("Sec-Fetch-Mode") == "navigate"

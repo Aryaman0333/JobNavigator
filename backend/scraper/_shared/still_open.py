@@ -30,6 +30,11 @@ CLOSED_PHRASES = (
     "job is no longer open", "this requisition is no longer", "job not found",
 )
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
+# A browser's request headers: Meta answers 400 to a request without Accept-Language and the
+# Sec-Fetch-* headers (and 200 / 404 to one with them).
+_HEADERS = {"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1", "Upgrade-Insecure-Requests": "1"}
 _TAG = re.compile(r"<[^>]+>")
 # Scripts, styles and templates hold a site's UI strings (Dayforce ships "This job is no longer
 # accepting applications" on every page): only the visible text counts.
@@ -40,7 +45,7 @@ async def _fetch(url):
     """(status, final url, text) through the SSRF-checked fetch, or None when it fails."""
     from backend.scraper._shared.url_safety import safe_get
     try:
-        resp = await safe_get(url, timeout=15, headers={"User-Agent": _UA, "Accept": "text/html,application/json"})
+        resp = await safe_get(url, timeout=15, headers=_HEADERS)
     except Exception:
         return None
     return resp.status_code, str(resp.url), resp.text[:500_000]
