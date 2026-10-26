@@ -175,6 +175,20 @@ Install: `chrome://extensions` › Developer mode › Load unpacked › `extensi
 | **Telegram** | `TELEGRAM_BOT_TOKEN` (the household bot) | Notifications › Link Telegram, or its own bot |
 | **Gmail** | `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET`; add `<dashboard>/api/gmail/callback` as a redirect URI | Email classification › Gmail › Connect Gmail |
 
+## Telemetry
+
+I'd like to collect this to improve JobNavigator and to see what needs maintenance most, since my time for it is limited. Scrapers break when job sites change, and AI providers change their answers; this tells me which ones to fix first.
+
+The owner chooses once, in a dialog after the first sign-in, and can change it in Settings › Telemetry. Nothing is sent before that choice. Events go to a self-hosted [Umami](https://umami.is) at `a.viktoresadze.com`, always under the hostname `jobnavigator`.
+
+| | What is sent |
+|---|---|
+| **Essentials** | Once a day, from the server: a random install id, the version, the number of accounts (1–5, then 6+), which search types, job boards, ATS kinds and AI providers/models are in use, and Gmail / Telegram / extension / LinkedIn mock account on or off. Per scraper kind and per AI provider + model + feature: runs or calls, how many succeeded, failed or found nothing, error types (`timeout`, `http_403`, `bad_response` …), and median duration. Per posting kind: new jobs with and without a description, and open-check outcomes. Counts are buckets (`6_20`, `21_100` …). |
+| **Yes** (preselected) | Essentials, plus from the browser: which screens are opened (ids removed, no query), actions such as saving or skipping a job, running a search, adding or scraping a company, changing an application's status, tailoring or exporting a résumé, generating a letter, the appearance switch, and the host of a job board whose scrape fails (e.g. `nvidia.wd5.myworkdayjobs.com`). Umami also records the browser, OS, screen size, language and a country from the IP (the IP itself is not stored). Browser *Do Not Track* is respected. |
+| **Never** | Job titles, company names, search terms, résumé, cover-letter or persona text, anything you type, API keys, error messages, file names, record ids, or this install's address. |
+
+To turn it off completely, set `JN_TELEMETRY=off` in `.env` (also `essentials` or `full`); the env value overrides and locks the choice in Settings. A copy started with `JN_SCHEDULER_DISABLED=1` sends nothing either.
+
 ## Tech Stack
 
 | Layer | Technology |

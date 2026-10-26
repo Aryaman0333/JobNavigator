@@ -465,7 +465,7 @@ ENUM_SETTING_VALUES = {
     "tailor_auto_quick_score": {"off", "false", "no", "0", "true", "yes", "1", ""} | _DEPTHS,
     "tracer_links_url_style": {"path", "param", "path_jobid", "param_jobid"},
     "telegram_bot_mode": {"household", "own"},
-    "telemetry_level": {"full", "essentials"},
+    "telemetry_level": {"", "full", "essentials"},   # "" = not asked yet (asked again)
 }
 
 

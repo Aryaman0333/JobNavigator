@@ -10,7 +10,7 @@ from backend.telemetry.buckets import (accounts_bucket, bucket, duration_bucket,
 from backend.telemetry.categories import llm_error_category, scrape_error_category, tally
 from backend.telemetry.level import FULL, install_id
 
-_EXTENSION_SOURCES = ("linkedin_extension", "extension")
+from backend.scraper.search_modes import EXTENSION_MODES as _EXTENSION_SOURCES   # job.source of extension jobs
 _LLM_SLOTS = (("primary", "llm"), ("fallback", "llm_fallback"), ("scoring", "scoring_llm"),
               ("tailor", "cv_tailor_llm"), ("letter", "cover_letter_llm"),
               ("autofill", "autofill_llm"), ("email", "email_llm"))

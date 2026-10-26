@@ -334,7 +334,7 @@ def test_the_lookup_is_not_a_schedule(test_db, monkeypatch):
         def __init__(self):
             self.ids = []
 
-        def add_job(self, func, trigger, id, replace_existing):
+        def add_job(self, func, trigger, id, replace_existing, **kw):
             self.ids.append(id)
 
         def remove_all_jobs(self):
