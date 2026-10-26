@@ -69,6 +69,9 @@ def session_status(which: Which = "mock"):
     else:
         days = int(age_days)
         status, summary = "ok", ("Signed in today." if days == 0 else f"Signed in {days}d ago.")
+    if exists and which == rls.MOCK and (rls.signed_in_as(which) or {}).get("account") != rls.MOCK:
+        # saved before the main/mock split (3.2): the employer-link lookup will not use it
+        status, summary = "stale", "Saved before the main/mock split — sign in again so the link lookup can use it."
     if shared:
         summary = "The owner's session · " + summary
 

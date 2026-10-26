@@ -258,6 +258,21 @@ async def test_refresh_state_and_pin_drop_are_per_account(test_db, accounts, roo
         assert rls.pin_file() == str(roots / "tmp" / "li_pin.txt")
 
 
+def test_a_mock_jar_saved_before_the_split_asks_for_a_new_sign_in(test_db, accounts, roots):
+    """A mock jar without the sign-in record (saved before 3.2) cannot be used by the employer-link
+    lookup; the Mock session row says so instead of looking signed in."""
+    from backend.api import routes_linkedin as rl
+    from backend import refresh_linkedin_session as rls
+    a, _ = accounts
+    (roots / "li").mkdir(parents=True)
+    (roots / "li" / "li_cookies.json").write_text("[]")
+    with use_account(a):
+        st = rl.session_status("mock")
+        assert st["status"] == "stale" and "sign in again" in st["summary"].lower()
+        rls.record_sign_in(rls.MOCK, "mock@example.com")
+        assert rl.session_status("mock")["status"] == "ok"
+
+
 async def test_session_routes_follow_the_callers_account(test_db, accounts, roots):
     from backend.api import routes_linkedin as rl
     from backend import refresh_linkedin_session as rls
