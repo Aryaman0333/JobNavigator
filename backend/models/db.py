@@ -244,6 +244,10 @@ class Company(AccountScoped, Base):
     # H-1B metrics moved to the VisaCache table (single source of truth, keyed by
     # company name + country) so search-sourced companies not in this table are covered.
     last_scraped_at = Column(DateTime(timezone=True), nullable=True)
+    # 3.2: the last full scrape (missing_postings.py): which links it read and how many
+    # postings it saw; a change of links starts the missing count again.
+    board_signature = Column(String(64), nullable=True)
+    board_count = Column(Integer, nullable=True)
     # See Search.warning_acknowledged_at — same contract, per company.
     warning_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     notes = Column(Text, nullable=True)
@@ -358,6 +362,8 @@ class Job(AccountScoped, Base):
     open_state = Column(String(10), nullable=True)
     open_reason = Column(String, nullable=True)
     open_checked_at = Column(DateTime(timezone=True), nullable=True)
+    # 3.2: full company scrapes in a row this posting was missing from (missing_postings.py)
+    missed_scrapes = Column(Integer, nullable=True)
     # 3.2: the same role, which the user skipped in another place; this copy stays in the feed.
     same_role_as = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     # 3.2: company + title as the same-role check reads it (same_role.role_hash: "Sr" is "Senior");

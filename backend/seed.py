@@ -677,6 +677,10 @@ def run_migrations(db):
         # 3.2: title variants ("Sr" / "Senior") of one role (same_role.role_hash)
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS role_hash VARCHAR",
         "CREATE INDEX IF NOT EXISTS ix_jobs_acct_role_hash ON jobs (account_id, role_hash)",
+        # 3.2: postings missing from full company scrapes (missing_postings.py)
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS missed_scrapes INTEGER",
+        "ALTER TABLE companies ADD COLUMN IF NOT EXISTS board_signature VARCHAR(64)",
+        "ALTER TABLE companies ADD COLUMN IF NOT EXISTS board_count INTEGER",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_summary",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_strengths",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_gaps",

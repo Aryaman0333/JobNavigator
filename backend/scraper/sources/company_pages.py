@@ -248,6 +248,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                 # This account's run includes the fetch it rode on, so durations compare.
                 start_time -= shared_fetch.duration
 
+        all_postings = list(unique_jobs)   # before the title filters: what the board lists
         if not unique_jobs:
             duration = time.time() - start_time
             return {
@@ -417,6 +418,12 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                 return {"jobs_found": len(unique_jobs), "new_jobs": 0, "error": None,
                         "duration": time.time() - start_time, "deleted": True}
             comp.last_scraped_at = datetime.now(timezone.utc)
+            # Postings gone from a full scrape twice in a row are marked closed.
+            from backend.scraper._shared.missing_postings import note_scrape
+            missing = note_scrape(db, comp, target_urls, all_postings, url_errors)
+            if missing["closed"] or missing["reopened"]:
+                logger.info(f"{company_name}: {missing['closed']} closed (missing from the board), "
+                            f"{missing['reopened']} open again")
 
             db.commit()
             if refreshed:
