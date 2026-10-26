@@ -13,7 +13,7 @@ logger = logging.getLogger("jobnavigator.telemetry")
 
 UMAMI_HOST = "https://a.viktoresadze.com"
 UMAMI_WEBSITE_ID = ""   # Umami › Settings › Websites › JobNavigator app; empty = nothing is sent
-HOSTNAME = "jobnavigator"   # never the install's own domain
+HOSTNAME = "jobnavigator.local"   # never the install's own domain (Umami wants a dotted name)
 TIMEOUT = 10.0
 _transport = None           # tests put an httpx.MockTransport here
 

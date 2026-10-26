@@ -28,7 +28,7 @@ def sent(monkeypatch, test_db):
 async def test_payload_shape(sent):
     assert await U.send([("scraper_health", {"kind": "workday", "runs": 2})]) == 1
     agent, body = sent[0]
-    assert body == {"type": "event", "payload": {"website": "site-123", "hostname": "jobnavigator", "url": "/server",
+    assert body == {"type": "event", "payload": {"website": "site-123", "hostname": "jobnavigator.local", "url": "/server",
                                                  "name": "scraper_health", "data": {"kind": "workday", "runs": 2},
                                                  "language": "en"}}
     assert agent.startswith("Mozilla/5.0") and "JobNavigator/" in agent
@@ -79,7 +79,7 @@ async def test_relay_forwards_only_at_full(sent, test_db, client):
     assert client.post("/api/telemetry/event", json={"name": "job_opened", "data": {"link_kind": "direct"},
                                                      "url": "/feed"}).json() == {"sent": True}
     payload = sent[-1][1]["payload"]
-    assert payload["hostname"] == "jobnavigator" and payload["url"] == "/feed" and payload["name"] == "job_opened"
+    assert payload["hostname"] == "jobnavigator.local" and payload["url"] == "/feed" and payload["name"] == "job_opened"
     assert payload["data"]["link_kind"] == "direct" and len(payload["data"]["install_id"]) == 36
 
 
