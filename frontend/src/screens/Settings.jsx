@@ -745,10 +745,7 @@ export default function Settings() {
         B('Mock account email', 'A separate account for the extension import and the employer-link lookup.', 'linkedin_mock_email',
           { w: '260px', info: 'Optional. Keeps rate limits, CAPTCHAs or bans off your real profile. Without a mock account the extension import uses the main session, and the employer-link lookup stays off: it never uses your own account.' }),
         B('Mock account password', 'Stored locally only.', 'linkedin_mock_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', which: 'mock', lockKey: 'linkedin_email', label: 'Mock session', help: 'Signed in with the mock account. The extension import and the employer-link lookup use it.' },
-        B('Employer link lookup · cron', 'LinkedIn jobs from any source get the employer’s apply link through the mock account. Empty = off.', 'linkedin_lookup_cron',
-          { mono: true, cron: true, w: '135px', info: 'Each LinkedIn job is asked about once, one every 15 seconds, and the answer is kept for every account. Easy Apply jobs are marked as such. A run stops when LinkedIn stops answering or the mock session is signed out.' }),
-        B('Lookups per run', 'Most LinkedIn jobs asked about per run.', 'linkedin_lookup_per_run', { mono: true, int: true, w: '80px' }),
+        { kind: 'linkedin', which: 'mock', lockKey: 'linkedin_email', label: 'Mock session', help: 'Signed in with the mock account. The extension import uses it, and after every scrape it finds the employer’s apply link for new LinkedIn jobs.' },
       ]],
       ['advanced', 'System', 'Advanced', '', [
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),

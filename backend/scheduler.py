@@ -70,7 +70,6 @@ def configure_scheduler():
         h1b_cron = str(get_setting(db, "h1b_cron", "") or "").strip()
         cleanup_cron = str(get_setting(db, "cleanup_cron", "") or "").strip()
         reject_cron = str(get_setting(db, "reject_cron", "") or "").strip()
-        lookup_cron = str(get_setting(db, "linkedin_lookup_cron", "") or "").strip()
     finally:
         db.close()
 
@@ -81,11 +80,11 @@ def configure_scheduler():
     # context itself, see `scheduled_job`.)
     run_in_clean_context(
         _register_jobs, scrape_interval, email_interval,
-        backup_cron, digest_cron, h1b_cron, cleanup_cron, reject_cron, lookup_cron)
+        backup_cron, digest_cron, h1b_cron, cleanup_cron, reject_cron)
 
 
 def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1b_cron,
-                   cleanup_cron, reject_cron, lookup_cron=""):
+                   cleanup_cron, reject_cron):
     def _add_cron_job(func, job_id, cron_expr):
         """Parse a 5-field cron expression and add to scheduler. Empty = skip.
         Install-level jobs carry `as_owner` themselves; per-account jobs set their own
@@ -133,7 +132,6 @@ def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1
     _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron)                 # install-level
     _add_cron_job(run_job_cleanup_auto, "job_cleanup", cleanup_cron)         # per account
     _add_cron_job(run_auto_reject, "auto_reject", reject_cron)               # per account
-    _add_cron_job(run_linkedin_lookup, "linkedin_lookup", lookup_cron)       # install-level
 
     logger.info(
         f"Scheduler configured: scrape every {scrape_interval}m, "
@@ -428,19 +426,23 @@ async def _digest_for_account():
 
 @scheduled_job
 @as_owner
-async def run_linkedin_lookup():
-    """Install-level: LinkedIn listings of every account get the employer's link through the
-    mock account (scraper/_shared/linkedin_lookup.py), `linkedin_lookup_per_run` at a time."""
+async def lookup_after_scrape():
+    """Install-level, after every scrape (job_monitor.on_scrape_finished): LinkedIn listings of
+    every account get the employer's link through the mock account
+    (scraper/_shared/linkedin_lookup.py). Nothing pending = no run."""
+    from backend.accounts.context import unscoped
     from backend.job_monitor import tracked_run, JobAlreadyRunningError
-    from backend.scraper._shared.linkedin_lookup import run_lookup
-    db = SessionLocal()
+    from backend.scraper._shared import linkedin_lookup as ll
+    with unscoped():   # install-level: every account's rows
+        db = SessionLocal()
+        try:
+            if not ll.pending_ids(db, limit=1):
+                return
+        finally:
+            db.close()
     try:
-        per_run = _int_setting(db, "linkedin_lookup_per_run") or 20
-    finally:
-        db.close()
-    try:
-        async with tracked_run("linkedin_lookup", "scheduler") as run:
-            out = await run_lookup(per_run=per_run)
+        async with tracked_run("linkedin_lookup", "after scrape") as run:
+            out = await ll.run_lookup(per_run=ll.PER_RUN)
             run.summary = (f"{out['looked_up']} looked up - {out['employer']} employer links - "
                            f"{out['easy_apply']} Easy Apply - {out['cached']} from earlier answers - "
                            f"{out['short_links']} short links followed"

@@ -50,8 +50,6 @@ DEFAULT_SETTINGS = {
     "dedup_copy_link": ("ignored", "A copy of a posting under another link in the same city: ignored or new"),
     "dedup_copy_city": ("ignored", "A copy of a posting or role in another city: ignored or new"),
     "dedup_copy_repost": ("ignored", "The same role reposted under a new id in the same city: ignored or new"),
-    "linkedin_lookup_cron": ("20 * * * *", "LinkedIn link lookup cron: LinkedIn listings get the employer's link through the mock account. Empty = disabled"),
-    "linkedin_lookup_per_run": ("20", "LinkedIn link lookup: most LinkedIn jobs asked about per run (one every 15 s)"),
     "backup_cron": ("0 3 * * *", "Backup cron schedule (min hour day month dow). Empty = disabled"),
     "scoring_rubric": ("Score each resume using these criteria (each 0-20, sum to 0-100):\n1. SKILLS MATCH (weight: 20): How many required technical skills/tools does the candidate have?\n2. EXPERIENCE LEVEL (weight: 20): Does seniority/years match? (entry-level resume for senior role = low)\n3. DOMAIN FIT (weight: 20): Has the candidate worked in the same industry/domain?\n4. ROLE ALIGNMENT (weight: 20): Does the candidate's career trajectory match this role type?\n5. REQUIREMENTS MET (weight: 20): Does the candidate meet stated requirements (education, certs, clearance)?\n\nUse the FULL 0-100 range. 90+ = perfect match. 50-70 = decent with gaps. Below 30 = poor match.\nAvoid clustering scores — differentiate meaningfully between resumes and jobs.", "Editable resume scoring rubric"),
     "scoring_output_light": ('Return ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME"\n}', "Light scoring output schema"),
@@ -1136,6 +1134,8 @@ def cleanup_removed_settings(db):
     removed_keys = [
         # 3.2: two LinkedIn sessions, each with its own Sign in, replaced the switch
         "linkedin_use_mock_account",
+        # the employer-link lookup runs after every scrape at a fixed pace (3.2 had a cron)
+        "linkedin_lookup_cron", "linkedin_lookup_per_run",
         "followup_reminder_days",
         "h1b_exclusion_phrases",
         "language_exclude_phrases",

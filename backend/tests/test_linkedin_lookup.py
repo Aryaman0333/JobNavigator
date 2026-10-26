@@ -194,17 +194,16 @@ async def test_a_closed_job_is_gone(test_db):
     assert test_db.get(LinkedinLookup, "4461186967").result == "gone"
 
 
-def test_settings_default_to_an_hourly_run_of_twenty():
+def test_the_lookup_has_no_settings_of_its_own():
+    """It runs after every scrape, at a fixed pace: the 3.2 cron and per-run settings are gone."""
     from backend.seed import DEFAULT_SETTINGS
-    from backend.accounts.settings import SETTING_SECTIONS, KEY_SECTION
-    assert DEFAULT_SETTINGS["linkedin_lookup_cron"][0] == "20 * * * *"
-    assert DEFAULT_SETTINGS["linkedin_lookup_per_run"][0] == "20"
-    section = SETTING_SECTIONS[KEY_SECTION["linkedin_lookup_cron"]]
-    assert section["scope"] == "owner_only" and KEY_SECTION["linkedin_lookup_per_run"] == section["id"]
+    from backend.accounts.settings import KEY_SECTION
+    for key in ("linkedin_lookup_cron", "linkedin_lookup_per_run"):
+        assert key not in DEFAULT_SETTINGS and key not in KEY_SECTION
+    assert ll.PAUSE == 2.0
 
 
-@pytest.mark.parametrize("cron, scheduled", [("20 * * * *", True), ("", False)])
-def test_the_scheduler_runs_the_lookup_on_its_cron(test_db, monkeypatch, cron, scheduled):
+def test_the_lookup_is_not_a_schedule(test_db, monkeypatch):
     import backend.scheduler as sched_mod
 
     class Recorder:
@@ -221,10 +220,49 @@ def test_the_scheduler_runs_the_lookup_on_its_cron(test_db, monkeypatch, cron, s
             return self.ids
     rec = Recorder()
     monkeypatch.setattr(sched_mod, "scheduler", rec)
-    test_db.add(Setting(key="linkedin_lookup_cron", value=cron))
-    test_db.commit()
     sched_mod.configure_scheduler()
-    assert ("linkedin_lookup" in rec.ids) is scheduled
+    assert "linkedin_lookup" not in rec.ids
+
+
+@pytest.mark.asyncio
+async def test_a_finished_scrape_starts_the_lookup(monkeypatch):
+    import asyncio
+    import uuid
+    from datetime import datetime, timezone
+    from backend import job_monitor as jm
+
+    started = []
+
+    async def lookup():
+        started.append(True)
+
+    monkeypatch.setattr(jm, "_restart_job_run", lambda *a: None)
+    monkeypatch.setattr(jm, "_after_scrape_hooks", [lookup])
+
+    class Running:
+        waiting = False
+        started_at = datetime.now(timezone.utc)
+        run_id = uuid.uuid4()
+
+    async with jm._gated(jm.limiter_for_job_type("search_run"), Running()):
+        pass
+    async with jm._gated(jm.limiter_for_job_type("analyze_job"), Running()):
+        pass
+    await asyncio.sleep(0)
+    assert started == [True]   # once: after the scrape, not after the scoring run
+
+
+@pytest.mark.asyncio
+async def test_after_a_scrape_nothing_pending_means_no_run(test_db, monkeypatch):
+    from backend import scheduler as sched_mod
+    runs = []
+
+    async def fake_run_lookup(**kw):
+        runs.append(kw)
+        return {}
+    monkeypatch.setattr("backend.scraper._shared.linkedin_lookup.run_lookup", fake_run_lookup)
+    await sched_mod.lookup_after_scrape()
+    assert runs == []
 
 
 def test_the_voyager_call_reports_how_the_job_is_applied_to():

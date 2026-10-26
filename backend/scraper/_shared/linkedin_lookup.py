@@ -24,7 +24,8 @@ from backend.scraper._shared.postings import is_short_link, unwrap
 
 logger = logging.getLogger("jobnavigator.linkedin_lookup")
 
-PAUSE = 15.0
+PAUSE = 2.0             # seconds between requests (the extension import uses 1 s on the same session)
+PER_RUN = 200           # most LinkedIn jobs asked about after one scrape
 STOP_AFTER_NO_DATA = 3
 
 

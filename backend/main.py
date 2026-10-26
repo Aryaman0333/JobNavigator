@@ -81,6 +81,10 @@ async def lifespan(app: FastAPI):
                        "(no scrapes, email checks, digests or backups run).")
     else:
         configure_scheduler()
+        # The LinkedIn employer-link lookup runs after every scrape, not on a clock.
+        from backend.job_monitor import on_scrape_finished
+        from backend.scheduler import lookup_after_scrape
+        on_scrape_finished(lookup_after_scrape)
         # QA F4 / R1-01: the scheduler's timers capture the context of whoever wakes it.
         from backend.accounts.context import run_in_clean_context
         run_in_clean_context(scheduler.start)
@@ -1326,7 +1330,7 @@ async def telegram_test():
         )
 
 
-_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup", "linkedin_lookup"})   # install-level / require_owner
+_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup"})   # install-level / require_owner
 
 # The schedules list shows these names; every id scheduler.py registers needs one
 # (test_schedule_names.py).
@@ -1338,7 +1342,6 @@ SCHEDULE_NAMES = {
     "db_backup": "Back up database (pg_dump)",
     "job_cleanup": "Clean up stale skipped jobs",
     "auto_reject": "Auto-reject stale applications",
-    "linkedin_lookup": "Find employer links for LinkedIn jobs",
 }
 
 
