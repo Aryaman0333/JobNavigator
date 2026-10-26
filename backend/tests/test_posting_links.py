@@ -569,3 +569,35 @@ def test_backfill_links_stored_title_variants(test_db):
     test_db.refresh(b)
     assert out["linked"] == 1
     assert b.status == "ignored" and b.duplicate_of == a.id
+
+
+def _city_text(city):
+    return BODY + f" This role is based in our {city} office."
+
+
+def test_a_role_per_city_named_only_in_the_text_is_a_city_copy(test_db):
+    boston = _job(test_db, "https://job-boards.greenhouse.io/digitalocean/jobs/7101", company="DigitalOcean",
+                  title="Staff PM", location="United States", description=_city_text("Boston"))
+    denver = _job(test_db, "https://job-boards.greenhouse.io/digitalocean/jobs/7102", company="DigitalOcean",
+                  title="Staff PM", location="United States", description=_city_text("Denver"))
+    assert denver.duplicate_of == boston.id and denver.copy_kind == "city"
+
+
+def test_a_role_skipped_in_a_city_only_the_text_names_shows_in_another(test_db):
+    skipped = _job(test_db, "https://job-boards.greenhouse.io/digitalocean/jobs/7101", company="DigitalOcean",
+                   title="Staff PM", location="United States", description=_city_text("Boston"),
+                   status="skip", days_old=2)
+    denver = _job(test_db, "https://job-boards.greenhouse.io/digitalocean/jobs/7102", company="DigitalOcean",
+                  title="Staff PM", location="United States", description=_city_text("Denver"))
+    assert denver.status == "new" and denver.duplicate_of is None and denver.same_role_as == skipped.id
+
+
+def test_an_office_list_in_the_text_does_not_overrule_the_location(test_db):
+    """Intuit: both postings are in Mountain View; their texts list slightly different offices."""
+    skipped = _job(test_db, "https://jobs.intuit.com/job/mountain-view/staff-pm/27595/1001", company="Intuit",
+                   title="Staff PM", location="Mountain View, CA", city=("Mountain View", "CA"),
+                   description=_city_text("Seattle"), status="skip", days_old=2)
+    again = _job(test_db, "https://jobs.intuit.com/job/mountain-view/staff-pm/27595/1002", company="Intuit",
+                 title="Staff PM", location="Mountain View, CA", city=("Mountain View", "CA"),
+                 description=_city_text("Ottawa"))
+    assert again.status == "ignored" and again.duplicate_of == skipped.id and again.same_role_as is None

@@ -39,7 +39,7 @@ from sqlalchemy import func
 
 from backend.scraper._shared.link_kinds import classify
 from backend.scraper._shared.postings import is_employer_key, posting_key, unwrap
-from backend.scraper._shared.same_role import is_template, role_hash, same_text, title_key
+from backend.scraper._shared.same_role import is_template, role_hash, same_text, text_places, title_key
 
 logger = logging.getLogger("jobnavigator.posting_links")
 
@@ -210,11 +210,15 @@ def _places(job) -> set:
 
 def new_place(job, original) -> bool:
     """True when `job` names a place `original` does not. Without parsed places on both, any
-    difference in the location text counts: when unsure, the copy is shown, not hidden."""
+    difference in the location text counts: when unsure, the copy is shown, not hidden. When
+    neither location names a city ("United States", "Remote"), a city only the text names counts
+    ("based in our Denver office"); a text's list of offices never overrules a named city."""
     a, b = _places(job), _places(original)
-    if a and b:
-        return bool(a - b)
-    return _norm(job.location) != _norm(original.location)
+    if (bool(a - b) if a and b else _norm(job.location) != _norm(original.location)):
+        return True
+    if any(p[2] for p in a | b):
+        return False
+    return bool(text_places(job.description) - text_places(original.description))
 
 
 def skipped_elsewhere(job, original) -> bool:

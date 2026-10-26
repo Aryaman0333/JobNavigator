@@ -29,7 +29,9 @@ logger = logging.getLogger("jobnavigator.postings")
 # 6: copies classified link | city | repost, each to Ignored or New (no more 'duplicate' status).
 # 7: title variants are one title (same_role.title_key, stored as role_hash); raise it when
 #    title_key changes.
-READER_VERSION = 7
+# 8: a city named only in the text is a place word (same_role._CITIES) and a new place for a copy.
+# 9: ...a new place only when neither location names a city.
+READER_VERSION = 9
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
