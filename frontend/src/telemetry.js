@@ -9,26 +9,31 @@ const ID = /^[a-z0-9_:.-]{1,32}$/
 export const EVENTS = {
   session_start: { appearance: ['light', 'dark', 'system'], theme: 'id', device: ['phone', 'tablet', 'desktop'] },
   telemetry_chosen: { level: ['full', 'essentials'] },
-  job_saved: { from: ['card', 'panel', 'shortcut'] },
-  job_skipped: { from: ['card', 'panel', 'shortcut'] },
+  job_saved: {},
+  job_skipped: {},
   job_opened: { link_kind: ['direct', 'board', 'easy_apply', 'none'] },
-  feed_shortcut: { key: ['j', 'k', 's', 'x', 'e', 'o', 'f', 'g', 'ArrowDown', 'ArrowUp', 'Enter'] },
-  feed_filter_used: { filter: 'id' },
+  feed_shortcut: { key: ['j', 'k', 's', 'x', 'e', 'o', 'f', 'g', 'a', 'r', 't', 'ArrowDown', 'ArrowUp', 'Enter'] },
   search_created: { mode: 'id' },
   search_run: { mode: 'id' },
-  search_tested: { mode: 'id', results: 'bucket' },
+  search_tested: { mode: 'id' },
   company_added: { ats: 'id' },
   company_scraped: { ats: 'id' },
   status_changed: { from: 'id', to: 'id' },
-  tailor_started: { depth: ['light', 'full', 'off'], from: ['job', 'pasted'] },
+  tailor_started: { from: ['job', 'pasted'] },
   score_run: { depth: ['light', 'full'] },
-  resume_exported: { format: ['pdf', 'docx', 'html'], template: 'id' },
-  letter_generated: { voice: 'id' },
-  letter_exported: { format: ['pdf', 'docx', 'html'] },
-  persona_section_edited: { section: 'id' },
-  settings_section_saved: { section: 'id' },
-  theme_changed: { appearance: ['light', 'dark', 'system'], theme: 'id' },
+  resume_exported: { format: ['pdf', 'docx'], template: 'id' },
+  letter_generated: { voice: ['professional', 'warm', 'formal', 'confident', 'storytelling', 'custom'] },
+  letter_exported: { format: ['pdf'] },
+  theme_changed: { appearance: ['light', 'dark', 'system'] },
 }
+
+// The seeded voice presets by id; one the user wrote is just 'custom' (its id may be a name).
+const BUILTIN_VOICES = ['professional', 'warm', 'formal', 'confident', 'storytelling']
+export const voiceId = (v) => (BUILTIN_VOICES.includes(v) ? v : 'custom')
+
+// Feed shortcuts that count: anything else typed on the feed never becomes an event.
+const SHORTCUT_KEYS = new Set(EVENTS.feed_shortcut.key)
+export const isShortcut = (key) => SHORTCUT_KEYS.has(key)
 
 const HOSTNAME = 'jobnavigator'
 const MAX_EVENTS = 300
@@ -71,8 +76,18 @@ export function sanitize(name, data) {
   return out
 }
 
+// Events before Umami's script has loaded wait here (a few at most: the first page view, session_start).
+const pending = []
+
 function send(build) {
-  try { if (window.umami && typeof window.umami.track === 'function') window.umami.track(build) } catch { /* never break the app */ }
+  try {
+    if (window.umami && typeof window.umami.track === 'function') window.umami.track(build)
+    else if (pending.length < 20) pending.push(build)
+  } catch { /* never break the app */ }
+}
+
+function flush() {
+  while (pending.length && window.umami) send(pending.shift())
 }
 
 function base(props) {
@@ -115,10 +130,11 @@ export async function initTelemetry() {
   s.setAttribute('data-host-url', state.umami.host)
   s.setAttribute('data-auto-track', 'false')
   s.setAttribute('data-do-not-track', 'true')
+  s.addEventListener('load', flush)
   document.head.appendChild(s)
   enabled = true
   return state
 }
 
-export function __resetTelemetry() { enabled = false; sent = 0; recent.clear() }
+export function __resetTelemetry() { enabled = false; sent = 0; recent.clear(); pending.length = 0 }
 export function __enableForTests() { enabled = true }

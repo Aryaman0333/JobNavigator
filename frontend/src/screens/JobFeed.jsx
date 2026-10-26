@@ -5,6 +5,7 @@ import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../hooks'
 import { LINK_KINDS, closedTag, linkKindParam, linkTag, openLink } from '../linkKinds'
+import { isShortcut, track } from '../telemetry'
 import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, Dot, FooterRow, GlyphBadge, HeaderRow, Heading, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow, Tag, ZOOM_MAX, ZOOM_MIN, ZoomFloater } from '../ui'
 import { ANALYZE, NO_BASES_HINT, SCORE_RESUME, TAILOR, activityText, noScoreSource,feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
 import { PICK_KEY, clickMods, clickSelection } from './rowSelect'
@@ -567,8 +568,9 @@ export default function V2JobFeed() {
       } catch (e) { console.error(e); pushToast({ kind: 'error', msg: `Couldn't undo that — "${job.title}" is unchanged` }); fetchJobs() }
     } })
   }, [pushToast, fetchJobs, refreshStats])
-  const saveJob = async (j) => { const willSave = !j.saved, ps = j.status, pv = j.saved; if (willSave && scoredCount(j) === 0) watchForScore(j.id); if (await patchRemote(j, { saved: willSave, status: willSave ? 'saved' : 'new' })) showUndo(j, ps, pv, `${willSave ? 'Saved' : 'Unsaved'} "${j.title}"`) }
-  const skipJob = async (j) => { const ps = j.status, pv = j.saved; if (await patchRemote(j, { status: 'skip' })) showUndo(j, ps, pv, `Skipped "${j.title}"`) }
+  const saveJob = async (j) => { const willSave = !j.saved, ps = j.status, pv = j.saved; if (willSave && scoredCount(j) === 0) watchForScore(j.id); if (await patchRemote(j, { saved: willSave, status: willSave ? 'saved' : 'new' })) { showUndo(j, ps, pv, `${willSave ? 'Saved' : 'Unsaved'} "${j.title}"`); if (willSave) track('job_saved') } }
+  const skipJob = async (j) => { const ps = j.status, pv = j.saved; if (await patchRemote(j, { status: 'skip' })) { showUndo(j, ps, pv, `Skipped "${j.title}"`); track('job_skipped') } }
+  const opened = (j) => track('job_opened', { link_kind: j?.link_kind || 'none' })
   const applyJob = async (j) => {
     const ps = j.status, pv = j.saved
     const res = await patchRemote(j, { status: 'applied' })
@@ -780,6 +782,7 @@ export default function V2JobFeed() {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
       if (e.ctrlKey || e.metaKey || e.altKey) return  // let browser shortcuts (Ctrl+Shift+R etc.) through
       const list = jobsRef.current, idx = selRef.current, job = list[idx]
+      if (isShortcut(e.key)) track('feed_shortcut', { key: e.key })
       switch (e.key) {
         case 'f': case 'j': case 'ArrowDown': e.preventDefault(); focusAt(Math.min(idx + 1, list.length - 1)); break
         case 'g': case 'k': case 'ArrowUp': e.preventDefault(); focusAt(Math.max(idx - 1, 0)); break
@@ -788,7 +791,7 @@ export default function V2JobFeed() {
         case 's': if (job) { const nextStatus = job.saved ? 'new' : 'saved'; saveJob(job); if (!leavesView(nextStatus)) focusAt(Math.min(idx + 1, list.length - 1)) } break
         case 'x': if (job) { skipJob(job); if (!leavesView('skip')) focusAt(Math.min(idx + 1, list.length - 1)) } break
         case 'a': if (job) applyJob(job); break
-        case 'e': case 'o': if (openLink(job)) window.open(openLink(job), '_blank', 'noopener,noreferrer'); break
+        case 'e': case 'o': if (openLink(job)) { opened(job); window.open(openLink(job), '_blank', 'noopener,noreferrer') } break
         case 'r': if (job) openRescore(job); break
         case 't': if (job) setPicker({ mode: 'tailor', jobs: [job] }); break   // the ⋯ menus hint t
         case 'c': if (job) navigate(`/cover-letters?job=${job.id}`); break   // and c
@@ -1487,7 +1490,7 @@ export default function V2JobFeed() {
                     {/* the employer's own posting when there is one (linkKinds.js openLink), else the job's link */}
                     {closedTag(d) && <span title={closedTag(d).title} onClick={() => setRecheck((n) => n + 1)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--dot-bad)', cursor: 'pointer' }}><Dot tone="bad" />{closedTag(d).text}</span>}
                     {linkTag(d) && <Tag title={linkTag(d).title}>{linkTag(d).text}</Tag>}
-                    {openLink(d) && <Button variant="secondary" size="sm" href={openLink(d)} target="_blank" title={openLink(d)} style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
+                    {openLink(d) && <Button variant="secondary" size="sm" href={openLink(d)} target="_blank" title={openLink(d)} onClick={() => opened(d)} style={{ height: headOpen ? 36 : 30 }}>Open ↗</Button>}
                     {/* Routed through Button (not hand-drawn) so it reads --btn-shadow/--btn-weight/--btn-primary-bg/-ink
                         and the hover/pressed rules; the style override only restores height/padding/line-height, which track the collapsing header. */}
                     {/* while a tailor runs the button says so and does nothing: `disabled`

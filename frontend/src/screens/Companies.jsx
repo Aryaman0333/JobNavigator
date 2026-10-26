@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api'
+import { track } from '../telemetry'
 import { useToasts, ToastStack } from '../Toast'
 // shared dialog also serves résumé and cover-letter deletes, so it lives in its own file.
 import ConfirmDialog from '../ConfirmDialog'
@@ -40,6 +41,7 @@ const ATS_SLUGS = new Set(['greenhouse', 'workday', 'lever', 'ashby', 'phenom', 
 const atsShort = (detected) => (detected || 'Generic')
   .replace(' API', '').replace(' AJAX', '').replace(' (Playwright)', '').replace(' Careers', '')
 const atsSlug = (short) => { const s = (short || 'generic').toLowerCase().replace(/[^a-z0-9]/g, ''); return 'cc-' + (ATS_SLUGS.has(s) ? s : 'generic') }
+const atsId = (short) => (short || 'generic').toLowerCase().replace(/[^a-z0-9]/g, '')   // telemetry: 'Oracle HCM' -> 'oraclehcm'
 const tierSlug = (key) => 'cc-tier' + (key === 'none' ? 'none' : key)
 // Company.tier is stored as an integer 1/2/3 (nullable) — backend/models/db.py.
 // The UI shows priority tiers as letters; tierLabel(1) -> 'A', tierLabel(1, { long: true }) -> 'Tier A'.
@@ -308,7 +310,11 @@ export default function Companies() {
   const runScrape = async (id) => {
     if (scraping[id]) return
     setScraping((m) => ({ ...m, [id]: true }))
-    try { await api.post(`/scrape/company/${id}`) }
+    try {
+      await api.post(`/scrape/company/${id}`)
+      const c = companies.find((x) => x.id === id)
+      track('company_scraped', { ats: atsId(detectAts((c?.scrape_urls || [])[0])) })
+    }
     catch (e) {
       // The scheduled scrape is running: nothing was started, so drop the spinner.
       if (e.response?.data?.detail === 'scheduled_scrape_running') {
@@ -825,6 +831,7 @@ function AddModal({ onClose, resumes, personaPopulated, onCreated, pushToast }) 
         tier, scrape_interval_minutes: interval === '' ? null : parseInt(interval) || null,
         selected_resume_ids: selected, auto_scoring_depth: depth,
       })
+      track('company_added', { ats: atsId(ats) })
       onCreated(); onClose()
     } catch (e) {
       pushToast({ kind: 'error', msg: 'Could not add company' + errSuffix(e) })

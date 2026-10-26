@@ -3,6 +3,7 @@ import ClosedMark from '../ClosedMark'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import api from '../api'
+import { track, voiceId } from '../telemetry'
 import { downloadErrorReason, downloadName } from '../download'
 import { useFlushBeforeSwitch } from '../accounts'
 import { Picker, VoicePicker, LengthPicker, LENGTHS, STAGE_CLASS } from './CoverLetters'
@@ -190,6 +191,7 @@ export default function CoverLetterEditor() {
       // the edit the debounced save still owes goes first, so the PDF has it (R30 D-06)
       clearTimeout(saveTimer.current); await sendPending()
       const r = await api.get(`/cover-letters/${id}/pdf`, { responseType: 'blob' })
+      track('letter_exported', { format: 'pdf' })
       if (__DEMO__) {   // the demo prints the rendered template through the browser
         const { printHtml, blobText } = await loadDemo('pdf.js')
         await printHtml(await blobText(r.data)); return
@@ -242,6 +244,7 @@ export default function CoverLetterEditor() {
         resume_id: rSource, job_id: doc.job_id, voice: rVoice, length: rLength,
         cover_letter_id: id,       // rewrite this draft in place
       })
+      track('letter_generated', { voice: voiceId(rVoice) })
       regenRun.current = started?.run_id || null   // read its status below
     } catch (e) {
       setRegening(false)

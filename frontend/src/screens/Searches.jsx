@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api'
+import { track } from '../telemetry'
 import { useToasts, ToastStack } from '../Toast'
 import ConfirmDialog from '../ConfirmDialog'
 import CopyFrom from '../CopyFrom'
@@ -591,7 +592,7 @@ export default function Searches() {
     if (busy) return
     if (!newDraft.name.trim()) { pushToast({ kind: 'error', msg: 'Name is required' }); return }
     setBusy('new')
-    try { const { data } = await api.post('/searches', toPayload(newDraft)); setNewOpen(false); setNewDraft(NEW_DRAFT); load(); loadAux(); bumpCounts(); notePaused(data, 'created') }
+    try { const { data } = await api.post('/searches', toPayload(newDraft)); track('search_created', { mode: newDraft.search_mode }); setNewOpen(false); setNewDraft(NEW_DRAFT); load(); loadAux(); bumpCounts(); notePaused(data, 'created') }
     catch (e) { fail(e, 'Could not create this search') }
     finally { if (mounted.current) setBusy(null) }
   }
@@ -614,7 +615,7 @@ export default function Searches() {
   const runNow = async (s) => {
     if (running[s.id] || configError(s)) return
     setRunning((m) => ({ ...m, [s.id]: true }))
-    try { await api.post(`/searches/${s.id}/run`) } catch (e) {
+    try { await api.post(`/searches/${s.id}/run`); track('search_run', { mode: s.search_mode }) } catch (e) {
       // The scheduled scrape is running: nothing was started, so drop the spinner.
       if (e.response?.data?.detail === 'scheduled_scrape_running') {
         pushToast({ kind: 'error', msg: 'The scheduled scrape is running — try again when it finishes' })
@@ -702,6 +703,7 @@ export default function Searches() {
   const runTest = async (s) => {
     if (testingId || configError(s)) return               // one Test at a time
     setMenuFor(null); setTestingId(s.id); setTestTab('all')
+    track('search_tested', { mode: s.search_mode })
     writeTestRec({ id: s.id, name: s.name })    // in flight, no run id yet (the inline modes never get one)
     try {
       const res = await api.post(`/searches/${s.id}/test`, null, { timeout: 30000 })

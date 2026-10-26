@@ -31,8 +31,15 @@ describe('sanitize', () => {
     expect(T.sanitize('nope', { a: 1 })).toBeNull()
     expect(T.sanitize('job_opened', { link_kind: 'direct', title: 'Secret PM' })).toEqual({ link_kind: 'direct' })
     expect(T.sanitize('job_opened', { link_kind: 'https://x' })).toEqual({})
-    expect(T.sanitize('search_tested', { mode: 'Keyword', results: 37 })).toEqual({ mode: 'keyword', results: '21_100' })
+    expect(T.sanitize('search_run', { mode: 'Keyword', term: 'secret' })).toEqual({ mode: 'keyword' })
     expect(T.sanitize('letter_generated', { voice: 'My own voice for Acme' })).toEqual({})
+    expect(T.sanitize('letter_generated', { voice: T.voiceId('my-acme-voice') })).toEqual({ voice: 'custom' })
+    expect(T.isShortcut('s')).toBe(true)
+    expect(T.isShortcut('q')).toBe(false)
+  })
+
+  it('buckets counts', () => {
+    expect([0, 1, 3, 12, 50, 500].map(T.bucket)).toEqual(['0', '1', '2_5', '6_20', '21_100', '101_plus'])
   })
 })
 
@@ -52,9 +59,9 @@ describe('track', () => {
 
   it('drops the same event within 3 s', () => {
     T.__enableForTests()
-    T.track('job_saved', { from: 'card' })
-    T.track('job_saved', { from: 'card' })
-    T.track('job_saved', { from: 'panel' })
+    T.track('job_opened', { link_kind: 'direct' })
+    T.track('job_opened', { link_kind: 'direct' })
+    T.track('job_opened', { link_kind: 'board' })
     expect(calls.length).toBe(2)
   })
 
