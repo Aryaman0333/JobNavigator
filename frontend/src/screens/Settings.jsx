@@ -6,6 +6,7 @@ import { useTheme, MODE_OPTIONS, themeOptions } from '../theme'
 import { describeCron, whenShort, CRON_PRESETS } from '../time'
 import api, { authFailure } from '../api'
 import { MAX_ACCOUNTS, useFlushBeforeSwitch } from '../accounts'
+import { PURPOSE, SENT, TelemetrySettingRow } from '../TelemetryChoice'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useToasts, ToastStack } from '../Toast'
 import {
@@ -755,6 +756,10 @@ export default function Settings() {
         { kind: 'apikey', label: 'Dashboard API key', help: 'Saving refreshes the session cookie so iframes keep working.' },
         BT('DB backup', 'DB snapshot now, outside the cron.', 'Run backup', () => api.post('/db/backup'), { ownerOnly: true }),
       ]],
+      ['telemetry', 'System', 'Telemetry', '', [
+        { kind: 'telemetry', label: 'Allow telemetry', help: PURPOSE,
+          info: `${SENT.essentials} ${SENT.full} ${SENT.never} ${SENT.off}` },
+      ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [S, resumes, personaAvailable, trig, li, multi, isOwner, hasMe, sidx, gmail, effective])
@@ -1116,6 +1121,8 @@ function Row({ r, ctx }) {
         return <Mono style={{ fontSize: 11.5, userSelect: 'all', overflowWrap: 'anywhere' }}>{r.text}</Mono>
       case 'apikey':
         return <ApiKeyRow value={val('dashboard_api_key')} save={save} flash={flash} />
+      case 'telemetry':
+        return <TelemetrySettingRow />
       case 'readonly': {
         const set = !!val(r.key)
         if (!set) return <Helper style={{ flex: 1, minWidth: 0 }}>{r.emptyText || 'Not set'}</Helper>
