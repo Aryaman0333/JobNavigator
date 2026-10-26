@@ -118,12 +118,16 @@ _SECTIONS = [
     ("linkedin", "LinkedIn", POLICY, OWN, ["linkedin"], [
         "linkedin_email", "linkedin_password", "linkedin_mock_email", "linkedin_mock_password"]),
     ("advanced", "Advanced", OWNER_ONLY, INHERIT, ["advanced"], ["proxy_url", "dashboard_api_key"]),
+    # telemetry/level.py: one choice per install, the owner's (JN_TELEMETRY overrides it)
+    ("telemetry", "Telemetry", OWNER_ONLY, INHERIT, ["telemetry"], ["telemetry_level"]),
     # Not a section of the Settings screen. MT-19: the token is connected from a row in Email
     # classification (GET /api/gmail/connect); gmail_token_status = the "expired" marker after
     # an invalid_grant (never served).
     ("gmail", "Gmail", OWN_ALWAYS, OWN, [], ["gmail_processed_ids", "gmail_refresh_token", "gmail_token_status"]),
     # account_cookie_secret: HMAC key of the jn_account cookie (MT-10); never served.
-    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "llm_local_seed_cleared", "account_cookie_secret"]),
+    # telemetry_install_id / telemetry_last_sent_at: telemetry state, never served.
+    ("system", "System", OWNER_ONLY, INHERIT, [], ["llm_seeded_models", "llm_local_seed_cleared", "account_cookie_secret",
+                                                   "telemetry_install_id", "telemetry_last_sent_at"]),
 ]
 
 SETTING_SECTIONS = {

@@ -23,6 +23,7 @@ from backend.api.routes_resumes import router as resumes_router
 from backend.api.routes_persona import router as persona_router
 from backend.api.routes_cover_letters import router as cover_letters_router
 from backend.api.routes_linkedin import router as linkedin_router
+from backend.api.routes_telemetry import router as telemetry_router
 from backend.api.routes_autofill import router as autofill_router
 from backend.api.routes_llm import router as llm_router
 from backend.api.routes_accounts import router as accounts_router
@@ -624,6 +625,7 @@ app.include_router(resumes_router, prefix="/api")
 app.include_router(persona_router, prefix="/api")
 app.include_router(cover_letters_router, prefix="/api")
 app.include_router(linkedin_router, prefix="/api")
+app.include_router(telemetry_router, prefix="/api")
 app.include_router(autofill_router, prefix="/api")
 app.include_router(llm_router, prefix="/api")
 app.include_router(accounts_router, prefix="/api")
