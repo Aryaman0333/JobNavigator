@@ -48,8 +48,8 @@ def mock_jar(tmp_path, monkeypatch):
     return ready
 
 
-async def _run(fetch, per_run=20, resolve=_no_resolve):
-    return await ll.run_lookup(per_run=per_run, fetch=fetch, pause=0, resolve=resolve)
+async def _run(fetch, per_run=20, resolve=_no_resolve, check=None):
+    return await ll.run_lookup(per_run=per_run, fetch=fetch, pause=0, resolve=resolve, check=check)
 
 
 @pytest.mark.asyncio
@@ -114,6 +114,110 @@ async def test_lookup_follows_a_short_employer_link(test_db):
                resolve=resolve)
     test_db.refresh(job)
     assert job.apply_url == GH and job.posting_key == "greenhouse:4012345"
+
+
+def test_ad_redirectors_are_short_links():
+    from backend.scraper._shared.postings import is_short_link
+    assert is_short_link("https://tnl2.jometer.com/v2/job?jz=581jn4dfa&utm_source=joveo")
+    assert is_short_link("https://jsv3.recruitics.com/redirect?rx_cid=3374&rx_jobId=JP-1")
+    assert is_short_link("https://ars2.equest.com/?icid=linkedin_recruitics")
+    assert not is_short_link("https://www.wellsfargojobs.com/en/jobs/r-581137/x/")
+
+
+@pytest.mark.asyncio
+async def test_lookup_follows_an_ad_redirector(test_db):
+    job = _li(test_db)
+    wf = "https://www.wellsfargojobs.com/en/jobs/r-581137/senior-lead-pm/"
+
+    async def resolve(url):
+        return wf if "jometer.com" in url else url
+    await _run(FakeLinkedIn({"4461186967": {"apply_url": "https://tnl2.jometer.com/v2/job?jz=1",
+                                            "apply_type": "OffsiteApply", "job_state": "LISTED"}}),
+               resolve=resolve)
+    test_db.refresh(job)
+    assert job.apply_url == wf and job.link_kind == "direct" and job.open_state is None
+
+
+@pytest.mark.asyncio
+async def test_a_dead_redirector_is_retried_while_listed_and_gone_when_closed(test_db):
+    listed, closed = _li(test_db, lid="4461186961"), _li(test_db, lid="4461186962", title="PM 2")
+    ad = {"apply_url": "https://tnl2.jometer.com/v2/job?jz=dead", "apply_type": "OffsiteApply"}
+    out = await _run(FakeLinkedIn({"4461186961": dict(ad, job_state="LISTED"),
+                                   "4461186962": dict(ad, job_state="CLOSED")}))
+    test_db.refresh(listed)
+    test_db.refresh(closed)
+    assert test_db.get(LinkedinLookup, "4461186961") is None and listed.open_state is None
+    assert test_db.get(LinkedinLookup, "4461186962").result == "gone"
+    assert closed.open_state == "closed" and closed.open_reason == ll.GONE_REASON
+    assert out["gone"] == 1 and out["closed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_redirector_landing_on_an_error_page_is_no_employer_link(test_db):
+    job = _li(test_db)
+
+    async def resolve(url):
+        return "https://apply.deloitte.com/en_US/careers/Error"
+    await _run(FakeLinkedIn({"4461186967": {"apply_url": "https://tnl2.jometer.com/v2/job?jz=1",
+                                            "apply_type": "OffsiteApply", "job_state": "CLOSED"}}),
+               resolve=resolve)
+    test_db.refresh(job)
+    assert job.apply_url is None and job.open_state == "closed"
+    assert test_db.get(LinkedinLookup, "4461186967").result == "gone"
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_listing_marks_the_job_closed(test_db):
+    job = _li(test_db)
+    await _run(FakeLinkedIn({"4461186967": {"status": 404}}))
+    test_db.refresh(job)
+    assert job.open_state == "closed" and job.open_reason == ll.GONE_REASON and job.open_checked_at
+
+
+@pytest.mark.asyncio
+async def test_closed_on_linkedin_with_an_employer_link_asks_the_employer(test_db):
+    """The employer's page decides; when it says nothing definite, LinkedIn's word stands."""
+    still_open, gone, silent = (_li(test_db, lid=f"446118697{i}", title=f"PM {i}") for i in range(3))
+    links = {f"446118697{i}": f"https://job-boards.greenhouse.io/acme/jobs/40{i}" for i in range(3)}
+    answers = {lid: {"apply_url": url, "apply_type": "OffsiteApply", "job_state": "CLOSED"}
+               for lid, url in links.items()}
+    verdicts = {links["4461186970"]: ("open", ""), links["4461186971"]: ("closed", "Greenhouse: the posting is gone"),
+                links["4461186972"]: ("unknown", "the page could not be reached")}
+    asked = []
+
+    async def check(url):
+        asked.append(url)
+        return verdicts[url]
+    out = await _run(FakeLinkedIn(answers), check=check)
+    for j in (still_open, gone, silent):
+        test_db.refresh(j)
+    assert sorted(asked) == sorted(links.values())
+    assert still_open.open_state == "open" and still_open.apply_url == links["4461186970"]
+    assert gone.open_state == "closed" and gone.open_reason == "Greenhouse: the posting is gone"
+    assert silent.open_state == "closed" and silent.open_reason == ll.CLOSED_REASON
+    assert out["employer"] == 3 and out["closed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_listed_job_is_not_checked_or_closed(test_db):
+    job = _li(test_db)
+
+    async def check(url):
+        raise AssertionError("not asked")
+    await _run(FakeLinkedIn({"4461186967": {"apply_url": GH, "apply_type": "OffsiteApply", "job_state": "LISTED"}}),
+               check=check)
+    test_db.refresh(job)
+    assert job.open_state is None
+
+
+@pytest.mark.asyncio
+async def test_a_cached_closed_answer_closes_new_rows(test_db):
+    test_db.add(LinkedinLookup(linkedin_id="4461186967", apply_url=GH, result="employer", job_state="CLOSED"))
+    test_db.commit()
+    job = _li(test_db)
+    await _run(FakeLinkedIn({}))
+    test_db.refresh(job)
+    assert job.apply_url == GH and job.open_state == "closed" and job.open_reason == ll.CLOSED_REASON
 
 
 @pytest.mark.asyncio

@@ -66,8 +66,18 @@ def pending_ids(db, limit: int) -> list:
     return [i for i in ids if i not in final][:limit]
 
 
-def apply_result(db, linkedin_id: str, apply_url, result: str) -> int:
-    """Give every account's rows of this LinkedIn job the answer. Returns rows changed."""
+GONE_REASON = "LinkedIn: the listing is gone"
+CLOSED_REASON = "LinkedIn: no longer accepting applications"
+
+
+def closed_on_linkedin(job_state) -> bool:
+    return str(job_state or "").upper() == "CLOSED"
+
+
+def apply_result(db, linkedin_id: str, apply_url, result: str, closed=None) -> int:
+    """Give every account's rows of this LinkedIn job the answer. Returns rows changed.
+    `closed` = (state, reason) to store as the rows' open state (a closed or gone listing)."""
+    from datetime import datetime, timezone
     from sqlalchemy import or_
     from backend.models.db import Job
     from backend.scraper._shared.posting_links import key_of, relink
@@ -75,6 +85,10 @@ def apply_result(db, linkedin_id: str, apply_url, result: str) -> int:
             .filter(Job.posting_key == f"linkedin:{linkedin_id}",
                     or_(Job.link_kind.in_((BOARD, EASY_APPLY)), Job.link_kind.is_(None)),
                     Job.status != "ignored").all())
+    if closed:
+        for job in rows:
+            job.open_state, job.open_reason = closed
+            job.open_checked_at = datetime.now(timezone.utc)
     if result == "employer" and apply_url:
         for job in rows:
             job.apply_url = apply_url
@@ -86,10 +100,44 @@ def apply_result(db, linkedin_id: str, apply_url, result: str) -> int:
     elif result == EASY_APPLY:
         for job in rows:
             job.link_kind = EASY_APPLY
-    else:
+    elif not closed:
         return 0
     db.commit()
     return len(rows)
+
+
+def _error_page(url) -> bool:
+    """A redirect that ended on the careers site's error page (…/careers/Error): no posting."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url).path.rstrip("/").lower().endswith("/error")
+    except Exception:
+        return False
+
+
+def _cached_closed(row):
+    """The open state a cached answer gives its rows, or None."""
+    if row.result == "gone":
+        return "closed", GONE_REASON
+    if closed_on_linkedin(row.job_state):
+        return "closed", CLOSED_REASON
+    return None
+
+
+async def _closed_state(result, link, job_state, check=None):
+    """The open state a fresh answer gives its rows, or None. A listing LinkedIn closed whose
+    employer link is known: the employer's page decides (the posting may still be open there);
+    when that page says nothing definite, LinkedIn's word stands."""
+    if result == "gone":
+        return "closed", GONE_REASON
+    if not closed_on_linkedin(job_state):
+        return None
+    if result == "employer" and link:
+        from backend.scraper._shared.still_open import UNKNOWN, check_link
+        state, reason = await (check or check_link)(link)
+        if state != UNKNOWN:
+            return state, reason or None
+    return "closed", CLOSED_REASON
 
 
 def _verdict(d):
@@ -281,20 +329,23 @@ async def resolve_stored_short_links(limit: int = 50, follow=None) -> int:
     return done
 
 
-async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=None, follow=None) -> dict:
-    """One lookup run: every account's pending LinkedIn rows, then stored short links (install-level)."""
-    out = await _linkedin_pass(per_run, fetch, pause, resolve)
+async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=None, follow=None,
+                     check=None) -> dict:
+    """One lookup run: every account's pending LinkedIn rows, then stored short links (install-level).
+    `check` replaces still_open.check_link (tests)."""
+    out = await _linkedin_pass(per_run, fetch, pause, resolve, check)
     out["short_links"] = await resolve_stored_short_links(limit=50, follow=follow)
     logger.info(f"LinkedIn lookup: {out}")
     return out
 
 
-async def _linkedin_pass(per_run: int, fetch, pause: float, resolve) -> dict:
+async def _linkedin_pass(per_run: int, fetch, pause: float, resolve, check=None) -> dict:
     from backend.accounts.context import unscoped
     from backend.models.db import LinkedinLookup, SessionLocal
     from backend.scraper._shared.postings import resolve_short_link
     resolve = resolve or resolve_short_link
-    out = {"looked_up": 0, "employer": 0, "easy_apply": 0, "board": 0, "gone": 0, "cached": 0, "stopped": None}
+    out = {"looked_up": 0, "employer": 0, "easy_apply": 0, "board": 0, "gone": 0, "closed": 0,
+           "cached": 0, "stopped": None}
     # unscoped: an install-level pass over every account's rows; every query below and in
     # posting_links names the account it reads.
     with unscoped():
@@ -305,7 +356,8 @@ async def _linkedin_pass(per_run: int, fetch, pause: float, resolve) -> dict:
                       db.query(LinkedinLookup).filter(LinkedinLookup.linkedin_id.in_(ids)).all()} if ids else {}
             for lid in ids:
                 if lid in cached:
-                    apply_result(db, lid, cached[lid].apply_url, cached[lid].result)
+                    apply_result(db, lid, cached[lid].apply_url, cached[lid].result,
+                                 _cached_closed(cached[lid]))
                     out["cached"] += 1
             todo = [i for i in ids if i not in cached][:per_run]
             if not todo:
@@ -332,17 +384,25 @@ async def _linkedin_pass(per_run: int, fetch, pause: float, resolve) -> dict:
                     result, link = verdict
                     if result == "unknown":
                         continue
+                    job_state = d.get("job_state") or None
                     if result == "employer":
                         link = unwrap(await resolve(link))
-                        if is_short_link(link):     # did not resolve: an error, not an answer
-                            continue
-                        if link_kind(link, None) != DIRECT:
+                        if is_short_link(link) or _error_page(link):
+                            # did not resolve: an error, not an answer, unless LinkedIn closed the
+                            # listing (an expired ad redirector answers 500)
+                            if not closed_on_linkedin(job_state):
+                                continue
+                            result, link = "gone", None
+                        elif link_kind(link, None) != DIRECT:
                             result = "board"
                     db.merge(LinkedinLookup(linkedin_id=lid, apply_url=link, result=result,
-                                            job_state=(d.get("job_state") or None)))
-                    db.commit()
-                    apply_result(db, lid, link, result)
+                                            job_state=job_state))
+                    db.commit()   # no pooled connection waits on the employer's page
+                    closed = await _closed_state(result, link, job_state, check)
+                    apply_result(db, lid, link, result, closed)
                     out[result] += 1
+                    if closed and closed[0] == "closed":
+                        out["closed"] += 1
         finally:
             db.close()
     return out

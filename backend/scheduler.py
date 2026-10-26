@@ -483,7 +483,8 @@ async def lookup_after_scrape():
         async with tracked_run("linkedin_lookup", "after scrape") as run:
             out = await ll.run_lookup(per_run=ll.PER_RUN)
             run.summary = (f"{out['looked_up']} looked up - {out['employer']} employer links - "
-                           f"{out['easy_apply']} Easy Apply - {out['cached']} from earlier answers - "
+                           f"{out['easy_apply']} Easy Apply - {out.get('closed', 0)} closed - "
+                           f"{out['cached']} from earlier answers - "
                            f"{out['short_links']} short links followed"
                            + (f" - stopped: {out['stopped']}" if out["stopped"] else ""))
     except JobAlreadyRunningError as e:

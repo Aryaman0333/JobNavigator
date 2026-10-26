@@ -465,7 +465,9 @@ def unwrap(url: str) -> str:
 
 # Hosts that only redirect to a posting: Greenhouse's and LinkedIn's short links, and the
 # Appcast and Phenom click trackers job ads go through.
-SHORT_LINK_HOSTS = ("grnh.se", "lnkd.in", "click.appcast.io", "prng.co")
+# Short links and job-ad redirectors (Joveo's jometer.com, Recruitics, eQuest): followed to the posting.
+SHORT_LINK_HOSTS = ("grnh.se", "lnkd.in", "click.appcast.io", "prng.co",
+                    "jometer.com", "recruitics.com", "equest.com")
 
 
 def is_short_link(url) -> bool:
