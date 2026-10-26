@@ -15,13 +15,33 @@ def sent(monkeypatch, test_db):
 
     def handler(request):
         import json
-        calls.append((request.headers.get("user-agent"), json.loads(request.content)))
-        return httpx.Response(200, json={"ok": True})
+        assert request.url.path == "/api/batch"
+        batch = json.loads(request.content)
+        REQUESTS.append(len(batch))
+        calls.extend((request.headers.get("user-agent"), b) for b in batch)
+        return httpx.Response(200, json={"size": len(batch), "processed": len(batch), "errors": 0})
+
+    async def no_timer():
+        return None
+    REQUESTS.clear()
     monkeypatch.setattr(U, "_transport", httpx.MockTransport(handler))
     monkeypatch.setattr(U, "UMAMI_WEBSITE_ID", "site-123")
     monkeypatch.setattr(U, "_session", sessionmaker(bind=test_db.get_bind()))
+    monkeypatch.setattr(U, "_queue", [])
+    monkeypatch.setattr(U, "_flusher", None)
+    monkeypatch.setattr(U, "_flush_later", no_timer)
+    monkeypatch.setattr(U, "BATCH_PAUSE", 0)
     monkeypatch.delenv("JN_TELEMETRY", raising=False)
     return calls
+
+
+REQUESTS = []   # events per request, in order
+
+
+@pytest.mark.asyncio
+async def test_events_go_in_batches_of_50(sent):
+    assert await U.send([("scraper_health", {"n": i}) for i in range(120)]) == 120
+    assert REQUESTS == [50, 50, 20]
 
 
 @pytest.mark.asyncio
@@ -78,6 +98,8 @@ async def test_relay_forwards_only_at_full(sent, test_db, client):
     set_setting(test_db, "telemetry_level", "full")
     assert client.post("/api/telemetry/event", json={"name": "job_opened", "data": {"link_kind": "direct"},
                                                      "url": "/feed"}).json() == {"sent": True}
+    assert sent == []                      # queued, sent with the others
+    assert await U.flush_relayed() == 1
     payload = sent[-1][1]["payload"]
     assert payload["hostname"] == "jobnavigator.local" and payload["url"] == "/feed" and payload["name"] == "job_opened"
     assert payload["data"]["link_kind"] == "direct" and len(payload["data"]["install_id"]) == 36
@@ -87,6 +109,7 @@ async def test_relay_forwards_only_at_full(sent, test_db, client):
 async def test_relay_page_view_is_an_umami_page_view(sent, test_db, client):
     set_setting(test_db, "telemetry_level", "full")
     client.post("/api/telemetry/event", json={"name": "page_view", "data": {}, "url": "/resumes/:id"})
+    await U.flush_relayed()
     payload = sent[-1][1]["payload"]
     assert payload["url"] == "/resumes/:id" and "name" not in payload
 
@@ -107,6 +130,7 @@ async def test_relay_is_rate_limited(sent, test_db, monkeypatch):
     monkeypatch.setattr(U, "_relayed", [])
     results = [await U.relay("job_saved", {}, "/feed") for _ in range(5)]
     assert results == [True, True, True, False, False]
+    assert await U.flush_relayed() == 3 and REQUESTS == [3]   # one request for the lot
 
 
 @pytest.mark.asyncio

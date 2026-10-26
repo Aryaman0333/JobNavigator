@@ -1,5 +1,6 @@
 """Sending events to the maintainer's Umami (`/api/send`). Fire and forget: a send never raises,
 and nothing is sent when the owner has not chosen, JN_TELEMETRY=off, or no website id is set."""
+import asyncio
 import logging
 import re
 import time
@@ -12,7 +13,7 @@ from backend.telemetry import level as L
 logger = logging.getLogger("jobnavigator.telemetry")
 
 UMAMI_HOST = "https://a.viktoresadze.com"
-UMAMI_WEBSITE_ID = ""   # Umami › Settings › Websites › JobNavigator app; empty = nothing is sent
+UMAMI_WEBSITE_ID = "2e5ee60a-d056-47cc-86d8-e9b3ab51fede"   # Umami › Settings › Websites › JobNavigator app; empty = nothing is sent
 HOSTNAME = "jobnavigator.local"   # never the install's own domain (Umami wants a dotted name)
 TIMEOUT = 10.0
 _transport = None           # tests put an httpx.MockTransport here
@@ -35,18 +36,36 @@ def body(name: str, data: dict, url: str = "/server") -> dict:
     return {"type": "event", "payload": payload}
 
 
+# The Umami host sits behind a rate limit (about 4 requests in 10 s): events go in batches
+# (/api/batch), a few seconds apart.
+BATCH_SIZE = 50
+BATCH_PAUSE = 3.0
+
+
 async def send(events, url: str = "/server") -> int:
-    """POST each (name, data); returns how many Umami accepted."""
-    if not UMAMI_WEBSITE_ID or not events:
+    """POST (name, data) events in batches; returns how many Umami processed."""
+    return await _post_batches([body(name, data, url) for name, data in events])
+
+
+async def _post_batches(bodies) -> int:
+    if not UMAMI_WEBSITE_ID or not bodies:
         return 0
     sent = 0
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, transport=_transport,
                                      headers={"User-Agent": _user_agent()}) as client:
-            for name, data in events:
-                resp = await client.post(f"{UMAMI_HOST}/api/send", json=body(name, data, url))
+            for i in range(0, len(bodies), BATCH_SIZE):
+                if i and BATCH_PAUSE:
+                    await asyncio.sleep(BATCH_PAUSE)
+                chunk = bodies[i:i + BATCH_SIZE]
+                resp = await client.post(f"{UMAMI_HOST}/api/batch", json=chunk)
                 if resp.status_code < 300:
-                    sent += 1
+                    try:
+                        sent += int(resp.json().get("processed", len(chunk)))
+                    except (ValueError, AttributeError, TypeError):
+                        sent += len(chunk)
+                else:
+                    logger.warning(f"Telemetry batch refused: HTTP {resp.status_code}")
     except Exception as e:   # Umami down, no network: the app carries on
         logger.warning(f"Telemetry not sent: {type(e).__name__}")
     return sent
@@ -109,8 +128,30 @@ def clean_browser_event(name, data, url):
     return name, out, url
 
 
+RELAY_FLUSH_SECONDS = 30.0
+_queue: list = []
+_flusher = None
+
+
+async def flush_relayed() -> int:
+    """Send the queued browser events as one batch."""
+    batch = _queue[:]
+    _queue.clear()
+    return await _post_batches(batch)
+
+
+async def _flush_later():
+    global _flusher
+    try:
+        await asyncio.sleep(RELAY_FLUSH_SECONDS)
+        await flush_relayed()
+    finally:
+        _flusher = None
+
+
 async def relay(name, data, url) -> bool:
-    """One browser event, when the install is at `full`. Never raises."""
+    """Queue one browser event when the install is at `full` (sent with the others every 30 s).
+    Never raises."""
     from backend.accounts.context import unscoped
     ev = clean_browser_event(name, data, url)
     if ev is None or not UMAMI_WEBSITE_ID:
@@ -130,9 +171,13 @@ async def relay(name, data, url) -> bool:
                 db.close()
     except Exception:
         return False
+    global _flusher
     _relayed.append(now)
     name, data, url = ev
-    return await send([(name, {**data, "install_id": iid})], url=url) == 1
+    _queue.append(body(name, {**data, "install_id": iid}, url))
+    if _flusher is None:
+        _flusher = asyncio.ensure_future(_flush_later())
+    return True
 
 
 async def send_daily() -> int:
