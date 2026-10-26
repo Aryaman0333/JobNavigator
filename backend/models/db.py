@@ -360,6 +360,9 @@ class Job(AccountScoped, Base):
     open_checked_at = Column(DateTime(timezone=True), nullable=True)
     # 3.2: the same role, which the user skipped in another place; this copy stays in the feed.
     same_role_as = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    # 3.2: company + title as the same-role check reads it (same_role.role_hash: "Sr" is "Senior");
+    # set by posting_links for every row with a content_hash. content_hash stays the exact title.
+    role_hash = Column(String, nullable=True)   # indexed with account_id (seed.run_migrations)
     # deferred: avg 16 KB / 7 KB per row — list queries were hydrating both just to
     # compute one boolean. Use `has_cached_page` (SQL expression) for that instead.
     cached_page_html = deferred(Column(Text, nullable=True))

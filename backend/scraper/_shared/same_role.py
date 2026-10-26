@@ -79,6 +79,29 @@ def role_words(text, *locations) -> list:
             if not (w.startswith("$") or (w.isdigit() and (len(w) >= 3 or w == "00")) or w in drop)]
 
 
+# Title spellings of one word, and levels written as digits ("Engineer 2" is "Engineer II").
+_TITLE_WORDS = {"sr": "senior", "snr": "senior", "jr": "junior", "mgr": "manager", "engr": "engineer",
+                "dir": "director", "assoc": "associate", "mgmt": "management",
+                "1": "i", "2": "ii", "3": "iii", "4": "iv", "5": "v"}
+# A requisition number with its letter prefix: "R-482211", "JR363445-1".
+_TITLE_CODE = re.compile(r"\b(?:[a-z]+[-_/])?" + _CODES.pattern)
+
+
+def title_key(title) -> str:
+    """A title as the same-role check compares it: case, punctuation, word order, common short
+    forms ("Sr", "Mgr", "&") and requisition numbers do not count. Every word in brackets counts:
+    Sierra's "(Spanish speaking)" and "(Brazilian Portuguese speaking)" are two roles."""
+    t = _TITLE_CODE.sub(" ", html.unescape(str(title or "")).lower().replace("&", " and "))
+    return " ".join(sorted(_TITLE_WORDS.get(w, w) for w in re.findall(r"[a-z0-9]+", t)))
+
+
+def role_hash(company, title) -> str:
+    """The key jobs that may be one role share: the company and `title_key`."""
+    import hashlib
+    raw = f"{(company or '').strip().lower()}\n{title_key(title)}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def other_words(a: list, b: list) -> int:
     """How many words differ between two word lists (the longer side of each changed run)."""
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)

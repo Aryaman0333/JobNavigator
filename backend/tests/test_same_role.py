@@ -80,3 +80,22 @@ def test_a_text_the_company_uses_under_another_title_is_a_template():
     assert is_template(BODY, [BODY.replace("Senior Product Manager", "Staff Product Manager")])
     assert not is_template(BODY, ["A different role entirely, about sales operations and quota planning."])
     assert not is_template(BODY, [])
+
+
+def test_title_variants_are_one_title():
+    """PayPal's "Sr" and DigitalOcean's dash against comma, both from real postings."""
+    from backend.scraper._shared.same_role import title_key
+    assert title_key("Sr Lead Product Manager") == title_key("Senior Lead Product Manager")
+    assert title_key("Principal Product Manager - Inference Engine") == \
+        title_key("Principal Product Manager, Inference Engine")
+    assert title_key("Sr. Mgr, Product & Growth") == title_key("Senior Manager, Product and Growth")
+    assert title_key("Software Engineer 2") == title_key("Software Engineer II")
+    assert title_key("Product Manager (R-482211)") == title_key("Product Manager")
+
+
+def test_titles_that_name_another_role_stay_apart():
+    from backend.scraper._shared.same_role import title_key
+    assert title_key("Software Engineer II") != title_key("Software Engineer III")
+    assert title_key("Strategist (Spanish speaking)") != title_key("Strategist (Brazilian Portuguese speaking)")
+    assert title_key("Product Manager, Safeguards (Cyber)") != title_key("Product Manager, Safeguards (Generalist)")
+    assert title_key("Senior Product Manager") != title_key("Product Manager")

@@ -6,7 +6,8 @@ now gets a `posting_key` (postings.py) from its employer link (`apply_url`) or i
 link, and before it is written it is compared with the account's jobs:
 
 1. Same posting key as a job the feed already has: the newcomer is that posting again.
-2. Same role (same_role.py): the same company and title as a job from the last 60 days, and
+2. Same role (same_role.py): the same company and title as a job from the last 60 days (title
+   variants such as "Sr" / "Senior" count as one title: `role_hash`, same_role.title_key), and
    the same text word for word apart from ids, pay, dates and the two locations, in a text the
    company does not also use under another title. This covers a role listed once per city, several
    openings of one role, a re-post under a new id, and a board listing of the employer's posting.
@@ -38,7 +39,7 @@ from sqlalchemy import func
 
 from backend.scraper._shared.link_kinds import classify
 from backend.scraper._shared.postings import is_employer_key, posting_key, unwrap
-from backend.scraper._shared.same_role import is_template, same_text
+from backend.scraper._shared.same_role import is_template, role_hash, same_text, title_key
 
 logger = logging.getLogger("jobnavigator.posting_links")
 
@@ -128,6 +129,13 @@ def _norm(text) -> str:
     return (text or "").strip().lower()
 
 
+def _role(job):
+    """The job's role_hash (company + title as same_role.title_key reads it), set when missing."""
+    if job.role_hash is None and (job.company or job.title):
+        job.role_hash = role_hash(job.company, job.title)
+    return job.role_hash
+
+
 class Batch:
     """The jobs of the flush being linked: the queries run with autoflush off and do not see them."""
 
@@ -145,21 +153,22 @@ class Batch:
         for k in dict.fromkeys([job.posting_key] + keys_of(job)):
             if k:
                 self.keys.setdefault((job.account_id, k), job)
-        if job.content_hash:
-            self.titles.setdefault((job.account_id, job.content_hash), []).append(job)
+        if job.content_hash and _role(job):
+            self.titles.setdefault((job.account_id, job.role_hash), []).append(job)
 
 
 def company_template(session, job, batch: Batch) -> bool:
-    """True when the company uses this job's text under another title (same_role.is_template)."""
+    """True when the company uses this job's text under another title (same_role.is_template).
+    Titles are compared as title_key reads them: "Sr PM" and "Senior PM" are one title."""
     from backend.models.db import Job
 
-    company, title = _norm(job.company), _norm(job.title)
+    company, title = _norm(job.company), title_key(job.title)
     texts = [o.description for o in batch.companies.get((job.account_id, company), [])
-             if o is not job and _norm(o.title) != title and o.description]
+             if o is not job and title_key(o.title) != title and o.description]
     rows = (session.query(Job.description)
             .filter(Job.account_id == job.account_id,
                     func.lower(func.trim(Job.company)) == company,
-                    func.lower(func.trim(Job.title)) != title,
+                    Job.role_hash != _role(job),
                     Job.description.isnot(None), Job.discovered_at >= _since())
             .limit(_TEMPLATE_ROWS).all())
     texts += [d for (d,) in rows]
@@ -174,10 +183,10 @@ def _proven(job, others) -> list:
 def _same_title(session, job, batch: Batch, query_filter=None) -> list:
     from backend.models.db import Job
 
-    if not job.content_hash or not job.description:
+    if not job.content_hash or not job.description or not _role(job):
         return []
     q = (session.query(Job)
-         .filter(Job.account_id == job.account_id, Job.content_hash == job.content_hash,
+         .filter(Job.account_id == job.account_id, Job.role_hash == job.role_hash,
                  Job.description.isnot(None), Job.discovered_at >= _since()))
     if query_filter is not None:
         q = q.filter(query_filter(Job))
@@ -248,7 +257,7 @@ def find_original(session, job, batch: Batch):
         return None, (elsewhere or [None])[0]
     employer = is_employer_key(key)
     candidates = _same_title(session, job, batch, _visible)
-    candidates += [o for o in batch.titles.get((acct, job.content_hash), [])
+    candidates += [o for o in batch.titles.get((acct, _role(job)), [])
                    if o is not job and o.status not in NOT_TARGETS and o.duplicate_of is None]
     if employer:
         candidates = [o for o in candidates if not (_listing_only(o) and (o.status or "new") == "new")]
@@ -287,7 +296,7 @@ def listing_copies(session, job, batch: Batch) -> list:
         return []
     untouched = _same_title(session, job, batch, lambda J: (J.status == "new") & (
         J.posting_key.is_(None) | J.posting_key.like("linkedin:%") | J.posting_key.like("indeed:%")))
-    untouched += [o for o in batch.titles.get((job.account_id, job.content_hash), [])
+    untouched += [o for o in batch.titles.get((job.account_id, _role(job)), [])
                   if o is not job and _listing_only(o) and (o.status or "new") == "new"]
     proven = _proven(job, untouched)
     if proven and company_template(session, job, batch):
@@ -305,6 +314,7 @@ def link_new_jobs(session, flush_context=None, instances=None) -> None:
     batch = Batch()
     with session.no_autoflush:
         for job in new:
+            _role(job)
             if job.posting_key is None:
                 job.posting_key = key_of(job)
             if job.apply_url is None:
@@ -365,8 +375,8 @@ class _CompanyTexts:
                     .filter(Job.account_id == self.account_id,
                             func.lower(func.trim(Job.company)) == company,
                             Job.description.isnot(None)).all())
-            self.cache[company] = [(_norm(t), d, shingles(desc)) for t, d, desc in rows]
-        title, when = _norm(job.title), job.discovered_at
+            self.cache[company] = [(title_key(t), d, shingles(desc)) for t, d, desc in rows]
+        title, when = title_key(job.title), job.discovered_at
         window = timedelta(days=SAME_ROLE_DAYS)
         others = [sh for t, d, sh in self.cache[company]
                   if t != title and (when is None or d is None or abs(d - when) <= window)]
@@ -374,7 +384,7 @@ class _CompanyTexts:
 
 
 def _same_role_stored(a, b, templates: _CompanyTexts) -> bool:
-    return bool(a.content_hash and a.content_hash == b.content_hash
+    return bool(a.content_hash and b.content_hash and a.role_hash and a.role_hash == b.role_hash
                 and same_text(a.description, b.description, a.location, b.location)
                 and not templates.template(a))
 
@@ -416,7 +426,7 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
     db.commit()
 
     cols = (Job.id, Job.posting_key, Job.url, Job.apply_url, Job.status, Job.discovered_at,
-            Job.content_hash, Job.company, Job.title, Job.location, Job.description,
+            Job.content_hash, Job.role_hash, Job.company, Job.title, Job.location, Job.description,
             Job.loc_country, Job.loc_region, Job.loc_city, Job.same_role_as)
     rows = (db.query(*cols).filter(Job.account_id == account_id, Job.duplicate_of.is_(None),
                                    _visible(Job)).all())
@@ -439,9 +449,9 @@ def relink_account(db, account_id, batch: int = 500) -> dict:
     by_title: dict = {}
     window = timedelta(days=SAME_ROLE_DAYS)
     for r in rows:
-        if r.id in moves or not r.content_hash or not r.description:
+        if r.id in moves or not r.content_hash or not r.role_hash or not r.description:
             continue
-        kept = by_title.setdefault(r.content_hash, [])
+        kept = by_title.setdefault(r.role_hash, [])
         if (r.status or "new") == "new":
             elsewhere = []
             proven = [k for k in kept

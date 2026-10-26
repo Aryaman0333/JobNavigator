@@ -674,6 +674,9 @@ def run_migrations(db):
         # 3.2: a role skipped in one place, shown again in another
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS same_role_as UUID REFERENCES jobs(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_jobs_acct_content_hash ON jobs (account_id, content_hash)",
+        # 3.2: title variants ("Sr" / "Senior") of one role (same_role.role_hash)
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS role_hash VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_acct_role_hash ON jobs (account_id, role_hash)",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_summary",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_strengths",
         "ALTER TABLE jobs DROP COLUMN IF EXISTS fit_gaps",
@@ -1443,7 +1446,7 @@ def migrate_posting_keys(db, batch: int = 1000) -> dict:
     """On start, when the stored posting keys were read by older readers (postings.READER_VERSION):
     key every stored job again and bring its duplicates in line (scraper/_shared/posting_links.py).
 
-    Every job gets `posting_key` from its links, and `apply_url` when its link wraps the employer's
+    Every job gets `role_hash` (same_role.role_hash), `posting_key` from its links, and `apply_url` when its link wraps the employer's
     posting (a click tracker); no request is made. A key a row took over from its duplicate (an
     employer key on a board listing) is kept when its own link names no employer posting. Then each
     account is relinked (posting_links.relink_account): duplicates linked by company and title alone,
@@ -1454,6 +1457,7 @@ def migrate_posting_keys(db, batch: int = 1000) -> dict:
     from backend.scraper._shared.link_kinds import classify
     from backend.scraper._shared.posting_links import employer_link, key_of, relink_account
     from backend.scraper._shared.postings import READER_VERSION, is_employer_key
+    from backend.scraper._shared.same_role import role_hash
     row = install_row(db, POSTING_KEYS_MIGRATED_KEY)
     done = int(row.value) if row is not None and str(row.value or "").isdigit() else 0
     if done >= READER_VERSION:
@@ -1463,6 +1467,7 @@ def migrate_posting_keys(db, batch: int = 1000) -> dict:
     jobs = (job for i in range(0, len(ids), batch)
             for job in _chunk_then_commit(db, Job, ids[i:i + batch]))
     for job in jobs:
+        job.role_hash = role_hash(job.company, job.title) if (job.company or job.title) else None
         key = key_of(job)
         taken_over = is_employer_key(job.posting_key) and not is_employer_key(key)
         if key != job.posting_key and not taken_over:

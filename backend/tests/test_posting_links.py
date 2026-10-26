@@ -529,3 +529,43 @@ def test_the_api_names_a_copys_original(test_db, api_client):
     assert body["copy_kind"] == "city"
     assert body["copy_of"] == {"id": str(orig.id), "location": "Seattle, WA", "source": "jobright"}
     assert api_client.get(f"/api/jobs/{orig.id}").json()["copy_of"] is None
+
+
+def test_a_title_variant_with_the_same_text_is_the_same_role(test_db):
+    """PayPal posted one role as "Senior Lead Product Manager" and "Sr Lead Product Manager";
+    the other spelling is not a second title using the company's template."""
+    a = _job(test_db, "https://paypal.eightfold.ai/careers/job/274911111", company="PayPal",
+             title="Senior Lead Product Manager", description=BODY)
+    b = _job(test_db, "https://www.linkedin.com/jobs/view/4461186967", company="PayPal",
+             title="Sr Lead Product Manager", source="levels_fyi", description=BODY)
+    assert b.status == "ignored" and b.duplicate_of == a.id
+    assert a.role_hash == b.role_hash and a.content_hash != b.content_hash
+
+
+def test_a_title_variant_with_other_text_stays_a_job(test_db):
+    _job(test_db, "https://paypal.eightfold.ai/careers/job/274911111", company="PayPal",
+         title="Senior Lead Product Manager", description=BODY)
+    b = _job(test_db, "https://www.linkedin.com/jobs/view/4461186967", company="PayPal",
+             title="Sr Lead Product Manager", source="levels_fyi",
+             description=BODY.replace("card issuing", "merchant onboarding"))
+    assert b.status == "new"
+
+
+def test_backfill_links_stored_title_variants(test_db):
+    from backend.accounts.context import unscoped
+    from backend.seed import migrate_posting_keys
+    a, b = _stored(test_db,
+        (("https://job-boards.greenhouse.io/digitalocean/jobs/7001",),
+         dict(company="DigitalOcean", title="Principal Product Manager - Inference Engine", description=BODY, days_old=2)),
+        (("https://www.linkedin.com/jobs/view/4461186968",),
+         dict(company="DigitalOcean", title="Principal Product Manager, Inference Engine", description=BODY,
+              source="levels_fyi")))
+    for j in (a, b):
+        j.role_hash = None   # stored before role_hash existed
+    test_db.commit()
+    with unscoped():
+        out = migrate_posting_keys(test_db)
+    test_db.refresh(a)
+    test_db.refresh(b)
+    assert out["linked"] == 1
+    assert b.status == "ignored" and b.duplicate_of == a.id

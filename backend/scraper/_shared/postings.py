@@ -27,7 +27,9 @@ logger = logging.getLogger("jobnavigator.postings")
 # 4: link kinds, readers for more systems (direct-links plan).
 # 5: lnkd.in is a board link; an employer link on an unknown company site counts as direct.
 # 6: copies classified link | city | repost, each to Ignored or New (no more 'duplicate' status).
-READER_VERSION = 6
+# 7: title variants are one title (same_role.title_key, stored as role_hash); raise it when
+#    title_key changes.
+READER_VERSION = 7
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
