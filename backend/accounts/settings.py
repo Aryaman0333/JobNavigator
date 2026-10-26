@@ -64,7 +64,8 @@ def _llm_keys() -> list:
 
 # (id, label, scope, default mode, Settings-screen sections it appears in, keys)
 _SECTIONS = [
-    ("feed", "Feed", POLICY, OWN, ["feed"], ["feed_zoom_floater"]),
+    # shown under Display on the Settings screen, with the browser-only look rows
+    ("feed", "Feed", POLICY, OWN, ["appearance"], ["feed_zoom_floater"]),
     # claude_code_oauth_token: the Claude Code subscription login per account (MT-15).
     ("models", "Models", POLICY, INHERIT, ["models"], _llm_keys() + ["llm_models_list", "claude_code_oauth_token"]),
     # The host's local model servers: one address per install, so a member cannot point the
@@ -98,7 +99,7 @@ _SECTIONS = [
         "body_exclusion_phrases", "title_exclude_global", "company_exclude_global"]),
     ("dedup", "Dedup tracking params", OWNER_ONLY, INHERIT, ["dedup"], ["dedup_tracking_params"]),
     # where each kind of copy goes (posting_links.py): ignored (default) or new
-    ("copies", "Copies of a posting", POLICY, INHERIT, ["dedup"], [
+    ("copies", "Copies of a posting", POLICY, INHERIT, ["copies"], [
         "dedup_copy_link", "dedup_copy_city", "dedup_copy_repost"]),
     # MT-17: telegram_bot_mode / telegram_bot_token pick a member's own bot (the owner always
     # uses the household bot); telegram_own_webhook_secret signs that bot's webhook (never served).

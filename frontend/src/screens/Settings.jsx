@@ -513,16 +513,17 @@ export default function Settings() {
       : [['account', 'You', 'Your account', '', [], 'account']]
     // which LLM slots currently run on a given provider (override slots default to empty = follow Primary)
     const usedBy = (prov) => CLAUDE_CODE_SLOTS.filter((k) => val(k, k === 'llm_provider' ? 'claude_api' : '') === prov).map((k) => SLOT_NAMES[k])
+    // the (i) line that says why a provider row is showing: which model settings below use it
+    const usedLine = (prov) => { const s = usedBy(prov); return s.length ? ` Model settings using ${(PROVIDER_LABEL[prov] || prov).replace(/\s*\(.*\)$/, '')}: ${s.join(', ')}.` : '' }
     const primaryProv = val('llm_provider', 'claude_api')
     return [
       ...people,
-      // The one group that isn't a DB setting: both rows live in this browser's localStorage (theme.js), so they take no `key` and never PATCH /settings.
+      // Appearance and Theme live in this browser's localStorage (theme.js): no `key`, never PATCH /settings.
       // They sit first because they change what every screen below looks like.
       ['appearance', 'General', 'Display', '', [
         { kind: 'appearance', label: 'Appearance', help: 'Light, dark, or follow your OS. Saved in this browser.' },
         { kind: 'theme', label: 'Theme', help: 'The app’s look: colours, fonts and shapes. Saved in this browser.' },
-      ]],
-      ['feed', '', 'Feed', '', [
+        // a DB setting (feed_zoom_floater, the backend's "feed" section) shown with the look rows
         SW('Zoom control on postings', 'The small + / − floater top-right of a posting.', 'Hidden — postings open at last selected zoom level.', 'feed_zoom_floater',
           { dflt: true, info: 'Zoom is remembered per browser, not per job: set it once and every posting opens at that size. Both the live page and the cached copy are frames, so zoom scales the frame and the page reflows to the new width.' }),
       ]],
@@ -532,23 +533,25 @@ export default function Settings() {
           info: "Providers: Claude API, Claude Code, Codex CLI (your ChatGPT subscription), Antigravity CLI (Google subscription), OpenCode Go (subscription), OpenAI, Ollama (local), LM Studio (local), OpenRouter. The model list shows that provider's models, including any you added under Model catalog. OpenRouter covers every vendor with one key but has no prompt-cache discount. The subscription CLIs are meant for attended use and have plan limits; a limit hit fails over to the fallback without retrying. Reasoning effort sets how much the model thinks before it answers: higher is slower and costs more. 'default effort' keeps the model's own default. Not every model takes every level; Claude Code steps down to the nearest level, the APIs return an error. Antigravity CLI sets effort in the model name, and Ollama and LM Studio have no effort setting. Antigravity's -high models can think for 5 minutes on a tailoring or a PDF import; -medium answers in under a minute." },
         B('API key', keyHelp(primaryProv, member), PROVIDER_KEY[primaryProv] || 'anthropic_api_key', { secret: true, mono: true, w: '340px', hide: () => !PROVIDER_KEY[primaryProv] }),
         // MT-15: the Claude Code login per account. Shown while some slot uses Claude Code, to the owner and to a member whose Models section is its own.
-        B('Claude Code token', (member ? 'Your own Claude subscription: paste the token from claude setup-token.' : 'Token from claude setup-token. Empty uses CLAUDE_CODE_OAUTH_TOKEN from .env.')
-            + (usedBy('claude_code').length ? ` Used by: ${usedBy('claude_code').join(', ')}.` : ''),
+        B('Claude Code token', member ? 'Your own Claude subscription token.' : 'Empty uses CLAUDE_CODE_OAUTH_TOKEN from .env.',
           'claude_code_oauth_token', { secret: true, mono: true, w: '340px',
+            info: 'Run claude setup-token once in a terminal signed in to your Claude subscription and paste the token it prints.' + usedLine('claude_code'),
             hide: () => !usedBy('claude_code').length || (member && sidx?.byId?.models?.mode !== 'own') }),
         // The other two subscription CLIs keep their login in a folder, not a token: show how to log in.
-        { kind: 'note', label: 'Codex CLI login', help: `No token to paste: Codex signs in once from a terminal. Used by: ${usedBy('codex_cli').join(', ')}.`,
+        { kind: 'note', label: 'Codex CLI login', help: 'No token to paste: Codex signs in once from a terminal.',
+          info: 'Run the command below once; the login is kept for this account.' + usedLine('codex_cli'),
           text: 'docker compose exec backend python -m backend.scripts.cli_login codex "<account name>"', hide: () => !usedBy('codex_cli').length },
-        { kind: 'note', label: 'Antigravity CLI login', help: `No token to paste: Antigravity signs in once from a terminal. Used by: ${usedBy('antigravity_cli').join(', ')}.`,
+        { kind: 'note', label: 'Antigravity CLI login', help: 'No token to paste: Antigravity signs in once from a terminal.',
+          info: 'Run the command below once; the login is kept for this account.' + usedLine('antigravity_cli'),
           text: 'docker compose exec backend python -m backend.scripts.cli_login agy "<account name>"', hide: () => !usedBy('antigravity_cli').length },
         // The local model servers' addresses: owner-only settings (one host per install), shown to the owner while some slot uses that provider,
         // and always with several accounts, since a member's own slots may use it and the owner sets the address (R30 L-10).
-        B('LM Studio address', 'Empty uses LMSTUDIO_BASE_URL from .env, else http://localhost:1234/v1. From Docker: http://host.docker.internal:1234/v1.'
-            + (usedBy('lmstudio').length ? ` Used by: ${usedBy('lmstudio').join(', ')}.` : ''),
-          'lmstudio_base_url', { mono: true, w: '340px', placeholder: effective.lmstudio_base_url, hide: () => member || (!multi && !usedBy('lmstudio').length) }),
-        B('Ollama address', 'Empty uses OLLAMA_BASE_URL from .env, else http://localhost:11434. From Docker: http://host.docker.internal:11434.'
-            + (usedBy('ollama').length ? ` Used by: ${usedBy('ollama').join(', ')}.` : ''),
-          'ollama_base_url', { mono: true, w: '340px', placeholder: effective.ollama_base_url, hide: () => member || (!multi && !usedBy('ollama').length) }),
+        B('LM Studio address', 'Empty uses LMSTUDIO_BASE_URL from .env.', 'lmstudio_base_url', {
+          info: 'With neither set: http://localhost:1234/v1. The app runs in Docker, so LM Studio on this computer is http://host.docker.internal:1234/v1.' + usedLine('lmstudio'),
+          mono: true, w: '340px', placeholder: effective.lmstudio_base_url, hide: () => member || (!multi && !usedBy('lmstudio').length) }),
+        B('Ollama address', 'Empty uses OLLAMA_BASE_URL from .env.', 'ollama_base_url', {
+          info: 'With neither set: http://localhost:11434. The app runs in Docker, so Ollama on this computer is http://host.docker.internal:11434.' + usedLine('ollama'),
+          mono: true, w: '340px', placeholder: effective.ollama_base_url, hide: () => member || (!multi && !usedBy('ollama').length) }),
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
           { info: 'Used only when the scoring call fails or is rate-limited. One retry, then the job stays unscored until the next run. Choose a cheap model from a different provider than the primary.' }),
@@ -659,7 +662,7 @@ export default function Settings() {
       ['copies', '', 'Copies of a posting', '', [
         SEL('Same posting, another link', 'The same posting found again under another link, in the same city.', 'dedup_copy_link', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
         SEL('Same role, another city', 'The same posting or role listed in another city: the same job number, or a word-for-word identical description.', 'dedup_copy_city', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
-        SEL('Same role, new posting', 'The same role posted again under a new id in the same city, with a word-for-word identical description (ids, pay and dates aside): another opening or a repost.', 'dedup_copy_repost', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
+        SEL('Same role, new posting', 'The same role posted again under a new id in the same city, with a word-for-word identical description (repost).', 'dedup_copy_repost', [['ignored', 'Ignored — listed under ‘Also listed’'], ['new', 'New — stays in the feed']], { w: '260px', dflt: 'ignored' }),
       ]],
       ['notifications', 'Integrations', 'Notifications', '', [
         SW('Telegram', 'New high-scoring jobs and the daily digest are sent to your chat. The digest schedule is under Scheduler.', 'Off — no push notifications.', 'telegram_enabled'),
@@ -745,7 +748,7 @@ export default function Settings() {
         B('Mock account email', 'A separate account for the extension import and the employer-link lookup.', 'linkedin_mock_email',
           { w: '260px', info: 'Optional. Keeps rate limits, CAPTCHAs or bans off your real profile. Without a mock account the extension import uses the main session, and the employer-link lookup stays off: it never uses your own account.' }),
         B('Mock account password', 'Stored locally only.', 'linkedin_mock_password', { secret: true, w: '260px' }),
-        { kind: 'linkedin', which: 'mock', lockKey: 'linkedin_email', label: 'Mock session', help: 'Signed in with the mock account. The extension import uses it, and after every scrape it finds the employer’s apply link for new LinkedIn jobs.' },
+        { kind: 'linkedin', which: 'mock', lockKey: 'linkedin_email', label: 'Mock session', help: 'Signed in with the mock account. The extension import uses it, and after every scrape it finds the direct apply link.' },
       ]],
       ['advanced', 'System', 'Advanced', '', [
         B('Proxy URL', 'Used by scrapes that hit rate limits or geo-blocks. Empty = direct.', 'proxy_url', { mono: true, w: '340px', placeholder: 'socks5://127.0.0.1:9050' }),
@@ -935,7 +938,7 @@ export default function Settings() {
                   // `_meta.set_by_owner` (the value is blanked); the row says so, read-only.
                   const r = member && r0.key && meta?.[r0.key]?.set_by_owner ? { ...r0, kind: 'ownerset', ownerName } : r0
                   const row = <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, effortsFor, li, setLi, flash, defaults, narrow }} />
-                  const demo = !!S._demo && id !== 'appearance'   // the demo build's read-only settings (Display is browser-only, so it stays live)
+                  const demo = !!S._demo && (id !== 'appearance' || !!r.key)   // the demo build's read-only settings (Display's browser-only rows stay live)
                   if (!member && !meErr && !demo) return row
                   // MT-14: a row the member cannot edit shows its (owner's) value, dimmed and
                   // read-only. R6-06: not `inert` — that hid the value from screen readers; the
