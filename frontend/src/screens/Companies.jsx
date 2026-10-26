@@ -920,7 +920,7 @@ function TestModal({ test, onClose, showShots, setShowShots }) {
     + (bodyExcluded ? ` · ${bodyExcluded} would be ignored (body phrases)` : '')
     + ` · ${rejected} invalid`
     + (passCo != null && passCo !== kept ? ` · ${passCo} pass this company's filters · ${Math.max(0, passCo - kept - bodyExcluded)} removed by the global exclude list` : '')
-    + (bodyUnchecked ? ` · ${bodyUnchecked} not body-checked (needs the description)` : '')
+    + (bodyUnchecked ? ` · ${bodyUnchecked} with the posting body text check skipped` : '')
   const urls = test.urls_scraped || []
   const pag = test.pagination_debug || []
   const shots = test.screenshots || []
@@ -931,7 +931,7 @@ function TestModal({ test, onClose, showShots, setShowShots }) {
     if (j.kept) return {
       tag: 'Kept', tagBg: 'var(--accent-soft)', tagFg: 'var(--good)', reasonFg: 'var(--muted)',
       // a kept row the body scan couldn't run on is not a promise — say so
-      reason: j.reason || (bodyPhrases > 0 && j.body_checked === false ? 'body check needs the description' : ''),
+      reason: j.reason || (bodyPhrases > 0 && j.body_checked === false ? 'posting body text check was skipped' : ''),
     }
     if (j.reason?.startsWith('[Global]')) return { tag: 'Global', tagBg: 'var(--warn-soft)', tagFg: 'var(--warn)', reasonFg: 'var(--warn)', reason: j.reason.replace('[Global] ', '') }   // the global exclude list, not this company's filters
     return { tag: 'Out', tagBg: 'var(--bad-soft)', tagFg: 'var(--bad)', reasonFg: 'var(--bad)', reason: j.reason || '' }

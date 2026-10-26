@@ -202,7 +202,7 @@ describe('TrulyRemoteWork · v2 Searches', () => {
     fireEvent.click(await screen.findByTitle(/^Preview run/))
     await waitFor(() => expect(api.post.mock.calls[0]?.[0]).toBe('/searches/s4/test'))
     expect(await screen.findByText('worldwide remote · 25 new per run')).toBeTruthy()
-    expect(screen.getAllByText('body check needs the description')).toHaveLength(1)
+    expect(screen.getAllByText('posting body text check was skipped')).toHaveLength(1)
   })
 })
 

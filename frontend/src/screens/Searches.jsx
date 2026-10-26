@@ -1052,7 +1052,7 @@ function TestModal({ test, tab, setTab, onClose }) {
                       {j.reason && <Helper title={j.reason} style={{ minWidth: 0, color: ok ? 'var(--muted)' : 'var(--bad)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.reason}</Helper>}
                       {/* A kept row the body scan couldn't run on isn't a promise — say which
                           check is missing rather than let the run silently mark it `ignored`. */}
-                      {ok && needsDesc(j) && <Helper title="The run scans the description for body_exclusion_phrases; this preview didn’t have one" style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>body check needs the description</Helper>}
+                      {ok && needsDesc(j) && <Helper title="The preview had no posting text, so the body exclusion phrases were not checked; a run checks them" style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>posting body text check was skipped</Helper>}
                     </span>
                     <Helper title={j.location} style={{ flex: '0 0 116px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 8 }}>{j.location}</Helper>
                     <span title={j.salary || ''} style={{ flex: '0 0 120px', textAlign: 'right', fontFamily: 'var(--numeral-face)', fontSize: 9.5, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.salary || '—'}</span>
@@ -1086,7 +1086,7 @@ function TestModal({ test, tab, setTab, onClose }) {
                 )}
                 {nBodyExcluded > 0 && <> · <b style={{ color: 'var(--warn)' }}>{nBodyExcluded} would be ignored (body phrases)</b></>}
                 {' · '}{nRaw} found{d.duration != null && <span style={{ color: 'var(--muted)' }}> · {d.duration}s</span>}
-                {nBodyUnchecked > 0 && <span style={{ color: 'var(--muted)' }}> · {nBodyUnchecked} not body-checked (needs the description)</span>}
+                {nBodyUnchecked > 0 && <span style={{ color: 'var(--muted)' }}> · {nBodyUnchecked} with the posting body text check skipped</span>}
               </span>
               <Pill onClick={onClose} style={{ marginLeft: 'auto' }}>Close</Pill>
             </FooterRow>
