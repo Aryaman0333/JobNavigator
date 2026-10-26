@@ -115,6 +115,15 @@ def test_jobspy_reports_each_board(test_db):
     assert out["jobspy:indeed"]["ok"] == 1 and out["jobspy:linkedin"]["error_types"] == "http_429=1"
 
 
+def test_a_deleted_companys_rows_never_send_its_name(test_db):
+    """Deleting a company leaves its log rows with company_id NULL and source 'playwright_<name>'."""
+    test_db.add(ScrapeLog(company_id=None, source="playwright_Zyxcorp Inc", jobs_found=0,
+                          error="timeout", ran_at=NOW - timedelta(hours=1)))
+    test_db.commit()
+    with unscoped():
+        assert "zyxcorp" not in json.dumps(E.scraper_health(test_db, SINCE, "full")).lower()
+
+
 def test_failing_hosts_only_at_full(test_db):
     gh = _company(test_db, "Zyxcorp", ["https://job-boards.greenhouse.io/zyxcorp"])
     _log(test_db, gh, error="BoardNotFoundError: Greenhouse board 'zyxcorp' not found (HTTP 404)")

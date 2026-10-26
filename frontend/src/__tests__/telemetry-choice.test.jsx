@@ -49,7 +49,7 @@ describe('TelemetryAsk', () => {
     render(<TelemetryAsk />)
     fireEvent.click(await screen.findByText('What is sent?'))
     expect(screen.getByText(/JN_TELEMETRY=off/)).toBeTruthy()
-    expect(screen.getByText(/Never: job titles, company names/)).toBeTruthy()
+    expect(screen.getByText(/Never: job titles, search terms/)).toBeTruthy()
   })
 })
 

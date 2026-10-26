@@ -13,8 +13,8 @@ export const LEVELS = [
 ]
 export const SENT = {
   essentials: 'Once a day from the server: the version, how many accounts, which search types, job boards and AI providers are in use, how often scrapes and AI calls succeed or fail (error types only), and rough activity counts.',
-  full: 'Also, from the browser: which screens are opened (no ids) and actions such as saving a job, running a search or exporting a résumé (no text), and the host of a job board whose scrape fails.',
-  never: 'Never: job titles, company names, search terms, résumé, letter or persona text, anything you type, keys, or this install’s address.',
+  full: 'Also: which screens are opened (no ids) and actions such as saving a job, running a search or exporting a résumé (no text), passed on by this server, and the address of a job board whose scrape fails (e.g. nvidia.wd5.myworkdayjobs.com, which can name the company).',
+  never: 'Never: job titles, search terms, résumé, letter or persona text, anything you type, keys, your browser or IP, or this install’s address; company names only inside a failing job board’s address, with Yes.',
   off: 'To turn it off completely, set JN_TELEMETRY=off in .env.',
 }
 

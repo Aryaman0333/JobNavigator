@@ -1,6 +1,6 @@
 // Telemetry from the browser (docs/superpowers/specs/2026-10-26-telemetry-design.md).
-// Only when the owner chose Yes (`full`): Umami's script with auto-track off, page views with ids
-// replaced and no query, and the named events below. Every field takes only a value from its list
+// Only when the owner chose Yes (`full`): page views with ids replaced and no query, and the named events
+// below, posted to this install's backend (never to Umami directly). Every field takes only a value from its list
 // (or a short id / a bucket); anything else is dropped, so no typed text, name or URL can be sent.
 import api from './api'
 import { IS_DEMO } from './demoHooks'
@@ -35,7 +35,6 @@ export const voiceId = (v) => (BUILTIN_VOICES.includes(v) ? v : 'custom')
 const SHORTCUT_KEYS = new Set(EVENTS.feed_shortcut.key)
 export const isShortcut = (key) => SHORTCUT_KEYS.has(key)
 
-const HOSTNAME = 'jobnavigator'
 const MAX_EVENTS = 300
 const DEDUPE_MS = 3000
 
@@ -76,22 +75,10 @@ export function sanitize(name, data) {
   return out
 }
 
-// Events before Umami's script has loaded wait here (a few at most: the first page view, session_start).
-const pending = []
-
-function send(build) {
-  try {
-    if (window.umami && typeof window.umami.track === 'function') window.umami.track(build)
-    else if (pending.length < 20) pending.push(build)
-  } catch { /* never break the app */ }
-}
-
-function flush() {
-  while (pending.length && window.umami) send(pending.shift())
-}
-
-function base(props) {
-  return { ...props, hostname: HOSTNAME, url: normalizePath(window.location.pathname), referrer: '', title: '' }
+// The browser never talks to Umami: events go to this install's backend, which checks them
+// again and forwards them (so Umami sees neither the user's browser and IP nor the install).
+function send(body) {
+  try { api.post('/telemetry/event', body).catch(() => {}) } catch { /* never break the app */ }
 }
 
 export function track(name, data) {
@@ -104,37 +91,28 @@ export function track(name, data) {
   recent.set(key, now)
   if (last && now - last < DEDUPE_MS) return
   sent++
-  send(props => ({ ...base(props), name, data: clean }))
+  send({ name, data: clean, url: normalizePath(window.location.pathname) })
 }
 
 export function trackPage(pathname) {
   if (!enabled || sent >= MAX_EVENTS) return
   sent++
-  send(props => ({ ...base(props), url: normalizePath(pathname) }))
+  send({ name: 'page_view', data: {}, url: normalizePath(pathname) })
 }
 
 const doNotTrack = () => {
   try { return navigator.doNotTrack === '1' || window.doNotTrack === '1' } catch { return false }
 }
 
-// Once per load: loads Umami's script only at `full`, with a website id, not in the demo, and not
-// when the browser asks not to be tracked. Returns the /telemetry answer (the choice UI reads it).
+// On load and after the owner changes the choice: on only at `full`, never in the demo or when
+// the browser asks not to be tracked; Essentials (or anything else) turns it off at once.
+// Returns the /telemetry answer (the choice UI reads it).
 export async function initTelemetry() {
   let state = null
-  try { state = (await api.get('/telemetry')).data } catch { return null }
-  if (IS_DEMO || !state?.umami || state.level !== 'full' || doNotTrack() || enabled) return state
-  const s = document.createElement('script')
-  s.defer = true
-  s.src = `${state.umami.host}/script.js`
-  s.setAttribute('data-website-id', state.umami.website_id)
-  s.setAttribute('data-host-url', state.umami.host)
-  s.setAttribute('data-auto-track', 'false')
-  s.setAttribute('data-do-not-track', 'true')
-  s.addEventListener('load', flush)
-  document.head.appendChild(s)
-  enabled = true
+  try { state = (await api.get('/telemetry')).data } catch { enabled = false; return null }
+  enabled = !IS_DEMO && state?.level === 'full' && !doNotTrack()
   return state
 }
 
-export function __resetTelemetry() { enabled = false; sent = 0; recent.clear(); pending.length = 0 }
+export function __resetTelemetry() { enabled = false; sent = 0; recent.clear() }
 export function __enableForTests() { enabled = true }

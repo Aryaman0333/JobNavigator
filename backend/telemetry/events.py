@@ -11,6 +11,9 @@ from backend.telemetry.categories import llm_error_category, scrape_error_catego
 from backend.telemetry.level import FULL, install_id
 
 from backend.scraper.search_modes import EXTENSION_MODES as _EXTENSION_SOURCES   # job.source of extension jobs
+from backend.scraper.search_modes import SEARCH_MODES
+
+_SEARCH_SOURCES = {m.source for m in SEARCH_MODES.values()}   # ScrapeLog.source of searches
 _LLM_SLOTS = (("primary", "llm"), ("fallback", "llm_fallback"), ("scoring", "scoring_llm"),
               ("tailor", "cv_tailor_llm"), ("letter", "cover_letter_llm"),
               ("autofill", "autofill_llm"), ("email", "email_llm"))
@@ -139,6 +142,10 @@ def scraper_health(db, since, level) -> list:
             seen.add(key)
             add(scraper_kind_for_urls(company.scrape_urls), r.jobs_found, r.error, r.duration_seconds,
                 [board_host(u) for u in company.scrape_urls or []])
+            continue
+        # Only a known search source is a kind: a deleted company's rows keep
+        # source "playwright_<name>" with no company_id, and a name must never be sent.
+        if r.source not in _SEARCH_SOURCES:
             continue
         key = (r.run_id or r.id, r.source)
         if key in seen:

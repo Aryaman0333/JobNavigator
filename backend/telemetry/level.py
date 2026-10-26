@@ -7,7 +7,8 @@ import os
 import uuid
 
 FULL, ESSENTIALS, OFF, UNSET = "full", "essentials", "off", "unset"
-_ENV_VALUES = {"full": FULL, "essentials": ESSENTIALS, "limited": ESSENTIALS, "off": OFF}
+_ENV_VALUES = {"full": FULL, "essentials": ESSENTIALS, "limited": ESSENTIALS,
+               **{v: OFF for v in ("off", "0", "false", "no", "none", "disabled")}}
 INSTALL_ID_KEY = "telemetry_install_id"
 LAST_SENT_KEY = "telemetry_last_sent_at"
 

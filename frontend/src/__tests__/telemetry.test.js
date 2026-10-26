@@ -1,21 +1,19 @@
-// telemetry.js: only fixed values leave the browser, page paths lose their ids, and the script
-// loads only at `full` (never in the demo, never with Do Not Track).
+// telemetry.js: only fixed values leave the browser, page paths lose their ids, events go to this
+// install's backend (never to Umami), and only at `full` (never in the demo, never with Do Not Track).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('../api', () => ({ default: { get: vi.fn() } }))
+vi.mock('../api', () => ({ default: { get: vi.fn(), post: vi.fn() } }))
 const api = (await import('../api')).default
 const T = await import('../telemetry')
 
-const FULL = { level: 'full', umami: { host: 'https://a.example', website_id: 'site-1' } }
-let calls
+const posted = () => api.post.mock.calls.map(([path, body]) => ({ path, ...body }))
 
 beforeEach(() => {
+  vi.clearAllMocks()
   T.__resetTelemetry()
-  calls = []
-  window.umami = { track: (fn) => calls.push(fn({ website: 'site-1', hostname: 'my.private.host', url: '/x', referrer: 'https://my.private.host/feed' })) }
-  document.head.querySelectorAll('script[data-website-id]').forEach(s => s.remove())
+  api.post.mockResolvedValue({ data: { sent: true } })
 })
-afterEach(() => { delete window.umami; vi.unstubAllGlobals() })
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('normalizePath', () => {
   it('replaces ids and drops query and hash', () => {
@@ -45,16 +43,20 @@ describe('sanitize', () => {
 
 describe('track', () => {
   it('sends nothing until enabled', () => {
-    T.track('job_saved', { from: 'card' })
-    expect(calls).toEqual([])
+    T.track('job_saved')
+    T.trackPage('/feed')
+    expect(api.post).not.toHaveBeenCalled()
   })
 
-  it('sends with a fixed hostname, a normalized url and no referrer or title', () => {
+  it('posts to the backend with a normalized path', () => {
     T.__enableForTests()
     window.history.pushState({}, '', '/resumes/4f1c2a9e-1b2c-4d5e-8f90-123456789abc?x=1')
-    T.track('resume_exported', { format: 'pdf', template: 'classic' })
-    expect(calls[0]).toMatchObject({ hostname: 'jobnavigator', url: '/resumes/:id', referrer: '', title: '',
-      name: 'resume_exported', data: { format: 'pdf', template: 'classic' } })
+    T.track('resume_exported', { format: 'pdf', template: 'classic', name: 'My CV' })
+    T.trackPage('/resumes/4f1c2a9e-1b2c-4d5e-8f90-123456789abc?x=1')
+    expect(posted()).toEqual([
+      { path: '/telemetry/event', name: 'resume_exported', data: { format: 'pdf', template: 'classic' }, url: '/resumes/:id' },
+      { path: '/telemetry/event', name: 'page_view', data: {}, url: '/resumes/:id' },
+    ])
   })
 
   it('drops the same event within 3 s', () => {
@@ -62,47 +64,55 @@ describe('track', () => {
     T.track('job_opened', { link_kind: 'direct' })
     T.track('job_opened', { link_kind: 'direct' })
     T.track('job_opened', { link_kind: 'board' })
-    expect(calls.length).toBe(2)
+    expect(api.post).toHaveBeenCalledTimes(2)
   })
 
   it('stops after 300 events in one load', () => {
     T.__enableForTests()
     for (let i = 0; i < 400; i++) T.trackPage(`/p${i}`)
-    expect(calls.length).toBe(300)
+    expect(api.post).toHaveBeenCalledTimes(300)
   })
 })
 
 describe('initTelemetry', () => {
-  const scripts = () => document.head.querySelectorAll('script[data-website-id]').length
-
-  it('loads the script at full', async () => {
-    api.get.mockResolvedValue({ data: FULL })
+  it('turns on at full', async () => {
+    api.get.mockResolvedValue({ data: { level: 'full' } })
     await T.initTelemetry()
-    const s = document.head.querySelector('script[data-website-id]')
-    expect(s.src).toBe('https://a.example/script.js')
-    expect(s.getAttribute('data-auto-track')).toBe('false')
+    T.track('job_saved')
+    expect(api.post).toHaveBeenCalledTimes(1)
   })
 
-  it.each([
-    ['essentials', { level: 'essentials', umami: null }],
-    ['unset', { level: 'unset', umami: null }],
-    ['off', { level: 'off', umami: null }],
-  ])('loads nothing at %s', async (_n, data) => {
-    api.get.mockResolvedValue({ data })
+  it.each(['essentials', 'unset', 'off'])('stays off at %s', async (level) => {
+    api.get.mockResolvedValue({ data: { level } })
     await T.initTelemetry()
-    expect(scripts()).toBe(0)
+    T.track('job_saved')
+    expect(api.post).not.toHaveBeenCalled()
   })
 
-  it('loads nothing with Do Not Track', async () => {
+  it('turns off again when the choice changes to Essentials', async () => {
+    api.get.mockResolvedValueOnce({ data: { level: 'full' } }).mockResolvedValueOnce({ data: { level: 'essentials' } })
+    await T.initTelemetry()
+    await T.initTelemetry()
+    T.track('job_saved')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('stays off with Do Not Track', async () => {
     vi.stubGlobal('navigator', { ...navigator, doNotTrack: '1' })
-    api.get.mockResolvedValue({ data: FULL })
+    api.get.mockResolvedValue({ data: { level: 'full' } })
     await T.initTelemetry()
-    expect(scripts()).toBe(0)
+    T.track('job_saved')
+    expect(api.post).not.toHaveBeenCalled()
   })
 
   it('survives the API failing', async () => {
     api.get.mockRejectedValue(new Error('offline'))
     expect(await T.initTelemetry()).toBeNull()
-    expect(scripts()).toBe(0)
+  })
+
+  it('never loads a script from anywhere', async () => {
+    api.get.mockResolvedValue({ data: { level: 'full' } })
+    await T.initTelemetry()
+    expect(document.head.querySelectorAll('script').length).toBe(0)
   })
 })

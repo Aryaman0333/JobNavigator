@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.models.db import Company, ScrapeLog
 from backend.telemetry import umami as U
-from backend.tests.r4_support import set_setting
+from backend.tests.r4_support import client, set_setting  # noqa: F401 (fixture)
 
 
 @pytest.fixture
@@ -54,12 +54,59 @@ async def test_nothing_sent_without_a_website_id(sent, test_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_first_start_then_app_started(sent, test_db):
+async def test_app_started_on_each_start(sent, test_db):
     set_setting(test_db, "telemetry_level", "essentials")
     await U.send_start()
     await U.send_start()
-    names = [b["payload"]["name"] for _a, b in sent]
-    assert names == ["install_first_start", "app_started", "app_started"]
+    assert [b["payload"]["name"] for _a, b in sent] == ["app_started", "app_started"]
+
+
+@pytest.mark.asyncio
+async def test_a_broken_database_does_not_escape_the_start_send(sent, test_db, monkeypatch):
+    def broken():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(U, "_session", broken)
+    assert await U.send_start() == 0
+
+
+# ── browser events, relayed ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_relay_forwards_only_at_full(sent, test_db, client):
+    set_setting(test_db, "telemetry_level", "essentials")
+    assert client.post("/api/telemetry/event", json={"name": "job_saved", "data": {}, "url": "/feed"}).json() == {"sent": False}
+    set_setting(test_db, "telemetry_level", "full")
+    assert client.post("/api/telemetry/event", json={"name": "job_opened", "data": {"link_kind": "direct"},
+                                                     "url": "/feed"}).json() == {"sent": True}
+    payload = sent[-1][1]["payload"]
+    assert payload["hostname"] == "jobnavigator" and payload["url"] == "/feed" and payload["name"] == "job_opened"
+    assert payload["data"]["link_kind"] == "direct" and len(payload["data"]["install_id"]) == 36
+
+
+@pytest.mark.asyncio
+async def test_relay_page_view_is_an_umami_page_view(sent, test_db, client):
+    set_setting(test_db, "telemetry_level", "full")
+    client.post("/api/telemetry/event", json={"name": "page_view", "data": {}, "url": "/resumes/:id"})
+    payload = sent[-1][1]["payload"]
+    assert payload["url"] == "/resumes/:id" and "name" not in payload
+
+
+def test_relay_drops_text_paths_and_odd_values():
+    name, data, url = U.clean_browser_event(
+        "job_opened", {"link_kind": "direct", "title": "Senior PM at Zyxcorp", "n": 3, "ok": True,
+                       "BadKey": "x", "nested": {"a": 1}}, "/resumes/Zyxcorp Resume?x=1")
+    assert data == {"link_kind": "direct", "n": 3, "ok": True} and url == "/"
+    assert U.clean_browser_event("Job Opened!", {}, "/feed") is None
+    assert U.clean_browser_event("job_opened", "not a dict", "/feed")[1] == {}
+
+
+@pytest.mark.asyncio
+async def test_relay_is_rate_limited(sent, test_db, monkeypatch):
+    set_setting(test_db, "telemetry_level", "full")
+    monkeypatch.setattr(U, "RELAY_PER_MINUTE", 3)
+    monkeypatch.setattr(U, "_relayed", [])
+    results = [await U.relay("job_saved", {}, "/feed") for _ in range(5)]
+    assert results == [True, True, True, False, False]
 
 
 @pytest.mark.asyncio

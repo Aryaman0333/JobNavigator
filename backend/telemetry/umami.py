@@ -1,6 +1,8 @@
 """Sending events to the maintainer's Umami (`/api/send`). Fire and forget: a send never raises,
 and nothing is sent when the owner has not chosen, JN_TELEMETRY=off, or no website id is set."""
 import logging
+import re
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -23,12 +25,17 @@ def _user_agent() -> str:
             f"Chrome/130.0 Safari/537.36 JobNavigator/{APP_VERSION}")
 
 
-def body(name: str, data: dict) -> dict:
-    return {"type": "event", "payload": {"website": UMAMI_WEBSITE_ID, "hostname": HOSTNAME,
-                                         "url": "/server", "name": name, "data": data, "language": "en"}}
+PAGE_VIEW = "page_view"   # sent to Umami as a page view (no event name), not as an event
 
 
-async def send(events) -> int:
+def body(name: str, data: dict, url: str = "/server") -> dict:
+    payload = {"website": UMAMI_WEBSITE_ID, "hostname": HOSTNAME, "url": url, "language": "en"}
+    if name != PAGE_VIEW:
+        payload.update(name=name, data=data)
+    return {"type": "event", "payload": payload}
+
+
+async def send(events, url: str = "/server") -> int:
     """POST each (name, data); returns how many Umami accepted."""
     if not UMAMI_WEBSITE_ID or not events:
         return 0
@@ -37,7 +44,7 @@ async def send(events) -> int:
         async with httpx.AsyncClient(timeout=TIMEOUT, transport=_transport,
                                      headers={"User-Agent": _user_agent()}) as client:
             for name, data in events:
-                resp = await client.post(f"{UMAMI_HOST}/api/send", json=body(name, data))
+                resp = await client.post(f"{UMAMI_HOST}/api/send", json=body(name, data, url))
                 if resp.status_code < 300:
                     sent += 1
     except Exception as e:   # Umami down, no network: the app carries on
@@ -51,25 +58,81 @@ def _session():
 
 
 async def send_start() -> int:
-    """At startup: `app_started` (and `install_first_start` the first time)."""
+    """At startup: `app_started`. Never raises (it runs as a bare task in the app's lifespan)."""
     from backend.accounts.context import unscoped
-    from backend.accounts.settings import get_install_setting
     from backend.telemetry.events import heartbeat
-    with unscoped():
-        db = _session()
-        try:
-            level = L.effective_level(db)
-            if not L.sends_anything(level) or not UMAMI_WEBSITE_ID:
-                return 0
-            first = not get_install_setting(db, L.INSTALL_ID_KEY)
-            events = [("app_started", heartbeat(db, "app_started"))]
-            if first:
-                events.insert(0, ("install_first_start", {"install_id": events[0][1]["install_id"],
-                                                          "version": events[0][1]["version"]}))
-            db.commit()   # no transaction waits on the network
-        finally:
-            db.close()
-    return await send(events)
+    try:
+        with unscoped():
+            db = _session()
+            try:
+                level = L.effective_level(db)
+                if not L.sends_anything(level) or not UMAMI_WEBSITE_ID:
+                    return 0
+                events = [("app_started", heartbeat(db, "app_started"))]
+                db.commit()   # no transaction waits on the network
+            finally:
+                db.close()
+        return await send(events)
+    except Exception as e:
+        logger.warning(f"Telemetry start event not sent: {type(e).__name__}")
+        return 0
+
+
+# ── browser events, relayed (the browser never talks to Umami) ──────────────
+# The browser posts to this install's /api/telemetry/event; checked again here and sent with
+# the server's agent, so Umami sees neither the user's browser and IP nor this install's address.
+
+
+
+_NAME = re.compile(r"^[a-z_]{1,40}$")
+_VALUE = re.compile(r"^[A-Za-z0-9_:.-]{1,32}$")
+_PATH = re.compile(r"^/[a-z0-9:/_-]{0,80}$")
+RELAY_PER_MINUTE = 120
+_relayed: list = []
+
+
+def clean_browser_event(name, data, url):
+    """(name, data, url) when the event is well formed, else None. Values must be short ids,
+    numbers or booleans; the path only lower-case words and ':id'."""
+    if not isinstance(name, str) or not _NAME.match(name):
+        return None
+    if not isinstance(url, str) or not _PATH.match(url):
+        url = "/"
+    out = {}
+    for k, v in (data or {}).items() if isinstance(data, dict) else ():
+        if not isinstance(k, str) or not _NAME.match(k) or len(out) >= 8:
+            continue
+        if isinstance(v, bool) or isinstance(v, int):
+            out[k] = v
+        elif isinstance(v, str) and _VALUE.match(v):
+            out[k] = v
+    return name, out, url
+
+
+async def relay(name, data, url) -> bool:
+    """One browser event, when the install is at `full`. Never raises."""
+    from backend.accounts.context import unscoped
+    ev = clean_browser_event(name, data, url)
+    if ev is None or not UMAMI_WEBSITE_ID:
+        return False
+    now = time.monotonic()
+    _relayed[:] = [t for t in _relayed if now - t < 60]
+    if len(_relayed) >= RELAY_PER_MINUTE:
+        return False
+    try:
+        with unscoped():
+            db = _session()
+            try:
+                if L.effective_level(db) != L.FULL:
+                    return False
+                iid = L.install_id(db)
+            finally:
+                db.close()
+    except Exception:
+        return False
+    _relayed.append(now)
+    name, data, url = ev
+    return await send([(name, {**data, "install_id": iid})], url=url) == 1
 
 
 async def send_daily() -> int:

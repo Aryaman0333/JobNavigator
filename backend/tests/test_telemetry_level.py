@@ -81,15 +81,15 @@ def test_route_reports_level_locked_asked(client, test_db, monkeypatch):
     assert r["level"] == "off" and r["asked"] is True and r["locked"] is True
 
 
-def test_browser_gets_umami_only_at_full_with_a_website_id(client, test_db, monkeypatch):
-    from backend.telemetry import umami as U
-    monkeypatch.setattr(U, "UMAMI_WEBSITE_ID", "site-1")
-    set_setting(test_db, "telemetry_level", "essentials")
-    assert client.get("/api/telemetry").json()["umami"] is None
+@pytest.mark.parametrize("env", ["0", "false", "no", "none", "disabled", "OFF"])
+def test_common_off_spellings_are_off(test_db, monkeypatch, env):
     set_setting(test_db, "telemetry_level", "full")
-    assert client.get("/api/telemetry").json()["umami"] == {"host": U.UMAMI_HOST, "website_id": "site-1"}
-    monkeypatch.setattr(U, "UMAMI_WEBSITE_ID", "")
-    assert client.get("/api/telemetry").json()["umami"] is None
+    monkeypatch.setenv("JN_TELEMETRY", env)
+    assert L.effective_level(test_db) == "off"
+
+
+def test_the_browser_is_never_told_where_umami_is(client):
+    assert set(client.get("/api/telemetry").json()) == {"level", "locked", "asked", "owner"}
 
 
 def test_install_state_is_never_served(client, test_db):
