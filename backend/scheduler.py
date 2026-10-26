@@ -83,6 +83,44 @@ def configure_scheduler():
         backup_cron, digest_cron, h1b_cron, cleanup_cron, reject_cron)
 
 
+OVERDUE_DELAY = timedelta(minutes=2)
+
+
+def _last_scheduled_scrape():
+    """Start of the last scheduled scrape that ran or is running (a failed one, e.g. cut off
+    by a shutdown, does not count), or None."""
+    from backend.accounts.context import unscoped
+    from backend.models.db import JobRun
+    db = SessionLocal()
+    try:
+        with unscoped():   # the scheduled scrape's JobRun is the owner's; this is install-level
+            row = (db.query(JobRun.started_at)
+                   .filter(JobRun.job_type == "scrape_all", JobRun.trigger == "scheduler",
+                           JobRun.status.in_(("completed", "running")))
+                   .order_by(JobRun.started_at.desc()).first())
+    finally:
+        db.close()
+    if not row or not row[0]:
+        return None
+    ts = row[0]
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def next_scrape_time(interval_minutes: int, now=None):
+    """The interval counts from the last scheduled scrape, not from when the backend started:
+    a restart (the PC is off at night) would otherwise start the count again every time, and
+    an interval longer than the uptime would never fire. Overdue (or never run): two minutes
+    from now."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        last = _last_scheduled_scrape()
+    except Exception as e:
+        logger.error(f"Could not read the last scheduled scrape: {e}")
+        last = None
+    due = last + timedelta(minutes=interval_minutes) if last else now
+    return max(due, now + OVERDUE_DELAY)
+
+
 def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1b_cron,
                    cleanup_cron, reject_cron):
     def _add_cron_job(func, job_id, cron_expr):
@@ -116,6 +154,7 @@ def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1
             IntervalTrigger(minutes=scrape_interval),
             id="scrape_all",
             replace_existing=True,
+            next_run_time=next_scrape_time(scrape_interval),
         )
 
     if email_interval > 0:
