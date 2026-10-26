@@ -41,3 +41,34 @@ async def employer_descriptions(jobs: list[dict], landed: dict | None = None,
 
     done = await asyncio.gather(*(one(j) for j in jobs))
     return sum(done)
+
+
+MAX_MISSES = 3   # in a row: the board has stopped answering (rate limit), so stop asking
+
+
+async def missing_descriptions(jobs: list[dict], pause: float = 1.5) -> int:
+    """Fill `description` in place for job dicts that have none, from their own listing
+    (JobSpy's LinkedIn rows: LinkedIn's public job page, no account). One at a time, `pause`
+    seconds apart. Returns how many were filled."""
+    from backend.scraper.ats import _descriptions
+
+    filled = misses = 0
+    todo = [j for j in jobs if not j.get("description") and j.get("url")]
+    for i, j in enumerate(todo):
+        if i and pause:
+            await asyncio.sleep(pause)
+        try:
+            text = await _descriptions._fetch_job_description(j["url"])
+        except Exception as e:  # noqa: BLE001 - the job keeps no description
+            logger.info(f"listing text: {j['url']}: {e}")
+            text = None
+        if text and len(text.strip()) >= MIN_CHARS:
+            j["description"] = text
+            filled += 1
+            misses = 0
+            continue
+        misses += 1
+        if misses >= MAX_MISSES:
+            logger.info(f"listing text: {MAX_MISSES} misses in a row, stopping after {i + 1}/{len(todo)}")
+            break
+    return filled

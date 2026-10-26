@@ -56,3 +56,31 @@ def test_a_fetch_error_keeps_the_summary(monkeypatch):
     jobs = [{"url": "https://acme.com/careers/1", "description": "AI summary"}]
     assert asyncio.run(employer_text.employer_descriptions(jobs, {})) == 0
     assert jobs[0]["description"] == "AI summary"
+
+
+# ── LinkedIn listings from JobSpy come without a description (fetch_description is off) ──
+
+def _fill(jobs, pages, monkeypatch):
+    calls = []
+
+    async def fake_fetch(url, job=None):
+        calls.append(url)
+        return pages.get(url)
+
+    monkeypatch.setattr("backend.scraper.ats._descriptions._fetch_job_description", fake_fetch)
+    n = asyncio.run(employer_text.missing_descriptions(jobs, pause=0))
+    return n, calls
+
+
+def test_missing_descriptions_are_fetched_from_the_listing(monkeypatch):
+    jobs = [{"url": "https://www.linkedin.com/jobs/view/1", "description": None},
+            {"url": "https://www.linkedin.com/jobs/view/2", "description": "already here"}]
+    n, calls = _fill(jobs, {"https://www.linkedin.com/jobs/view/1": LONG}, monkeypatch)
+    assert n == 1 and calls == ["https://www.linkedin.com/jobs/view/1"]
+    assert jobs[0]["description"] == LONG and jobs[1]["description"] == "already here"
+
+
+def test_missing_descriptions_stop_after_three_misses_in_a_row(monkeypatch):
+    jobs = [{"url": f"https://www.linkedin.com/jobs/view/{i}", "description": None} for i in range(6)]
+    n, calls = _fill(jobs, {}, monkeypatch)
+    assert n == 0 and len(calls) == 3
