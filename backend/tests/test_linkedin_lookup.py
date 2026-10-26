@@ -146,6 +146,26 @@ async def test_lookup_needs_the_mock_accounts_own_sign_in(test_db, mock_jar):
 
 
 @pytest.mark.asyncio
+async def test_lookup_refuses_a_mock_signed_in_with_another_email(test_db, mock_jar):
+    from backend import refresh_linkedin_session as rls
+    mock_jar(test_db, signed=False)
+    rls.record_sign_in(rls.MOCK, "old@x.io")
+    _li(test_db)
+    out = await ll.run_lookup(per_run=20, pause=0)
+    assert out["stopped"].startswith("the mock session was signed in with another email")
+
+
+@pytest.mark.asyncio
+async def test_lookup_refuses_when_the_mock_is_the_main_account(test_db, mock_jar):
+    mock_jar(test_db)
+    test_db.add(Setting(key="linkedin_email", value=" Mock@X.io "))
+    test_db.commit()
+    _li(test_db)
+    out = await ll.run_lookup(per_run=20, pause=0)
+    assert out["stopped"] == "the mock account is the main account (Settings › LinkedIn)"
+
+
+@pytest.mark.asyncio
 async def test_one_lookup_updates_every_account(test_db):
     from backend.accounts.context import use_account
     mine = _li(test_db)
@@ -275,31 +295,111 @@ async def test_a_stored_grnh_se_link_is_followed(test_db):
     posting = _job(test_db, GH, company="Acme", title="Product Manager", source="direct")
     short = _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
 
-    async def resolve(url):
-        return GH if "grnh.se" in url else url
-    n = await ll.resolve_stored_short_links(limit=50, resolve=resolve)
+    n = await ll.resolve_stored_short_links(limit=50, follow=_lands(200, GH))
     test_db.refresh(short)
     assert n == 1
     assert short.apply_url == GH and short.posting_key == "greenhouse:4012345"
     assert short.status == "ignored" and short.duplicate_of == posting.id
 
 
+def _lands(status, final, text="<html>Careers</html>"):
+    calls = []
+
+    async def follow(url):
+        calls.append(url)
+        return None if status is None else (status, final, text)
+    follow.calls = calls
+    return follow
+
+
 @pytest.mark.asyncio
-async def test_an_unresolved_short_link_is_left_alone(test_db):
-    short = _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
-    n = await ll.resolve_stored_short_links(limit=50, resolve=_no_resolve)
+async def test_a_short_link_that_cannot_be_followed_is_tried_again_a_day_later(test_db):
+    from datetime import datetime, timedelta, timezone
+    short = _job(test_db, "https://click.appcast.io/t/abc", company="Acme", title="PM", source="levels_fyi")
+    follow = _lands(403, "https://click.appcast.io/t/abc")
+    assert await ll.resolve_stored_short_links(limit=50, follow=follow) == 0
     test_db.refresh(short)
-    assert n == 0 and short.apply_url is None and short.posting_key is None
+    assert short.apply_url is None and short.open_state == "unknown"
+    # not again the same day
+    await ll.resolve_stored_short_links(limit=50, follow=follow)
+    assert len(follow.calls) == 1
+    # again the next day, while the job is new
+    short.open_checked_at = datetime.now(timezone.utc) - timedelta(days=2)
+    test_db.commit()
+    await ll.resolve_stored_short_links(limit=50, follow=follow)
+    assert len(follow.calls) == 2
+    # never once the job is old
+    short.open_checked_at = datetime.now(timezone.utc) - timedelta(days=2)
+    short.discovered_at = datetime.now(timezone.utc) - timedelta(days=ll.SHORT_LINK_RETRY_DAYS + 1)
+    test_db.commit()
+    await ll.resolve_stored_short_links(limit=50, follow=follow)
+    assert len(follow.calls) == 2
+
+
+@pytest.mark.parametrize("status,final,text,reason", [
+    (200, "https://job-boards.greenhouse.io/acme?error=true", "<html>Acme jobs</html>", "Greenhouse: the posting is gone"),
+    (404, "https://acme.com/careers/job/1", "", "missing page"),
+    (200, "https://acme.com/careers", "<html>Join us</html>", "not a posting"),
+    (200, "https://acme.com/careers/x", "<p>This job is no longer available</p>", "no longer available"),
+])
+@pytest.mark.asyncio
+async def test_a_grnh_se_link_to_a_removed_posting_closes_the_job(test_db, status, final, text, reason):
+    short = _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
+    follow = _lands(status, final, text)
+    assert await ll.resolve_stored_short_links(limit=50, follow=follow) == 0
+    test_db.refresh(short)
+    assert short.open_state == "closed" and reason in short.open_reason and short.apply_url is None
+    await ll.resolve_stored_short_links(limit=50, follow=follow)
+    assert len(follow.calls) == 1   # a closed job is not asked again
+
+
+@pytest.mark.asyncio
+async def test_another_tracker_on_a_page_that_is_not_a_posting_is_only_retried(test_db):
+    short = _job(test_db, "https://dsp.prng.co/GTkkPyb", company="Acme", title="PM", source="levels_fyi")
+    await ll.resolve_stored_short_links(limit=50, follow=_lands(200, "https://careers.acme.com/home"))
+    test_db.refresh(short)
+    assert short.open_state == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_job_s_short_link_is_not_followed(test_db):
+    _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi", status="skip")
+    follow = _lands(200, GH)
+    assert await ll.resolve_stored_short_links(limit=50, follow=follow) == 0
+    assert follow.calls == []
+
+
+@pytest.mark.asyncio
+async def test_never_tried_short_links_go_before_ones_tried_earlier(test_db):
+    from datetime import datetime, timedelta, timezone
+    old = _job(test_db, "https://grnh.se/old1", company="Acme", title="PM", source="levels_fyi")
+    old.open_state, old.open_checked_at = "unknown", datetime.now(timezone.utc) - timedelta(days=2)
+    test_db.commit()
+    _job(test_db, "https://grnh.se/new1", company="Beta", title="PM", source="levels_fyi")
+    follow = _lands(None, None)
+    await ll.resolve_stored_short_links(limit=1, follow=follow)
+    assert follow.calls == ["https://grnh.se/new1"]
 
 
 @pytest.mark.asyncio
 async def test_the_lookup_run_also_follows_short_links(test_db):
     _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
-
-    async def resolve(url):
-        return GH if "grnh.se" in url else url
-    out = await _run(FakeLinkedIn({}), resolve=resolve)
+    out = await ll.run_lookup(per_run=20, fetch=FakeLinkedIn({}), pause=0, follow=_lands(200, GH))
     assert out["short_links"] == 1
+
+
+@pytest.mark.asyncio
+async def test_after_a_scrape_a_pending_short_link_starts_the_run(test_db, monkeypatch):
+    from backend import scheduler as sched_mod
+    _job(test_db, "https://grnh.se/zvej33q44us", company="Acme", title="PM", source="levels_fyi")
+    runs = []
+
+    async def fake_run_lookup(**kw):
+        runs.append(kw)
+        return {"looked_up": 0, "employer": 0, "easy_apply": 0, "cached": 0, "short_links": 0, "stopped": None}
+    monkeypatch.setattr("backend.scraper._shared.linkedin_lookup.run_lookup", fake_run_lookup)
+    await sched_mod.lookup_after_scrape()
+    assert len(runs) == 1
 
 
 def _fake_browser(monkeypatch, landed: str, me: int, li_at: bool = True):

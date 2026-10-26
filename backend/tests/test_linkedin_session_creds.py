@@ -137,8 +137,9 @@ def test_sign_in_starts_the_named_sessions_sign_in(test_db, api_client, jars, mo
 
 
 def test_a_fresh_session_reads_signed_in_today(test_db, api_client, jars):
-    _set(test_db, dashboard_api_key="")
+    _set(test_db, dashboard_api_key="", linkedin_mock_email="mock@x.io")
     open(rls.jar(rls.MOCK), "w").write("[]")
+    rls.record_sign_in(rls.MOCK, "mock@x.io")
     body = api_client.get("/api/linkedin/session?which=mock").json()
     assert body["status"] == "ok" and body["summary"] == "Signed in today."
 

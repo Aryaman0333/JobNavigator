@@ -436,7 +436,7 @@ async def lookup_after_scrape():
     with unscoped():   # install-level: every account's rows
         db = SessionLocal()
         try:
-            if not ll.pending_ids(db, limit=1):
+            if not ll.pending_ids(db, limit=1) and not ll.pending_short_links(db, limit=1):
                 return
         finally:
             db.close()

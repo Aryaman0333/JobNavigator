@@ -72,6 +72,17 @@ def session_status(which: Which = "mock"):
     if exists and which == rls.MOCK and (rls.signed_in_as(which) or {}).get("account") != rls.MOCK:
         # saved before the main/mock split (3.2): the employer-link lookup will not use it
         status, summary = "stale", "Saved before the main/mock split — sign in again so the link lookup can use it."
+    elif exists and which == rls.MOCK:
+        # the lookup's own checks: the mock email must differ from the main one and match the sign-in
+        from backend.models.db import SessionLocal
+        from backend.scraper._shared.linkedin_lookup import mock_session_problem
+        db = SessionLocal()
+        try:
+            problem = mock_session_problem(db)
+        finally:
+            db.close()
+        if problem:
+            status, summary = "stale", problem[0].upper() + problem[1:] + "."
     if shared:
         summary = "The owner's session · " + summary
 

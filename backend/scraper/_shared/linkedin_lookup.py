@@ -9,7 +9,7 @@ account: it refuses to run when that session is the personal account.
 - One answer per LinkedIn job id, install-wide (`LinkedinLookup`), applied to every account's rows:
   `employer` (the link, followed when it is a short link), `easy_apply` (no employer link exists),
   `board` (LinkedIn names another board), `gone` (closed). Throttling and errors are not cached.
-- One request every `pause` seconds (15), at most `per_run` per run; a run stops after LinkedIn
+- One request every `pause` seconds (2), at most `per_run` per run; a run stops after LinkedIn
   answers nothing 3 times in a row.
 - A row that gets an employer link is re-keyed, classified and relinked (posting_links.relink),
   so it joins the employer's posting the account already has.
@@ -35,10 +35,17 @@ def mock_session_problem(db):
     jar's sign-in record (refresh_linkedin_session.record_sign_in) must say the mock signed it."""
     from backend import refresh_linkedin_session as rls
     from backend.accounts.settings import get_setting
-    if not str(get_setting(db, "linkedin_mock_email") or "").strip():
+    mock = str(get_setting(db, "linkedin_mock_email") or "").strip().lower()
+    if not mock:
         return "no mock account is set (Settings › LinkedIn)"
-    if (rls.signed_in_as(rls.MOCK) or {}).get("account") != rls.MOCK:
+    main = str(get_setting(db, "linkedin_email") or "").strip().lower()
+    if main and main == mock:
+        return "the mock account is the main account (Settings › LinkedIn)"
+    signed = rls.signed_in_as(rls.MOCK) or {}
+    if signed.get("account") != rls.MOCK:
         return "the mock session has no sign-in record: sign the mock account in (Settings › LinkedIn)"
+    if str(signed.get("email") or "").strip().lower() != mock:
+        return "the mock session was signed in with another email: sign the mock account in again (Settings › LinkedIn)"
     return None
 
 
@@ -169,49 +176,115 @@ async def _fetcher(fetch):
                 pass
 
 
-async def resolve_stored_short_links(limit: int = 50, resolve=None) -> int:
-    """Stored jobs whose link is a short link (grnh.se, prng.co, appcast) and that have no employer
-    link yet: follow it; a landing page that names an employer posting becomes `apply_url`, and
-    the job is re-keyed, classified and relinked. A link that does not resolve waits for the next
-    run. Returns the jobs that got their employer link."""
+SHORT_LINK_RETRY_DAYS = 7   # a short link that fails is tried once a day while its job is this new
+
+
+def short_link_verdict(url: str, got):
+    """Where a stored short link went: ("employer", link), ("closed", why) when the posting is
+    gone, or ("retry", why) when the link could not be followed. `got` is (status, final url,
+    page text) or None."""
+    from urllib.parse import urlparse
+    from backend.scraper._shared.bot_wall import is_bot_wall
+    from backend.scraper._shared.posting_links import employer_link
+    if got is None:
+        return "retry", "the short link could not be followed"
+    status, final, text = got
+    if is_short_link(final):          # stuck on the tracker (Appcast answers 403 once a link expires)
+        return "retry", f"the short link answers {status}"
+    link = employer_link(final)
+    if link:
+        return "employer", link
+    p = urlparse(final)
+    where = f"{(p.hostname or '').removeprefix('www.')}{p.path}"
+    if status in (404, 410):
+        return "closed", f"the short link lands on a missing page ({where})"
+    if "greenhouse.io" in (p.hostname or "") and "error=true" in (p.query or ""):
+        return "closed", "Greenhouse: the posting is gone"
+    if status >= 400 or is_bot_wall(text):
+        return "retry", f"the short link lands on {where} ({status})"
+    from backend.scraper._shared.still_open import CLOSED_PHRASES, _HIDDEN, _TAG
+    page = " ".join(_TAG.sub(" ", _HIDDEN.sub(" ", text or "")).lower().split())
+    for phrase in CLOSED_PHRASES:
+        if phrase in page:
+            return "closed", f"the short link's page says “{phrase}”"
+    # A Greenhouse short link always names one posting: landing anywhere else means it was removed.
+    # Other trackers may land on a careers site whose links are not read, so they are only retried.
+    if urlparse(url).hostname == "grnh.se":
+        return "closed", f"the short link lands on {where}, not a posting"
+    return "retry", f"the short link lands on {where}, not a posting"
+
+
+def _short_link_rows(db, limit: int):
+    """Jobs on a short link with no employer link that are worth following: not skipped or
+    ignored, not already closed, not checked in the last day, and either never tried or still
+    new. Never-tried first, then newest."""
+    from datetime import datetime, timedelta, timezone
     from sqlalchemy import or_
+    from backend.models.db import Job
+    from backend.scraper._shared.postings import SHORT_LINK_HOSTS
+    now = datetime.now(timezone.utc)
+    rows = (db.query(Job)
+            .filter(Job.apply_url.is_(None), Job.status.notin_(("ignored", "skip")),
+                    or_(Job.link_kind != BOARD, Job.link_kind.is_(None)),
+                    or_(Job.open_state.is_(None), Job.open_state != "closed"),
+                    or_(Job.open_checked_at.is_(None),
+                        (Job.open_checked_at < now - timedelta(days=1))
+                        & (Job.discovered_at > now - timedelta(days=SHORT_LINK_RETRY_DAYS))),
+                    or_(*[Job.url.like(f"%{h}/%") for h in SHORT_LINK_HOSTS]))
+            .order_by(Job.open_checked_at.is_(None).desc(), Job.discovered_at.desc())
+            .limit(limit).all())
+    return [j for j in rows if is_short_link(j.url)]
+
+
+def pending_short_links(db, limit: int) -> list:
+    return _short_link_rows(db, limit)
+
+
+async def resolve_stored_short_links(limit: int = 50, follow=None) -> int:
+    """Stored jobs whose link is a short link (grnh.se, prng.co, appcast) and that have no employer
+    link yet: follow it (short_link_verdict). An employer posting becomes `apply_url` and the job is
+    re-keyed, classified and relinked; a removed posting marks the job closed (open_state) and is
+    not asked again; a failure is tried again a day later while the job is new. Returns the jobs
+    that got their employer link."""
+    from datetime import datetime, timezone
     from backend.accounts.context import unscoped
-    from backend.models.db import Job, SessionLocal
-    from backend.scraper._shared.posting_links import employer_link, key_of, relink
-    from backend.scraper._shared.postings import SHORT_LINK_HOSTS, is_short_link, resolve_short_link
-    resolve = resolve or resolve_short_link
+    from backend.models.db import SessionLocal
+    from backend.scraper._shared.posting_links import key_of, relink
+    from backend.scraper._shared.still_open import CLOSED, UNKNOWN, _fetch
+    follow = follow or _fetch
     done = 0
     # unscoped: install-level pass over every account's rows; relink names each row's account.
     with unscoped():
         db = SessionLocal()
         try:
-            rows = (db.query(Job)
-                    .filter(Job.apply_url.is_(None), Job.status != "ignored",
-                            or_(Job.link_kind != BOARD, Job.link_kind.is_(None)),
-                            or_(*[Job.url.like(f"%{h}/%") for h in SHORT_LINK_HOSTS]))
-                    .order_by(Job.discovered_at.desc()).limit(limit).all())
-            for job in rows:
-                if not is_short_link(job.url):
-                    continue
-                link = employer_link(await resolve(job.url))
-                if not link:
-                    continue
-                job.apply_url = link
-                job.posting_key = key_of(job)
-                classify(job)
-                db.flush()
-                relink(db, job)
+            rows = _short_link_rows(db, limit)
+            todo = [(j.id, j.url) for j in rows]
+            db.commit()   # no pooled connection waits on an outside site
+            by_id = {j.id: j for j in rows}
+            for job_id, url in todo:
+                result, what = short_link_verdict(url, await follow(url))
+                job = by_id[job_id]
+                if result == "employer":
+                    job.apply_url = what
+                    job.posting_key = key_of(job)
+                    classify(job)
+                    db.flush()
+                    relink(db, job)
+                    done += 1
+                else:
+                    job.open_state = CLOSED if result == "closed" else UNKNOWN
+                    job.open_reason = what
+                    job.open_checked_at = datetime.now(timezone.utc)
                 db.commit()
-                done += 1
         finally:
             db.close()
     return done
 
 
-async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=None) -> dict:
+async def run_lookup(per_run: int, fetch=None, pause: float = PAUSE, resolve=None, follow=None) -> dict:
     """One lookup run: every account's pending LinkedIn rows, then stored short links (install-level)."""
     out = await _linkedin_pass(per_run, fetch, pause, resolve)
-    out["short_links"] = await resolve_stored_short_links(limit=50, resolve=resolve)
+    out["short_links"] = await resolve_stored_short_links(limit=50, follow=follow)
     logger.info(f"LinkedIn lookup: {out}")
     return out
 

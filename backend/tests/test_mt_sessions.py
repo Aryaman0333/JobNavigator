@@ -258,7 +258,7 @@ async def test_refresh_state_and_pin_drop_are_per_account(test_db, accounts, roo
         assert rls.pin_file() == str(roots / "tmp" / "li_pin.txt")
 
 
-def test_a_mock_jar_saved_before_the_split_asks_for_a_new_sign_in(test_db, accounts, roots):
+async def test_a_mock_jar_saved_before_the_split_asks_for_a_new_sign_in(test_db, accounts, roots):
     """A mock jar without the sign-in record (saved before 3.2) cannot be used by the employer-link
     lookup; the Mock session row says so instead of looking signed in."""
     from backend.api import routes_linkedin as rl
@@ -267,10 +267,17 @@ def test_a_mock_jar_saved_before_the_split_asks_for_a_new_sign_in(test_db, accou
     (roots / "li").mkdir(parents=True)
     (roots / "li" / "li_cookies.json").write_text("[]")
     with use_account(a):
+        from backend.models.db import Setting
+        test_db.add(Setting(key="linkedin_mock_email", value="mock@example.com"))
+        test_db.commit()
         st = rl.session_status("mock")
         assert st["status"] == "stale" and "sign in again" in st["summary"].lower()
         rls.record_sign_in(rls.MOCK, "mock@example.com")
         assert rl.session_status("mock")["status"] == "ok"
+        # the mock email changed after the sign-in: the lookup will not use it
+        rls.record_sign_in(rls.MOCK, "old@example.com")
+        st = rl.session_status("mock")
+        assert st["status"] == "stale" and "another email" in st["summary"]
 
 
 async def test_session_routes_follow_the_callers_account(test_db, accounts, roots):
