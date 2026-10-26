@@ -81,6 +81,17 @@ def test_route_reports_level_locked_asked(client, test_db, monkeypatch):
     assert r["level"] == "off" and r["asked"] is True and r["locked"] is True
 
 
+def test_browser_gets_umami_only_at_full_with_a_website_id(client, test_db, monkeypatch):
+    from backend.telemetry import umami as U
+    monkeypatch.setattr(U, "UMAMI_WEBSITE_ID", "site-1")
+    set_setting(test_db, "telemetry_level", "essentials")
+    assert client.get("/api/telemetry").json()["umami"] is None
+    set_setting(test_db, "telemetry_level", "full")
+    assert client.get("/api/telemetry").json()["umami"] == {"host": U.UMAMI_HOST, "website_id": "site-1"}
+    monkeypatch.setattr(U, "UMAMI_WEBSITE_ID", "")
+    assert client.get("/api/telemetry").json()["umami"] is None
+
+
 def test_install_state_is_never_served(client, test_db):
     L.install_id(test_db)
     set_setting(test_db, "telemetry_last_sent_at", "2026-10-26T00:00:00+00:00")
