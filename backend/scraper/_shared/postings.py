@@ -31,7 +31,8 @@ logger = logging.getLogger("jobnavigator.postings")
 #    title_key changes.
 # 8: a city named only in the text is a place word (same_role._CITIES) and a new place for a copy.
 # 9: ...a new place only when neither location names a city.
-READER_VERSION = 9
+# 10: jobs.uber.com keys as uber.com (Uber kept its ids); a job with no place is never elsewhere.
+READER_VERSION = 10
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
@@ -305,6 +306,7 @@ def _hosted_ats(parsed, host, seg, qs):
 _SITE_PATHS = {
     "careers.servicenow.com": re.compile(r"^/jobs/(\d{6,})"),
     "uber.com": re.compile(r"/careers/list/(\d+)"),
+    "jobs.uber.com": re.compile(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?jobs/(\d+)"),
     "coinbase.com": re.compile(r"/careers/positions/(\d+)"),
     "joinbytedance.com": re.compile(r"^/search/(\d{10,})"),
     "revolut.com": re.compile(r"^/careers/position/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"),
@@ -330,10 +332,14 @@ def _adp(parsed, host, seg, qs):
     return None
 
 
+# A site that moved and kept its posting ids: the new host names the old one's postings.
+_SITE_KEY_HOST = {"jobs.uber.com": "uber.com"}
+
+
 def _first_party(parsed, host, seg, qs):
     pattern = _SITE_PATHS.get(host)
     m = pattern.search(parsed.path or "") if pattern else None
-    return f"site:{host}:{m.group(1)}" if m else None
+    return f"site:{_SITE_KEY_HOST.get(host, host)}:{m.group(1)}" if m else None
 
 
 _TALENTBREW_PATH = re.compile(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?job/[^/]+/[^/]+/(\d+)/(\d+)/?$", re.I)

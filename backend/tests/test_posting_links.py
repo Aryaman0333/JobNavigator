@@ -592,6 +592,17 @@ def test_a_role_skipped_in_a_city_only_the_text_names_shows_in_another(test_db):
     assert denver.status == "new" and denver.duplicate_of is None and denver.same_role_as == skipped.id
 
 
+def test_a_skipped_posting_stored_without_a_place_stays_skipped(test_db):
+    """Uber's old list stored no location; the same posting read again from jobs.uber.com names
+    New York City. A posting with no place cannot be elsewhere: the copy stays hidden."""
+    skipped = _job(test_db, "https://www.uber.com/careers/list/160013", company="Uber", title="Lead PM - Catalog",
+                   status="skip", days_old=30)
+    again = _job(test_db, "https://jobs.uber.com/en/jobs/160013/", company="Uber", title="Lead PM - Catalog",
+                 location="New York City, New York, United States", city=("New York", "NY"))
+    assert again.posting_key == skipped.posting_key == "site:uber.com:160013"
+    assert again.status == "ignored" and again.duplicate_of == skipped.id and again.same_role_as is None
+
+
 def test_an_office_list_in_the_text_does_not_overrule_the_location(test_db):
     """Intuit: both postings are in Mountain View; their texts list slightly different offices."""
     skipped = _job(test_db, "https://jobs.intuit.com/job/mountain-view/staff-pm/27595/1001", company="Intuit",

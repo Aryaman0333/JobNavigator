@@ -77,6 +77,9 @@ const detectAts = (url) => {
   if (hostMatches(url, 'jobs.smartrecruiters.com', 'careers.smartrecruiters.com', 'api.smartrecruiters.com')) return 'SmartRecruiters'
   // amazon.is_amazon: an amazon.jobs host with /search in the path
   if (hostMatches(url, 'amazon.jobs') && pathHas(url, '/search')) return 'Amazon'
+  // uber.is_uber: jobs.uber.com's job search, or the old uber.com careers list (not one posting)
+  if (hostMatches(url, 'jobs.uber.com') && /^\/([a-z]{2}(-[a-z]{2})?\/)?jobs\/?$/i.test(new URL(url).pathname)) return 'Uber'
+  if (hostMatches(url, 'uber.com') && pathHas(url, '/careers/list') && !/\/careers\/list\/\d+/.test(new URL(url).pathname)) return 'Uber'
   if (hostMatches(url, 'metacareers.com')) return 'Meta'
   if (url.toLowerCase().includes('google.com/about/careers')) return 'Google'
   return 'Generic'

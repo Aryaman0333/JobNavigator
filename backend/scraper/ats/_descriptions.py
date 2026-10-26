@@ -589,6 +589,8 @@ async def _fetch_descriptions_parallel(jobs_to_fetch, max_concurrent=5):
     sem = asyncio.Semaphore(max_concurrent)
 
     async def fetch_one(job_dict):
+        if job_dict.get("description"):   # the board's own API sent it (Uber): no page request
+            return job_dict, job_dict["description"]
         async with sem:
             desc = await _fetch_job_description(job_dict["url"], job=job_dict)
             return job_dict, desc

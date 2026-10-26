@@ -112,6 +112,7 @@ def mark_duplicate(job, original, session=None) -> None:
     job.copy_kind = kind
     job.status = copy_status(session, kind)
     job.duplicate_of = _ensure_id(original)
+    job.same_role_as = None   # a copy is hidden under its original, not shown beside a skipped one
     if job.posting_key and is_employer_key(job.posting_key) and not is_employer_key(original.posting_key):
         original.posting_key = job.posting_key
     if not original.apply_url:
@@ -214,6 +215,9 @@ def new_place(job, original) -> bool:
     neither location names a city ("United States", "Remote"), a city only the text names counts
     ("based in our Denver office"); a text's list of offices never overrules a named city."""
     a, b = _places(job), _places(original)
+    # A side that names no place at all (Uber's old list stored none) cannot be elsewhere.
+    if not (a or _norm(job.location)) or not (b or _norm(original.location)):
+        return False
     if (bool(a - b) if a and b else _norm(job.location) != _norm(original.location)):
         return True
     if any(p[2] for p in a | b):
