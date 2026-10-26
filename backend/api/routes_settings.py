@@ -249,7 +249,7 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
             logger.exception("%s failed after settings update", name)
 
     timing_keys = {
-        "scrape_interval_minutes", "email_check_interval_minutes",
+        "scrape_interval_minutes", "email_check_interval_minutes", "telemetry_level",
         "backup_cron", "digest_cron", "h1b_cron", "cleanup_cron", "reject_cron",
     }
     if timing_keys & set(install_updated):

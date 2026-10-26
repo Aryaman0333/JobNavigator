@@ -89,6 +89,11 @@ async def lifespan(app: FastAPI):
         # QA F4 / R1-01: the scheduler's timers capture the context of whoever wakes it.
         from backend.accounts.context import run_in_clean_context
         run_in_clean_context(scheduler.start)
+        # Telemetry's start event (sends nothing unless the owner allowed it); kept on
+        # app.state so the task is not garbage-collected mid-send.
+        from backend.telemetry.umami import send_start
+        import asyncio as _asyncio
+        app.state.telemetry_start = run_in_clean_context(lambda: _asyncio.ensure_future(send_start()))
         logger.info("Database initialized, seeded, scheduler started.")
 
     # Warm the OpenRouter live-pricing cache used for LLM cost logging (non-fatal).
@@ -1332,7 +1337,7 @@ async def telegram_test():
         )
 
 
-_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup"})   # install-level / require_owner
+_OWNER_ONLY_SCHEDULES = frozenset({"h1b_refresh", "db_backup", "telemetry_daily"})   # install-level / require_owner
 
 # The schedules list shows these names; every id scheduler.py registers needs one
 # (test_schedule_names.py).
@@ -1344,6 +1349,7 @@ SCHEDULE_NAMES = {
     "db_backup": "Back up database (pg_dump)",
     "job_cleanup": "Clean up stale skipped jobs",
     "auto_reject": "Auto-reject stale applications",
+    "telemetry_daily": "Send telemetry (what Settings › Telemetry allows)",
 }
 
 

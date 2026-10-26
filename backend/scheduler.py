@@ -121,6 +121,37 @@ def next_scrape_time(interval_minutes: int, now=None):
     return max(due, now + OVERDUE_DELAY)
 
 
+TELEMETRY_DELAY = timedelta(minutes=3)
+
+
+def next_telemetry_time(now=None):
+    """A day after the last telemetry send (restarts do not send again), or three minutes from
+    now when that is past or nothing was sent yet."""
+    from backend.accounts.context import unscoped
+    from backend.accounts.settings import get_install_setting
+    from backend.telemetry.level import LAST_SENT_KEY
+    now = now or datetime.now(timezone.utc)
+    last = None
+    try:
+        with unscoped():
+            db = SessionLocal()
+            try:
+                raw = get_install_setting(db, LAST_SENT_KEY)
+            finally:
+                db.close()
+        last = datetime.fromisoformat(raw) if raw else None
+    except Exception as e:
+        logger.error(f"Could not read the last telemetry send: {e}")
+    due = last + timedelta(days=1) if last else now
+    return max(due, now + TELEMETRY_DELAY)
+
+
+@scheduled_job
+async def run_telemetry_daily():
+    from backend.telemetry.umami import send_daily
+    await send_daily()
+
+
 def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1b_cron,
                    cleanup_cron, reject_cron):
     def _add_cron_job(func, job_id, cron_expr):
@@ -164,6 +195,15 @@ def _register_jobs(scrape_interval, email_interval, backup_cron, digest_cron, h1
             id="email_check",
             replace_existing=True,
         )
+
+    # Telemetry (telemetry/umami.py): sends only what the owner allowed, else does nothing.
+    scheduler.add_job(
+        run_telemetry_daily,
+        IntervalTrigger(minutes=24 * 60),
+        id="telemetry_daily",
+        replace_existing=True,
+        next_run_time=next_telemetry_time(),
+    )
 
     # Cron-based jobs (empty = disabled)
     _add_cron_job(run_db_backup, "db_backup", backup_cron)                   # install-level
